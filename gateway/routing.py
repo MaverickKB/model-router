@@ -3,11 +3,24 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 
 from .contracts import Candidate, Decision, EngineView, ModelView, Rejection
-from .schema import Client, Configuration, Selector
+from .schema import Client, Configuration, Route, Selector
 
 
 def matches(value: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(value, pattern) for pattern in patterns)
+
+
+def route_requires_caller_key(config: Configuration, route: Route) -> bool:
+    """Resolve a route gate without reopening pre-route-gate installations.
+
+    ``model_fields_set`` lets an in-memory legacy Route continue to honor the
+    old global setting until it is saved.  Persisted pre-v4 state is
+    materialized by migration, while every route edited by the current UI
+    carries an explicit value.
+    """
+    if "require_caller_key" in route.model_fields_set:
+        return route.require_caller_key
+    return config.security.client_auth_enabled
 
 
 def requirements(payload: dict) -> set[str]:
@@ -61,6 +74,7 @@ def decide(
     payload: dict,
     *,
     consider_capacity: bool = True,
+    caller_key_present: bool = True,
 ) -> Decision:
     requested = str(payload.get("model", ""))
     route = next((r for r in config.routes if r.name == requested), None)
@@ -89,6 +103,13 @@ def decide(
                 "rejections": [],
                 "error": "Route is outside the client's allowlist",
                 "status": 403,
+            }
+        if route_requires_caller_key(config, route) and not caller_key_present:
+            return {
+                "candidates": [],
+                "rejections": [],
+                "error": "A caller key is required for this route",
+                "status": 401,
             }
         tiers = [("primary", route.primary)] + (
             [("fallback", route.fallback)] if route.fallback else []

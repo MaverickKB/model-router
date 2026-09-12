@@ -5,7 +5,7 @@ Operator policy, observed service catalogs, and caller identity are independent 
 ```mermaid
 flowchart LR
     UI[Browser: App and focused editors] -->|versioned settings API| API[app.py: composition]
-    API --> ID[identity.py: optional authentication]
+    API --> ID[identity.py: credential lookup and observation identity]
     API --> DB[(store.py: revisioned policy)]
     DB --> DP[discovery/policy.json]
     DP --> JOB[network/collector.py: job lifecycle]
@@ -22,7 +22,7 @@ flowchart LR
     VIEWS --> NV
     NV --> API
     CLIENT[Client: model=auto] --> ID
-    ID --> OBS[callers.py: direct connection evidence]
+    ID --> OBS[callers.py: direct connection evidence before route authorization]
     OBS -->|bounded observations| DB
     OBS --> PROXY[proxy.py: request and connection owner]
     DB --> ROUTE[routing.py: decide]
@@ -60,11 +60,11 @@ Merge keeps the target engine's ID, name, type, model policy and limits. It unio
 
 Aliases are not automatic transport fallbacks. Requests use the preferred URL, and a catalog refresh follows that URL. Rediscovering a known alias returns its existing engine without an extra probe or row. The Network view remains an address/service inventory and associates every saved alias with that engine ID and name.
 
-A caller is one existing permission record, named `Client` in the schema and `/clients` API for compatibility. Optional `kind` labels are shared, agent, machine and person. They have no authentication or routing semantics. Settings separately selects the policy used by shared access; a label alone never grants that role. Existing keys remain valid, and creating another policy does not require a key or alter shared access.
+A caller permission policy is one existing record, named `Client` in the schema and `/clients` API for compatibility. Optional `kind` labels are shared, agent, machine and person. They describe the policy and do not grant access by themselves. A request can be observed before any policy exists. A key selects one policy and may be reused across callers.
 
-`gateway/callers.py` records actual catalog and inference connections with direct peer address, client software, optional self-reported name, permission-policy ID and identity basis. API-key names come from the operator-assigned policy. Forwarding headers and reported names never grant authority. Console tests identify the console as the caller. SQLite retains bounded connection metadata for seven days; neither prompts nor credentials enter it. Existing request history without source metadata remains explicitly unrecorded.
+`gateway/callers.py` records actual catalog and inference connections with direct peer address, client software, optional self-reported name, optional permission-policy ID and identity basis. API-key names come from the operator-assigned policy. Forwarding headers and reported names never grant authority. Console tests identify the console as the caller. SQLite retains bounded connection metadata for seven days; neither prompts nor credentials enter it. Existing request history without source metadata remains explicitly unrecorded.
 
-The map contains permission policies as its left column, so it remains useful before any traffic exists. Each policy shows its observed connections inside the policy card. Selecting a policy exposes its allowed routes and every recorded connection. Editing a route permission clearly applies to every connection using that policy.
+The map contains saved permission policies and observed unassigned connections in its left column. A policy can be edited before traffic exists. An observed connection without a policy remains visible and shows the route gate it would encounter. Selecting a policy exposes its allowed routes and every recorded connection. Editing a route permission clearly applies to every connection using that policy.
 
 The map's caller edges use `routing.decide` with a text request and without capacity filtering. Engine edges show saved selector membership, including explicit engines awaiting a matching catalog. Green means an eligible text path; blue marks backups; dashed paths are configured but currently unavailable or restricted. Selecting a caller applies its effective permissions to the highlighted destinations. Tools, images and current capacity can further restrict an actual request, which is stated beside the map. Active request metadata adds counts on the edges and opens the existing request detail view.
 
@@ -81,8 +81,8 @@ Click a caller then a route, or a route then an engine, to review a link. `src/m
 | `gateway/store.py` | Owns SQLite transactions, cached policy reads, credential storage and metadata. Mutating request paths dispatch blocking storage work off the event loop. |
 | `gateway/migration.py` | Preserves installed keys, access choices, observer contracts and scan policy during schema upgrades. |
 | `gateway/security/credentials.py` | Encrypts provider secrets and verifies operator/client keys. The encryption key lives outside the state directory. |
-| `gateway/callers.py` | Records bounded connection evidence after authentication, independently of authorization and routing policy. |
-| `gateway/identity.py` | Resolves bearer keys, persisted browser sessions, or explicitly enabled shared client access. Identity never chooses a model. |
+| `gateway/callers.py` | Records bounded connection evidence before route authorization, including unassigned callers. |
+| `gateway/identity.py` | Resolves bearer keys, source/default policies, or a transient unkeyed observation identity. Identity never chooses a model. |
 | `gateway/security/limits.py`, `body_limit.py` | Bound login/registration attempts and management JSON before parsing. |
 | `gateway/routing.py` | Pure policy evaluation: route/direct selection, allowlists, cloud permission, availability, capability requirements and ordering. |
 | `gateway/proxy.py` | Rechecks current policy before every attempt, atomically claims capacity, owns the upstream connection, and records the result. |
@@ -99,7 +99,7 @@ Click a caller then a route, or a route then an engine, to review a link. `src/m
 | `src/App.tsx`, `useRouterState.ts` | Navigation, action coordination and cancellable polling without overlapping scheduled requests. |
 | `src/views/`, `EngineCard.tsx` | Focused activity, route, client, connection and request-detail views. |
 | `src/editors/` | Separate engine, route, client and discovery editors with stale-draft checks. |
-| `src/settings/AccessSettings.tsx` | Authentication switches, shared permissions and sessions. |
+| `src/settings/AccessSettings.tsx` | Operator sign-in, optional default unkeyed policy and sessions. Route key gates live in the route editor. |
 | `src/settings/SettingsSummary.tsx` | Explains saved access, scope, inspection and admission independently of form drafts. Canonical management address comes from server state. |
 | `src/caller-identity.tsx` | Presents observed source, software, identity basis and the assigned policy without claiming a shared connection is an individual agent. |
 | `src/engine-addresses.ts` | Combines saved URLs and chooses a configured hostname for display. |
@@ -118,7 +118,7 @@ session, after which the saved operator authentication policy applies. Existing
 databases are marked complete when the installation table is introduced, so an
 upgrade never receives the fresh-install setup path.
 
-`Identity.identify` resolves one client. An explicitly supplied invalid key fails even when shared access is enabled. A valid key may also have source restrictions. Without a key, optional-key mode selects the most specific enabled network policy, then the configured shared policy.
+`Identity.identify` resolves one configured client when a valid key or explicit source/default policy is present. An explicitly supplied invalid key fails even when an unkeyed route exists, but its direct connection is still observed. Without a key and without a configured policy, the request receives a transient observation identity and never creates a permission policy. `routing.route_requires_caller_key` then gates each requested route independently. `/v1/models` advertises only routes permitted by both the caller policy and that route gate.
 
 `decide` evaluates each current engine/model against the client's route, engine, model and cloud permissions. Route names take precedence over model IDs; the console warns when they collide. Raw model access requires explicit permission and an exact ID. Required capabilities and explicit unsupported options exclude candidates. Optional route defaults fill absent options and may be skipped where unsupported.
 

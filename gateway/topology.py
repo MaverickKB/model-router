@@ -1,8 +1,8 @@
 """Build the policy-first picture used by the route map."""
 
 from .contracts import EngineView
-from .routing import decide, matches, selector_reason
-from .schema import Configuration
+from .routing import decide, matches, route_requires_caller_key, selector_reason
+from .schema import Client, Configuration
 
 
 def route_map(
@@ -16,10 +16,13 @@ def route_map(
     observed_by_policy: dict[str, list[dict]] = {
         client.id: [] for client in config.clients
     }
+    unassigned = []
     for caller in callers:
         policy_id = caller.get("policy_id")
         if policy_id in observed_by_policy:
             observed_by_policy[policy_id].append(caller)
+        else:
+            unassigned.append(caller)
 
     caller_routes, route_engines = [], []
     for client in config.clients:
@@ -54,6 +57,46 @@ def route_map(
                             "Eligible text path"
                             if ready_engines
                             else "No eligible text destination for this policy"
+                        )
+                    ),
+                }
+            )
+    # An observed connection without a permission policy is still a real
+    # caller. Show the route gate it would encounter without inventing a
+    # persistent policy or granting it direct model access.
+    unkeyed = Client(
+        name="Observed unkeyed connection",
+        kind="shared",
+        route_names=[route.name for route in config.routes],
+        allow_cloud=True,
+    )
+    for caller in unassigned:
+        for route in config.routes:
+            decision = decide(
+                config,
+                engines,
+                unkeyed,
+                {"model": route.name},
+                consider_capacity=False,
+                caller_key_present=False,
+            )
+            ready_engines = list(
+                dict.fromkeys(c["engine_id"] for c in decision["candidates"])
+            )
+            caller_routes.append(
+                {
+                    "caller_id": caller["id"],
+                    "policy_id": None,
+                    "route_id": route.id,
+                    "ready_engines": ready_engines,
+                    "reason": (
+                        "A caller key is required for this route"
+                        if route_requires_caller_key(config, route)
+                        else decision.get("error")
+                        or (
+                            "Eligible text path"
+                            if ready_engines
+                            else "No eligible text destination"
                         )
                     ),
                 }
@@ -107,6 +150,7 @@ def route_map(
             }
             for client in config.clients
         ],
+        "unassigned_callers": unassigned,
         "caller_routes": caller_routes,
         "route_engines": route_engines,
     }

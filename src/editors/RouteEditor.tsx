@@ -194,6 +194,26 @@ export function RouteEditor({
           />
         </Field>
       </div>
+      <div className="setting-row">
+        <div>
+          <strong>Caller key for this route</strong>
+          <p>
+            {draft.require_caller_key
+              ? "Only callers presenting a valid key can request this route."
+              : "Callers without a key may request this route when their other permissions allow it."}
+          </p>
+        </div>
+        <Switch
+          label="Require a caller key for this route"
+          checked={draft.require_caller_key}
+          onChange={() =>
+            set({
+              ...draft,
+              require_caller_key: !draft.require_caller_key,
+            })
+          }
+        />
+      </div>
       <Selection
         label="Primary"
         value={draft.primary}
