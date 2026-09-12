@@ -8,7 +8,9 @@ export function identityExplanation(caller: ObservedCaller) {
     case "source_network":
       return "Matched by connection address. The application name is self-reported.";
     case "shared_access":
-      return "Using default permissions. The application name is self-reported; no individual key was supplied.";
+      return "No caller key was supplied. The application name is self-reported; route-level access settings decide what it can use.";
+    case "unassigned":
+      return "The connection did not resolve to a permission policy. Its source and software are recorded so the failed request can be reviewed.";
     default:
       return "A route test started in this console, using the selected policy.";
   }
@@ -40,7 +42,7 @@ export function CallerIdentity({
           </>
         )}
         <dt>Permissions</dt>
-        <dd>{policy?.name || "Policy removed"}</dd>
+        <dd>{policy?.name || "No permission policy assigned"}</dd>
         <dt>Last seen</dt>
         <dd>
           {timeLabel(caller.last_seen)} · {caller.last_path}

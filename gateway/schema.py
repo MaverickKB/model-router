@@ -159,6 +159,10 @@ class Route(NamedRecord):
     primary: Selector = Field(default_factory=Selector)
     fallback: Selector | None = None
     strategy: Literal["ordered", "least_busy"] = "least_busy"
+    # Access is a property of the advertised route.  It applies equally to
+    # local and cloud engines, and is deliberately independent of the global
+    # operator/session settings below.
+    require_caller_key: bool = False
     defaults: dict = Field(default_factory=dict)
 
     @field_validator("defaults")
@@ -231,6 +235,8 @@ class Discovery(Record):
 
 class Security(Record):
     operator_auth_enabled: bool = True
+    # Kept for pre-v4 config migration. New authorization decisions are made
+    # by Route.require_caller_key, never by this global compatibility field.
     client_auth_enabled: bool = True
     operator_networks: list[str] = Field(
         default_factory=lambda: ["127.0.0.1/32", "::1/128"]
@@ -245,9 +251,9 @@ class Security(Record):
 
 
 class Configuration(Record):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     # Installation provenance for Settings copy; never changes access or routing.
-    upgraded_from_schema: int | None = Field(default=None, ge=0, lt=3)
+    upgraded_from_schema: int | None = Field(default=None, ge=0, lt=4)
     security: Security = Field(default_factory=Security)
     revision: int = 0
     engines: list[Engine] = Field(default_factory=list)

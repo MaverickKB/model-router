@@ -19,7 +19,7 @@ Open `http://localhost:8690`. A fresh installation opens a clearly marked first-
 
 1. Connect a serving engine by its OpenAI-compatible base URL. Provider credentials stay on the server. New cloud connections require explicit model selection.
 2. Configure `auto` or add a purpose route. Routes opens a policy-to-route-to-engine map immediately, then nests observed connections under each permission policy as traffic arrives. Click adjacent nodes to link them; use Details for model patterns, tags, ordering, and optional defaults.
-3. Start with shared caller access, then add caller policies as needed. Each has permitted routes, engines, models, cloud access and an optional shared/agent/machine/person label. Labels do not change permissions. Separate keys are additive; existing keys keep their values on upgrade.
+3. Add caller permission policies only when you want named, keyed access. Each has permitted routes, engines, models, cloud access and an optional shared/agent/machine/person label. Labels do not change permissions. Connections are observed even before a policy exists, and a single key can be reused across callers.
 4. Point the client at this router's `/v1` endpoint and use its route name. The gateway chooses from fresh catalogs and records its decision.
 
 ## Identify actual callers
@@ -34,13 +34,13 @@ A merge preserves the surviving engine's model policy and limits. It requires bo
 
 ## Access is optional
 
-**Settings > Access** has separate switches for **Operator sign-in** and **Require caller API keys**. They take effect when saved, without restarting the service.
+**Settings > Access** controls operator sign-in and the optional default policy for unkeyed callers. Caller-key requirements belong to each route, so local and cloud routes can be mixed in one installation without a global access switch.
 
 When operator sign-in is off, configured trusted source networks can manage the console through its canonical URL or loopback tunnel. Same-origin checks still protect browser writes. `MODEL_ROUTER_PUBLIC_URL` declares the canonical external URL. Keep sign-in enabled when exposing an administrative listener beyond trusted operators.
 
-When client keys are optional, a matching source-specific client policy takes priority. Other callers use the selected shared policy. The UI can create a shared `auto` policy restricted to local models. A supplied key always selects its own client; an invalid key is rejected. Optional keys do not remove route or model permissions.
+For each route, the operator can require a caller key or leave it open to unkeyed traffic. A matching source-specific policy takes priority, then the selected default policy. Without either policy, the connection is still observed and can use only routes whose gate is open. A supplied key selects its own policy and can be reused across callers; an invalid key is rejected. Route and model permissions still apply.
 
-Enabling sign-in keeps the current browser signed in. Generating a replacement operator key preserves this browser, revokes other operator sessions, and leaves all agent keys unchanged. Requiring client keys is an explicit operator choice: callers using shared access will then need a key. Upgrades preserve installed access modes rather than silently enabling that requirement.
+Enabling sign-in keeps the current browser signed in. Generating a replacement operator key preserves this browser, revokes other operator sessions, and leaves all agent keys unchanged. Upgrades materialize the former global caller-key setting onto each existing route, so an installed access policy is not silently changed.
 
 Settings identifies installations upgraded from the earlier schema and shows the saved access and discovery mode separately from unsaved edits. Inherited broad inspection and automatic registration stay enabled until you choose otherwise. With sign-in off, everyone using the trusted management boundary shares administrative authority. Scoped endpoint registration also remains open, independently of scheduled sweeps; automatic registration determines whether new endpoints become engines.
 

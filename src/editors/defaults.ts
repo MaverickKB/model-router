@@ -50,6 +50,7 @@ export const newRoute = (): Route => ({
   primary: { kind: "local", engine_ids: [], model_patterns: ["*"], tags: [] },
   fallback: null,
   strategy: "least_busy",
+  require_caller_key: false,
   defaults: {},
 });
 export const newClient = (): Client => ({

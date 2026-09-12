@@ -150,13 +150,12 @@ class Identity:
                         403, "Client key requires a permitted source address"
                     )
             request.state.identity_basis = "api_key"
+            request.state.caller_key_present = True
             return client
-        if config.security.client_auth_enabled:
-            raise HTTPException(401, "A client key is required")
         try:
             address = ipaddress.ip_address(request.client.host)
         except (ValueError, AttributeError):
-            raise HTTPException(401, "A client key is required")
+            address = None
         network_clients = []
         for client in config.clients:
             if not client.enabled or not client.allow_network_auth:
@@ -164,13 +163,14 @@ class Identity:
             for value in client.source_networks:
                 try:
                     net = ipaddress.ip_network(value, strict=False)
-                    if address in net:
+                    if address is not None and address in net:
                         network_clients.append((net.prefixlen, client))
                 except ValueError:
                     continue
         if network_clients:
             network_clients.sort(key=lambda item: item[0], reverse=True)
             request.state.identity_basis = "source_network"
+            request.state.caller_key_present = False
             return network_clients[0][1]
         anonymous = next(
             (
@@ -180,7 +180,7 @@ class Identity:
             ),
             None,
         )
-        if anonymous and (
+        if anonymous and address is not None and (
             not anonymous.source_networks
             or any(
                 address in ipaddress.ip_network(n, strict=False)
@@ -188,8 +188,19 @@ class Identity:
             )
         ):
             request.state.identity_basis = "shared_access"
+            request.state.caller_key_present = False
             return anonymous
-        raise HTTPException(401, "No shared client policy permits this connection")
+        # Observation is intentionally independent from policy creation.  An
+        # unkeyed request receives a transient routing identity; it is never
+        # persisted as a permission policy and route gates still apply later.
+        request.state.identity_basis = "shared_access"
+        request.state.caller_key_present = False
+        return Client(
+            name="Unkeyed connection",
+            kind="shared",
+            route_names=[route.name for route in config.routes],
+            allow_cloud=True,
+        )
 
     async def login(self, request: Request):
         if not self.origin_allowed(request):

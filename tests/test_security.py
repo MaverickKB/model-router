@@ -259,7 +259,9 @@ async def test_access_toggles_preserve_agent_keys_and_browser_across_restart(tmp
         cookie = browser.cookies.get("router_operator")
         assert cookie
         assert (await browser.get("/api/state")).status_code == 200
-        assert (await browser.get("/v1/models")).status_code == 401
+        # Caller authentication is now a route setting. Changing the legacy
+        # compatibility field does not override an explicitly open route.
+        assert (await browser.get("/v1/models")).status_code == 200
         assert (
             await browser.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
         ).status_code == 200
