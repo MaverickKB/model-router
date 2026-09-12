@@ -28,7 +28,7 @@ function peer(caller: ObservedCaller) {
 
 function parsedSoftware(software: string) {
   const match = software.match(
-    /(?:^|\s)(python-requests|Python-urllib|openai-python|OpenAI\/Python|curl|httpx|axios)(?:\/(\S+))?/i,
+    /(?:^|\s)(python-requests|Python-urllib|openai-python|OpenAI\/Python|node-fetch|go-http-client|curl|httpx|axios)(?:\/(\S+))?/i,
   );
   if (!match) return null;
   const raw = match[1].toLowerCase();
@@ -44,7 +44,11 @@ function parsedSoftware(software: string) {
           ? "HTTPX"
           : raw === "axios"
             ? "Axios"
-            : "curl";
+            : raw === "node-fetch"
+              ? "Node fetch"
+              : raw === "go-http-client"
+                ? "Go HTTP client"
+                : "curl";
   return { family, version: match[2] || "" };
 }
 
