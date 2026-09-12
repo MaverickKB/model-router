@@ -1,7 +1,11 @@
 import { Cloud, Cpu, Pencil, Route as RouteIcon, Users, X } from "lucide-react";
 import { useState } from "react";
 import { Dialog } from "../components";
-import { PermissionPolicyIdentity } from "../caller-identity";
+import {
+  callerDisplayName,
+  callerSummary,
+  PermissionPolicyIdentity,
+} from "../caller-identity";
 import { engineHost } from "../engine-addresses";
 import type {
   Client,
@@ -67,8 +71,8 @@ export function RoutesMap({
     })),
     ...unassigned.map((caller) => ({
       id: caller.id,
-      name: caller.name,
-      detail: `Observed connection · ${caller.source_address} · No permission policy`,
+      name: callerDisplayName(caller),
+      detail: `Observed connection · ${callerSummary(caller)} · No permission policy`,
       policy: null,
       observation: caller,
     })),
@@ -217,7 +221,8 @@ export function RoutesMap({
             <small className="map-observations">
               {observations.slice(0, 2).map((observation) => (
                 <span key={observation.id}>
-                  {observation.name} · {observation.source_address}
+                  {callerDisplayName(observation)} ·{" "}
+                  {callerSummary(observation)}
                 </span>
               ))}
               {observations.length > 2 && (
