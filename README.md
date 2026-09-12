@@ -15,7 +15,7 @@ npm run build
 uv run uvicorn gateway.app:create_app --factory --host 127.0.0.1 --port 8690 --no-proxy-headers --no-access-log
 ```
 
-Open `http://localhost:8690`. A fresh installation creates an operator key in `state/operator-bootstrap.key`. Enter it once. Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
+Open `http://localhost:8690`. A fresh installation opens a clearly marked first-use setup session when the connection comes from a local or private source, so the owner can configure the router before signing in. The first saved configuration or valid bootstrap-key login finishes setup and applies the saved access policy. If operator sign-in remains enabled, the bootstrap key is in `state/operator-bootstrap.key`; enter it when the setup source is not available. Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
 
 1. Connect a serving engine by its OpenAI-compatible base URL. Provider credentials stay on the server. New cloud connections require explicit model selection.
 2. Configure `auto` or add a purpose route. Routes opens a policy-to-route-to-engine map immediately, then nests observed connections under each permission policy as traffic arrives. Click adjacent nodes to link them; use Details for model patterns, tags, ordering, and optional defaults.

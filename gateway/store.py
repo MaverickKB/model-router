@@ -41,6 +41,7 @@ class Store:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(root, 0o700)
         path = root / "router.db"
+        fresh_install = not path.exists()
         self.cipher = CredentialCipher(root)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False)
@@ -54,9 +55,14 @@ class Store:
             CREATE TABLE IF NOT EXISTS client_credentials (lookup TEXT PRIMARY KEY, verifier TEXT NOT NULL, client_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS operator_sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS operator_identity (id INTEGER PRIMARY KEY, verifier TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS installation (id INTEGER PRIMARY KEY CHECK (id=1), setup_complete INTEGER NOT NULL CHECK (setup_complete IN (0,1)));
             CREATE TABLE IF NOT EXISTS callers (id TEXT PRIMARY KEY, seen REAL NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts REAL NOT NULL, body TEXT NOT NULL);
         """)
+        self.db.execute(
+            "INSERT OR IGNORE INTO installation VALUES (1, ?)",
+            (0 if fresh_install else 1,),
+        )
         self.db.execute(
             "INSERT OR IGNORE INTO config VALUES (1, ?)",
             (Configuration().model_dump_json(),),
@@ -70,6 +76,11 @@ class Store:
             "UPDATE config SET body=? WHERE id=1", (self._config.model_dump_json(),)
         )
         self.db.commit()
+        self._setup_complete = bool(
+            self.db.execute(
+                "SELECT setup_complete FROM installation WHERE id=1"
+            ).fetchone()[0]
+        )
         self.publish_discovery_policy()
         self._secrets = {}
         migrated = False
@@ -164,10 +175,26 @@ class Store:
         # Policy reads on the request path do not perform SQLite I/O.
         return self._config.model_copy(deep=True)
 
+    @property
+    def setup_required(self) -> bool:
+        """Whether this state has not completed its first owner setup action."""
+        return not self._setup_complete
+
+    def complete_setup(self):
+        with self.lock:
+            if self._setup_complete:
+                return
+            with self.db:
+                self.db.execute(
+                    "UPDATE installation SET setup_complete=1 WHERE id=1"
+                )
+            self._setup_complete = True
+
     def save(
         self, config: Configuration, *, engine_secrets: dict[str, str] | None = None
     ) -> Configuration:
         with self.lock:
+            setup_required = not self._setup_complete
             current = Configuration.model_validate_json(
                 self.db.execute("SELECT body FROM config WHERE id=1").fetchone()[0]
             )
@@ -202,6 +229,10 @@ class Store:
                 self.db.execute(
                     "UPDATE config SET body=? WHERE id=1", (config.model_dump_json(),)
                 )
+                if setup_required:
+                    self.db.execute(
+                        "UPDATE installation SET setup_complete=1 WHERE id=1"
+                    )
                 for owner, value in (engine_secrets or {}).items():
                     if value:
                         self.db.execute(
@@ -214,6 +245,7 @@ class Store:
                         next_secrets.pop(owner, None)
             self._secrets = next_secrets
             self._key_owners = next_key_owners
+            self._setup_complete = True
             self._config = config.model_copy(deep=True)
             self.publish_discovery_policy()
             return config

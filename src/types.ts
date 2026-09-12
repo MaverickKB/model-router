@@ -168,6 +168,7 @@ export interface Job {
   stream: boolean;
 }
 export interface State {
+  setup_required: boolean;
   observed_callers?: ObservedCaller[];
   route_map?: RouteMap;
   warnings?: string[];
