@@ -130,12 +130,16 @@ async def test_built_favicons_are_served_from_the_application_root(tmp_path, mon
     ) as http:
         ico = await http.get("/favicon.ico")
         svg = await http.get("/favicon.svg")
-    assert ico.status_code == 200
-    assert ico.headers["content-type"].startswith("image/x-icon")
-    assert ico.content == b"ico fixture"
-    assert svg.status_code == 200
-    assert svg.headers["content-type"].startswith("image/svg+xml")
-    assert svg.text == "<svg></svg>"
+        assert ico.status_code == 200
+        assert ico.headers["content-type"].startswith("image/x-icon")
+        assert ico.content == b"ico fixture"
+        assert svg.status_code == 200
+        assert svg.headers["content-type"].startswith("image/svg+xml")
+        assert svg.text == "<svg></svg>"
+        (assets / "favicon.ico").unlink()
+        assert (await http.get("/favicon.ico")).status_code == 404
+        (assets / "favicon.svg").unlink()
+        assert (await http.get("/favicon.svg")).status_code == 404
 
 
 @pytest.mark.asyncio
