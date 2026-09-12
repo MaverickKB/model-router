@@ -209,25 +209,29 @@ async def test_route_model_and_engine_permissions_apply_to_all_paths(setup):
 
 
 @pytest.mark.asyncio
-async def test_invalid_or_revoked_key_never_uses_shared_network_policy(setup):
-    app, http, _fleet, *_ = setup
+async def test_invalid_or_revoked_key_keeps_network_policy_unclaimed(setup):
+    app, http, fleet, *_ = setup
     config = app.state.store.config()
     config.clients[0].source_networks = ["127.0.0.1/32"]
     config.clients[0].allow_network_auth = True
     config.security.client_auth_enabled = False
     app.state.store.save(config)
-    assert (
-        await http.post(
-            "/v1/chat/completions",
-            headers={"Authorization": "Bearer invalid"},
-            json={"model": "auto"},
-        )
-    ).status_code == 401
+    invalid = await http.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer invalid"},
+        json={"model": "auto"},
+    )
+    assert invalid.status_code == 200
+    assert "authorization" not in fleet.calls[-1][2]
+    assert all(
+        caller["policy_id"] != config.clients[0].id
+        for caller in app.state.store.callers()
+    )
     valid = http.headers.pop("Authorization")
     assert (await send(http)).status_code == 200
     http.headers["Authorization"] = valid
     app.state.store.revoke_keys(config.clients[0].id)
-    assert (await send(http)).status_code == 401
+    assert (await send(http)).status_code == 200
 
 
 @pytest.mark.asyncio

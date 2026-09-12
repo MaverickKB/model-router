@@ -90,10 +90,16 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             await callers.observe(store, request, None)
             raise
         configured = {policy.id for policy in store.config().clients}
+        observed_policy = (
+            client
+            if client.id in configured
+            and getattr(request.state, "identity_basis", "") != "unassigned"
+            else None
+        )
         await callers.observe(
             store,
             request,
-            client if client.id in configured else None,
+            observed_policy,
         )
         return client
 

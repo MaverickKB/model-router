@@ -125,33 +125,38 @@ class Identity:
     async def identify(self, request: Request) -> Client:
         config = self.store.config()
         auth = request.headers.get("Authorization", "")
-        if auth:
-            if not auth.startswith("Bearer "):
-                raise HTTPException(401, "Use a client Bearer key")
+        unusable_auth = bool(auth)
+        if auth and auth[:7].casefold() == "bearer ":
+            # A number of OpenAI-compatible clients always send an API-key
+            # header, even when the operator has not configured caller keys.
+            # Resolve usable keys here, but let an unusable header continue
+            # through the ordinary unkeyed policy path. Route gates decide
+            # whether that request may proceed. This keeps open routes
+            # compatible with those clients without weakening a gated route.
             async with self.verification_slots:
                 client_id = await asyncio.to_thread(self.store.key_client, auth[7:])
-            client = next(
-                (c for c in config.clients if c.id == client_id and c.enabled), None
-            )
-            if client is None:
+            configured = next((c for c in config.clients if c.id == client_id), None)
+            if configured is not None and not configured.enabled:
                 raise HTTPException(401, "Client key is invalid or revoked")
-            if client.source_networks:
-                try:
-                    source = ipaddress.ip_address(request.client.host)
-                    if not any(
-                        source in ipaddress.ip_network(n, strict=False)
-                        for n in client.source_networks
-                    ):
+            client = configured
+            if client is not None:
+                if client.source_networks:
+                    try:
+                        source = ipaddress.ip_address(request.client.host)
+                        if not any(
+                            source in ipaddress.ip_network(n, strict=False)
+                            for n in client.source_networks
+                        ):
+                            raise HTTPException(
+                                403, "Client key is not allowed from this source address"
+                            )
+                    except (ValueError, AttributeError):
                         raise HTTPException(
-                            403, "Client key is not allowed from this source address"
+                            403, "Client key requires a permitted source address"
                         )
-                except (ValueError, AttributeError):
-                    raise HTTPException(
-                        403, "Client key requires a permitted source address"
-                    )
-            request.state.identity_basis = "api_key"
-            request.state.caller_key_present = True
-            return client
+                request.state.identity_basis = "api_key"
+                request.state.caller_key_present = True
+                return client
         try:
             address = ipaddress.ip_address(request.client.host)
         except (ValueError, AttributeError):
@@ -169,7 +174,9 @@ class Identity:
                     continue
         if network_clients:
             network_clients.sort(key=lambda item: item[0], reverse=True)
-            request.state.identity_basis = "source_network"
+            request.state.identity_basis = (
+                "unassigned" if unusable_auth else "source_network"
+            )
             request.state.caller_key_present = False
             return network_clients[0][1]
         anonymous = next(
@@ -187,13 +194,13 @@ class Identity:
                 for n in anonymous.source_networks
             )
         ):
-            request.state.identity_basis = "shared_access"
+            request.state.identity_basis = "unassigned" if unusable_auth else "shared_access"
             request.state.caller_key_present = False
             return anonymous
         # Observation is intentionally independent from policy creation.  An
         # unkeyed request receives a transient routing identity; it is never
         # persisted as a permission policy and route gates still apply later.
-        request.state.identity_basis = "shared_access"
+        request.state.identity_basis = "unassigned" if unusable_auth else "shared_access"
         request.state.caller_key_present = False
         return Client(
             name="Unkeyed connection",
