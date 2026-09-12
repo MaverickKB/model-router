@@ -1,5 +1,6 @@
 import { ArrowRight } from "lucide-react";
 import { Dialog, timeLabel } from "../components";
+import { callerDisplayName, callerSummary } from "../caller-identity";
 import { DecisionView } from "../editors";
 import type { Job } from "../types";
 export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
@@ -7,7 +8,9 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
     <Dialog title="Routing decision" onClose={onClose} wide>
       <div className="dialog-body">
         <div className="request-path">
-          <span>{job.caller?.name || "Caller not recorded"}</span>
+          <span>
+            {job.caller ? callerDisplayName(job.caller) : "Caller not recorded"}
+          </span>
           <ArrowRight size={16} />
           <strong>{job.requested}</strong>
           <ArrowRight size={16} />
@@ -24,8 +27,8 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
           </span>
         </div>
         <p className="hint">
-          Source: {job.caller?.source_address || "Not recorded"} · Permission
-          policy: {job.client}
+          Source: {job.caller ? callerSummary(job.caller) : "Not recorded"} ·
+          Permission policy: {job.client}
         </p>
         {job.model && <p className="observed-model">{job.model}</p>}
         {job.attempts.length > 0 && (

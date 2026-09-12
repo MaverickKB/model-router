@@ -95,6 +95,61 @@ async def test_key_identity_uses_assigned_name_without_changing_optional_auth(tm
 
 
 @pytest.mark.asyncio
+async def test_generic_transport_records_identifying_client_evidence_without_guessing_name(
+    tmp_path,
+):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    headers = {
+        "User-Agent": "python-requests/2.33.0",
+        "X-Stainless-Lang": "python",
+        "X-Stainless-Package-Version": "1.4.2",
+        "X-Stainless-Runtime": "CPython",
+        "X-Stainless-Runtime-Version": "3.12.5",
+        "X-Stainless-OS": "macOS",
+        "X-Stainless-Arch": "arm64",
+        "X-Forwarded-For": "spoofed.example",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.30", 51001)),
+        base_url="http://router.test",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+    first = app.state.store.callers()[0]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.30", 51002)),
+        base_url="http://router.test",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+    caller = app.state.store.callers()[0]
+
+    assert caller["name"] == "Unidentified caller"
+    assert caller["identity_quality"] == "runtime_hints"
+    assert caller["client_family"] == "Python requests"
+    assert caller["client_version"] == "2.33.0"
+    assert caller["client_runtime"] == "CPython"
+    assert caller["client_os"] == "macOS"
+    assert caller["client_arch"] == "arm64"
+    assert caller["source_address"] == "192.0.2.30"
+    assert caller["source_port"] == 51002
+    assert caller["recent_source_ports"] == [51001, 51002]
+    assert caller["request_count"] == 2
+    assert caller["first_seen"] == first["first_seen"]
+    assert "spoofed.example" not in json.dumps(caller)
+
+
+@pytest.mark.asyncio
 async def test_console_preview_is_not_attributed_to_agent(tmp_path):
     app = create_app(str(tmp_path), background=False)
     policy = Client(name="An agent")

@@ -867,6 +867,33 @@ code {
   margin-top: 5px;
   line-height: 1.5;
 }
+.caller-summary {
+  overflow-wrap: anywhere;
+}
+.identity-hints {
+  border-top: 1px solid var(--line);
+  margin-top: 22px;
+  padding-top: 18px;
+}
+.identity-hints h4 {
+  color: #c7c7c7;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0 0 13px;
+}
+.identity-hints dl {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 9px 18px;
+  font-size: 11px;
+}
+.identity-hints dt {
+  color: #92999e;
+}
+.identity-hints dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .detail-editor {
   padding: 7px 32px 40px;
   max-width: 810px;
