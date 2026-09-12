@@ -352,6 +352,28 @@ class Store:
 
     def observe_caller(self, caller: dict):
         with self.lock, self.db:
+            previous_row = self.db.execute(
+                "SELECT body FROM callers WHERE id=?", (caller["id"],)
+            ).fetchone()
+            if previous_row:
+                previous = json.loads(previous_row[0])
+                caller["first_seen"] = previous.get(
+                    "first_seen", previous.get("last_seen", caller["first_seen"])
+                )
+                try:
+                    previous_count = int(previous.get("request_count", 1))
+                except (TypeError, ValueError):
+                    previous_count = 1
+                caller["request_count"] = max(previous_count, 1) + 1
+                stored_ports = previous.get("recent_source_ports", [])
+                ports = list(stored_ports) if isinstance(stored_ports, list) else []
+            else:
+                ports = []
+            source_port = caller.get("source_port")
+            if source_port is not None:
+                ports = [port for port in ports if port != source_port]
+                ports.append(source_port)
+            caller["recent_source_ports"] = ports[-8:]
             self.db.execute(
                 "INSERT OR REPLACE INTO callers VALUES (?, ?, ?)",
                 (caller["id"], caller["last_seen"], json.dumps(caller)),

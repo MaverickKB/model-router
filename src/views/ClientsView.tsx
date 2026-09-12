@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { CallerIdentity } from "../caller-identity";
+import {
+  callerDisplayName,
+  callerSummary,
+  CallerIdentity,
+} from "../caller-identity";
 import { Plus, Users } from "lucide-react";
 import { ClientEditor, newClient } from "../editors";
 import type { Client, Config, EngineView, ObservedCaller } from "../types";
@@ -41,8 +45,8 @@ export function ClientsView({
           >
             <Users size={17} />
             <span>
-              <strong>{caller.name}</strong>
-              <small>{caller.source_address}</small>
+              <strong>{callerDisplayName(caller)}</strong>
+              <small>{callerSummary(caller)}</small>
             </span>
           </button>
         ))}

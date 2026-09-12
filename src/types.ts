@@ -143,16 +143,30 @@ export interface ObservedCaller {
   policy_id: string | null;
   name: string;
   source_address: string;
+  source_port?: number | null;
   software: string;
   reported_name: string;
+  reported_name_source?: string;
+  identity_quality?:
+    "policy_key" | "self_reported" | "runtime_hints" | "transport_only";
+  client_family?: string;
+  client_version?: string;
+  client_runtime?: string;
+  client_os?: string;
+  client_arch?: string;
+  identity_hints?: Record<string, string>;
   identity_basis:
     | "api_key"
     | "source_network"
     | "shared_access"
     | "unassigned"
     | "operator_test";
+  first_seen?: number;
+  request_count?: number;
   last_seen: number;
+  last_method?: string;
   last_path: string;
+  recent_source_ports?: number[];
 }
 export interface Job {
   caller?: ObservedCaller | null;

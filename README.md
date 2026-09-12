@@ -24,7 +24,7 @@ Open `http://localhost:8690`. A fresh installation opens a clearly marked first-
 
 ## Identify actual callers
 
-The Callers page lists observed connections separately from their permission policies. A policy's existence does not claim an agent is connected. Dedicated keys identify the operator-named caller; optional-key connections show the direct source address and reported client software. Reported names and forwarding headers never grant access. Console route tests identify the console explicitly. A shared key/address cannot distinguish every process behind it; dedicated keys are additive when individual identity is needed.
+The Callers page lists observed connections separately from their permission policies. A policy's existence does not claim an agent is connected. Dedicated keys identify the operator-named caller; optional-key connections show the direct peer, normalized client library and version, runtime hints, request count and recent source ports. Generic transport labels such as `python-requests` are shown as **Unidentified caller**, because a library cannot establish which person or agent used it. An optional `X-Router-Caller` or `X-Client-Name` label is shown as self-reported evidence, not authority. Forwarding headers never grant access. Console route tests identify the console explicitly. A shared key/address cannot distinguish every process behind it; dedicated keys are additive when individual identity is needed.
 
 ## One engine, many addresses
 
