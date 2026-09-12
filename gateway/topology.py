@@ -91,7 +91,7 @@ def route_map(
                     "ready_engines": ready_engines,
                     "reason": (
                         "A caller key is required for this route"
-                        if route_requires_caller_key(config, route)
+                        if route_requires_caller_key(route)
                         else decision.get("error")
                         or (
                             "Eligible text path"

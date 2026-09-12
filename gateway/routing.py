@@ -10,17 +10,9 @@ def matches(value: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(value, pattern) for pattern in patterns)
 
 
-def route_requires_caller_key(config: Configuration, route: Route) -> bool:
-    """Resolve a route gate without reopening pre-route-gate installations.
-
-    ``model_fields_set`` lets an in-memory legacy Route continue to honor the
-    old global setting until it is saved.  Persisted pre-v4 state is
-    materialized by migration, while every route edited by the current UI
-    carries an explicit value.
-    """
-    if "require_caller_key" in route.model_fields_set:
-        return route.require_caller_key
-    return config.security.client_auth_enabled
+def route_requires_caller_key(route: Route) -> bool:
+    """Return the saved route gate. Migration materializes all pre-v4 routes."""
+    return route.require_caller_key
 
 
 def requirements(payload: dict) -> set[str]:
@@ -104,7 +96,7 @@ def decide(
                 "error": "Route is outside the client's allowlist",
                 "status": 403,
             }
-        if route_requires_caller_key(config, route) and not caller_key_present:
+        if route_requires_caller_key(route) and not caller_key_present:
             return {
                 "candidates": [],
                 "rejections": [],

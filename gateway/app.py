@@ -375,7 +375,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             and not caller_key_present
             and any(route.enabled for route in config.routes)
             and all(
-                route_requires_caller_key(config, route)
+                route_requires_caller_key(route)
                 for route in config.routes
                 if route.enabled
             )
