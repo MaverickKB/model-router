@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 import { App } from "./App";
 import { fixtureConfig } from "./test-fixtures";
 
-it("puts independent auth controls on the reachable Settings page", async () => {
+it("puts operator access and route gates on reachable Settings and Routes pages", async () => {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -55,8 +55,8 @@ it("puts independent auth controls on the reachable Settings page", async () => 
     screen.getByRole("switch", { name: "Operator sign-in" }),
   ).toHaveAttribute("aria-checked", "true");
   expect(
-    screen.getByRole("switch", { name: "Require caller API keys" }),
-  ).toHaveAttribute("aria-checked", "true");
+    screen.queryByRole("switch", { name: "Require caller API keys" }),
+  ).not.toBeInTheDocument();
   await user.click(screen.getByRole("tab", { name: "Discovery" }));
   expect(
     screen.getByRole("switch", { name: "Automatic discovery" }),

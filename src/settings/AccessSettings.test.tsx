@@ -8,7 +8,7 @@ import { AccessSettings } from "./AccessSettings";
 import { fixtureConfig } from "../test-fixtures";
 
 describe("Access settings", () => {
-  it("turns both auth modes off while preserving installed clients", async () => {
+  it("changes operator access without inventing a caller policy", async () => {
     const user = userEvent.setup();
     const config = fixtureConfig();
     config.clients = [
@@ -30,23 +30,14 @@ describe("Access settings", () => {
     );
     await user.click(screen.getByRole("switch", { name: "Operator sign-in" }));
     await user.click(
-      screen.getByRole("switch", { name: "Require caller API keys" }),
-    );
-    await user.click(
       screen.getByRole("button", { name: "Save access settings" }),
     );
     await screen.findByText("Access settings saved");
     const saved = save.mock.calls[0][0];
     expect(saved.security.operator_auth_enabled).toBe(false);
-    expect(saved.security.client_auth_enabled).toBe(false);
+    expect(saved.security.client_auth_enabled).toBe(true);
     expect(saved.clients[0]).toEqual(config.clients[0]);
-    expect(saved.clients[1]).toMatchObject({
-      name: "Shared access",
-      route_names: ["auto"],
-      allow_cloud: false,
-      allow_direct_models: false,
-    });
-    expect(saved.security.anonymous_client_id).toBe(saved.clients[1].id);
+    expect(saved.clients).toHaveLength(1);
   });
 
   it("reuses the selected shared policy without creating duplicate clients", async () => {

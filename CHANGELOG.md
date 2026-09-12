@@ -17,3 +17,4 @@
 - Program-owned portable discovery, explicit HTTP inspection/admission, identifiable jobs, cancellation and paginated inventories.
 - Catalog adapters, typed routing boundaries, response limits and explicit admission ownership.
 - Focused UI modules, interaction coverage, versioned management API and operational documentation.
+- Route-level caller-key gates for local or cloud routes, with observation before authorization and visible unassigned callers.

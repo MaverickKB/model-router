@@ -46,9 +46,9 @@ export function ConnectionDialog({
           </strong>
         </div>
         <p className="hint">
-          {config.security.client_auth_enabled
-            ? "Use this caller's existing key. Manage its permissions in Callers."
-            : "Caller keys are optional. Callers without a key use their matching source policy or the selected shared policy. An existing key keeps its own permissions."}
+          "Each route decides whether a caller key is required. Callers are
+          observed as they connect; an optional key selects a named permission
+          policy and can be reused across callers."
         </p>
       </div>
       <footer>

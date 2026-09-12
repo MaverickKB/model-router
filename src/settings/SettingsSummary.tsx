@@ -64,9 +64,7 @@ export function SavedAccess({
         <div>
           <dt>Caller keys</dt>
           <dd>
-            {security.client_auth_enabled
-              ? "Required. Existing agent keys and their permissions apply."
-              : `Optional. Enabled source-specific policies apply first. ${shared ? `Other callers use “${shared.name}”.` : "No shared policy is selected; other callers are denied."} Supplied keys keep their own caller permissions.`}
+            {`Each route chooses whether a key is required. All connections are observed. ${shared ? `Unkeyed callers without a source override use “${shared.name}” where the selected route permits them.` : "Without a selected default policy, unkeyed callers still appear in the inventory and can use only routes that permit them."} Supplied keys select their named policy and may be reused across callers.`}
           </dd>
         </div>
         <div>

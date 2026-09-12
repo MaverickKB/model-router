@@ -55,8 +55,26 @@ export function RoutesMap({
   const policies = config.clients;
   const observationsFor = (policyId: string) =>
     callers.filter((caller) => caller.policy_id === policyId);
+  const unassigned =
+    topology?.unassigned_callers || callers.filter((caller) => !caller.policy_id);
+  const callerNodes = [
+    ...policies.map((policy) => ({
+      id: policy.id,
+      name: policy.name,
+      detail: `${policy.kind ? `Kind: ${policy.kind}` : "Kind not set"} · ${observationsFor(policy.id).length} connection${observationsFor(policy.id).length === 1 ? "" : "s"}`,
+      policy,
+      observation: null as ObservedCaller | null,
+    })),
+    ...unassigned.map((caller) => ({
+      id: caller.id,
+      name: caller.name,
+      detail: `Observed connection · ${caller.source_address} · No permission policy`,
+      policy: null,
+      observation: caller,
+    })),
+  ];
   const rows = Math.max(
-    policies.length,
+    callerNodes.length,
     config.routes.length,
     engines.length,
     2,
@@ -64,7 +82,11 @@ export function RoutesMap({
   const height = 50 + rows * 104;
   const y = (index: number) => 50 + index * 104 + 42;
   const pick = (next: Selection) => {
-    if (selected?.kind === "caller" && next.kind === "route") {
+    if (
+      selected?.kind === "caller" &&
+      next.kind === "route" &&
+      policies.some((policy) => policy.id === selected.id)
+    ) {
       setPending({
         config,
         link: {
@@ -102,7 +124,7 @@ export function RoutesMap({
     dim: boolean;
   }[] = [];
   for (const edge of topology?.caller_routes || []) {
-    const a = policies.findIndex((policy) => policy.id === edge.caller_id);
+    const a = callerNodes.findIndex((caller) => caller.id === edge.caller_id);
     const b = config.routes.findIndex((route) => route.id === edge.route_id);
     if (a < 0 || b < 0) continue;
     edges.push({
@@ -172,7 +194,7 @@ export function RoutesMap({
     name: string,
     detail: string,
     icon: React.ReactNode,
-    edit: () => void,
+    edit?: () => void,
     disabled = false,
     observations: ObservedCaller[] = [],
   ) => (
@@ -184,7 +206,7 @@ export function RoutesMap({
         className="map-node-select"
         onClick={() => pick(value)}
         aria-pressed={selected?.id === value.id}
-        aria-label={`Select ${value.kind === "caller" ? "permission policy" : value.kind} ${name}`}
+        aria-label={`Select ${value.kind === "caller" ? (edit ? "permission policy" : "observed caller") : value.kind} ${name}`}
         title={`${name} · ${detail}`}
       >
         {icon}
@@ -205,13 +227,15 @@ export function RoutesMap({
           )}
         </span>
       </button>
-      <button
-        className="icon-button"
-        aria-label={`Edit ${value.kind} ${name}`}
-        onClick={edit}
-      >
-        <Pencil size={13} />
-      </button>
+      {edit && (
+        <button
+          className="icon-button"
+          aria-label={`Edit ${value.kind} ${name}`}
+          onClick={edit}
+        >
+          <Pencil size={13} />
+        </button>
+      )}
     </div>
   );
   const pendingRoute =
@@ -230,9 +254,10 @@ export function RoutesMap({
         <div>
           <h2>Follow the route</h2>
           <p>
-            Select a permission policy, then a route. Select a route, then an
-            engine to link them. Observed connections appear inside their
-            policy.
+            Follow observed callers and saved permission policies into each
+            route, then into the engines that can serve it. Select a saved
+            policy, then a route to link them; observed callers without a
+            policy remain visible for review.
           </p>
         </div>
         {selected && (
@@ -290,22 +315,25 @@ export function RoutesMap({
             ))}
           </svg>
           <div className="map-column">
-            <h3>Permission policies</h3>
-            {policies.map((policy) =>
+            <h3>Callers and permission policies</h3>
+            {callerNodes.map((caller) =>
               node(
-                { kind: "caller", id: policy.id },
-                policy.name,
-                `${policy.kind ? `Kind: ${policy.kind}` : "Kind not set"} · ${observationsFor(policy.id).length} connection${observationsFor(policy.id).length === 1 ? "" : "s"}`,
+                { kind: "caller", id: caller.id },
+                caller.name,
+                caller.detail,
                 <Users size={18} />,
-                () => editCaller(policy),
-                !policy.enabled,
-                observationsFor(policy.id),
+                caller.policy ? () => editCaller(caller.policy!) : undefined,
+                caller.policy ? !caller.policy.enabled : false,
+                caller.policy
+                  ? observationsFor(caller.policy.id)
+                  : caller.observation
+                    ? [caller.observation]
+                    : [],
               ),
             )}
-            {!policies.length && (
+            {!callerNodes.length && (
               <p className="map-empty">
-                No permission policies yet. Add a caller policy to define who
-                may use each route.
+                No callers observed and no permission policies configured yet.
               </p>
             )}
           </div>
@@ -315,7 +343,7 @@ export function RoutesMap({
               node(
                 { kind: "route", id: route.id },
                 route.name,
-                route.purpose || "Routing policy",
+                `${route.purpose || "Routing policy"} · ${route.require_caller_key ? "Caller key required" : "Caller key optional"}`,
                 <RouteIcon size={18} />,
                 () => editRoute(route),
                 !route.enabled,

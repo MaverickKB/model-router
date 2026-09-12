@@ -96,7 +96,14 @@ class Proxy:
         if "messages" in payload and not isinstance(payload["messages"], list):
             raise HTTPException(400, "messages must be an array")
         config = self.store.config()
-        decision = decide(config, self.discovery.views(), client, payload)
+        caller_key_present = getattr(request.state, "caller_key_present", True)
+        decision = decide(
+            config,
+            self.discovery.views(),
+            client,
+            payload,
+            caller_key_present=caller_key_present,
+        )
         event = {
             "id": uuid4().hex,
             "ts": time.time(),
@@ -147,10 +154,19 @@ class Proxy:
                 (c for c in current_config.clients if c.id == client.id), None
             )
             if current_client is None:
-                await finish("denied", 403)
-                raise HTTPException(403, "Client was removed")
+                if caller_key_present:
+                    await finish("denied", 403)
+                    raise HTTPException(403, "Client was removed")
+                # The unkeyed identity is intentionally transient. Keep it
+                # across a retry while route gates and engine state are read
+                # from the current saved configuration.
+                current_client = client
             fresh = decide(
-                current_config, self.discovery.views(), current_client, payload
+                current_config,
+                self.discovery.views(),
+                current_client,
+                payload,
+                caller_key_present=caller_key_present,
             )
             candidate = next(
                 (

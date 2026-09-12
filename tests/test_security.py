@@ -117,7 +117,7 @@ def test_database_contains_ciphertext_and_salted_key_verifiers(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_network_client_authentication_requires_explicit_opt_in(tmp_path):
+async def test_unkeyed_route_catalog_is_observable_without_a_source_policy(tmp_path):
     app = create_app(str(tmp_path), background=False)
     app.state.store.save(
         Configuration(
@@ -131,7 +131,7 @@ async def test_network_client_authentication_requires_explicit_opt_in(tmp_path):
             base_url="http://localhost",
         ) as client,
     ):
-        assert (await client.get("/v1/models")).status_code == 401
+        assert (await client.get("/v1/models")).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -259,7 +259,9 @@ async def test_access_toggles_preserve_agent_keys_and_browser_across_restart(tmp
         cookie = browser.cookies.get("router_operator")
         assert cookie
         assert (await browser.get("/api/state")).status_code == 200
-        assert (await browser.get("/v1/models")).status_code == 401
+        # Caller authentication is now a route setting. Changing the legacy
+        # compatibility field does not override an explicitly open route.
+        assert (await browser.get("/v1/models")).status_code == 200
         assert (
             await browser.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
         ).status_code == 200

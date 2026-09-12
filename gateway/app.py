@@ -23,7 +23,7 @@ from .network.collector import Collector
 from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
 from .proxy import Proxy
-from .routing import client_reason, decide
+from .routing import client_reason, decide, route_requires_caller_key
 from .schema import Configuration, Engine
 from .security.body_limit import BodyLimit
 from .store import Conflict, Store
@@ -76,6 +76,26 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         discovery,
         identity,
     )
+
+    async def identify_caller(request: Request):
+        """Observe connection evidence before returning any caller error."""
+        try:
+            client = await identity.identify(request)
+        except HTTPException:
+            # Invalid or revoked credentials are not granted a routing policy,
+            # but the direct connection still belongs in the observed caller
+            # inventory so an operator can explain the failed request.
+            request.state.identity_basis = "unassigned"
+            request.state.caller_key_present = False
+            await callers.observe(store, request, None)
+            raise
+        configured = {policy.id for policy in store.config().clients}
+        await callers.observe(
+            store,
+            request,
+            client if client.id in configured else None,
+        )
+        return client
 
     @app.exception_handler(json.JSONDecodeError)
     async def invalid_json(request, exc):
@@ -313,13 +333,18 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
 
     @app.get("/v1/models")
     async def models(request: Request):
-        client = await identity.identify(request)
-        await callers.observe(store, request, client)
+        client = await identify_caller(request)
+        caller_key_present = getattr(request.state, "caller_key_present", True)
         config, views = store.config(), discovery.views()
         data = []
         for route in config.routes:
             decision = decide(
-                config, views, client, {"model": route.name}, consider_capacity=False
+                config,
+                views,
+                client,
+                {"model": route.name},
+                consider_capacity=False,
+                caller_key_present=caller_key_present,
             )
             if decision["candidates"]:
                 data.append(
@@ -345,6 +370,17 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
                         {**model, "object": "model", "owned_by": engine["name"]}
                     )
                     seen.add(model["id"])
+        if (
+            not data
+            and not caller_key_present
+            and any(route.enabled for route in config.routes)
+            and all(
+                route_requires_caller_key(route)
+                for route in config.routes
+                if route.enabled
+            )
+        ):
+            raise HTTPException(401, "A caller key is required for every enabled route")
         return {
             "object": "list",
             "data": data,
@@ -403,8 +439,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     @app.post("/chat/completions")
     @app.post("/completions")
     async def completion(request: Request):
-        client = await identity.identify(request)
-        await callers.observe(store, request, client)
+        client = await identify_caller(request)
         raw = bytearray()
         async for chunk in request.stream():
             raw.extend(chunk)

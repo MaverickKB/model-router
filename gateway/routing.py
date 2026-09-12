@@ -3,11 +3,16 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 
 from .contracts import Candidate, Decision, EngineView, ModelView, Rejection
-from .schema import Client, Configuration, Selector
+from .schema import Client, Configuration, Route, Selector
 
 
 def matches(value: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(value, pattern) for pattern in patterns)
+
+
+def route_requires_caller_key(route: Route) -> bool:
+    """Return the saved route gate. Migration materializes all pre-v4 routes."""
+    return route.require_caller_key
 
 
 def requirements(payload: dict) -> set[str]:
@@ -61,6 +66,7 @@ def decide(
     payload: dict,
     *,
     consider_capacity: bool = True,
+    caller_key_present: bool = True,
 ) -> Decision:
     requested = str(payload.get("model", ""))
     route = next((r for r in config.routes if r.name == requested), None)
@@ -89,6 +95,13 @@ def decide(
                 "rejections": [],
                 "error": "Route is outside the client's allowlist",
                 "status": 403,
+            }
+        if route_requires_caller_key(route) and not caller_key_present:
+            return {
+                "candidates": [],
+                "rejections": [],
+                "error": "A caller key is required for this route",
+                "status": 401,
             }
         tiers = [("primary", route.primary)] + (
             [("fallback", route.fallback)] if route.fallback else []
