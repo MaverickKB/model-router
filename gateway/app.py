@@ -487,6 +487,18 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     if (assets / "assets").exists():
         app.mount("/assets", StaticFiles(directory=assets / "assets"), name="assets")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon_ico():
+        if (assets / "favicon.ico").exists():
+            return FileResponse(assets / "favicon.ico", media_type="image/x-icon")
+        return JSONResponse({"detail": "Favicon is not built"}, status_code=404)
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    async def favicon_svg():
+        if (assets / "favicon.svg").exists():
+            return FileResponse(assets / "favicon.svg", media_type="image/svg+xml")
+        return JSONResponse({"detail": "Favicon is not built"}, status_code=404)
+
     @app.get("/")
     async def index():
         if (assets / "index.html").exists():
