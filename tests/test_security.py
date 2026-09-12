@@ -247,9 +247,11 @@ async def test_access_toggles_preserve_agent_keys_and_browser_across_restart(tmp
     ):
         assert (await browser.get("/api/state")).status_code == 200
         assert (await browser.get("/v1/models")).status_code == 200
+        # Open routes remain usable for clients that send a placeholder key.
+        # A route-level gate still rejects that request (covered separately).
         assert (
             await browser.get("/v1/models", headers={"Authorization": "Bearer invalid"})
-        ).status_code == 401
+        ).status_code == 200
         config = store.config()
         config.security.operator_auth_enabled = True
         config.security.client_auth_enabled = True
