@@ -150,6 +150,70 @@ async def test_generic_transport_records_identifying_client_evidence_without_gue
 
 
 @pytest.mark.asyncio
+async def test_unknown_user_agent_is_not_promoted_to_a_client_library(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.31", 51003)),
+        base_url="http://router.test",
+    ) as http:
+        assert (
+            await http.get(
+                "/v1/models",
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6)"},
+            )
+        ).status_code == 200
+    caller = app.state.store.callers()[0]
+    assert caller["name"] == "Unidentified caller"
+    assert caller["client_family"] == ""
+    assert caller["client_version"] == ""
+    assert caller["identity_quality"] == "transport_only"
+
+
+@pytest.mark.asyncio
+async def test_async_openai_user_agent_uses_real_package_version(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.32", 51004)),
+        base_url="http://router.test",
+    ) as http:
+        assert (
+            await http.get(
+                "/v1/models",
+                headers={
+                    "User-Agent": "OpenAI/Python 1.54.0",
+                    "X-OpenAI-Client-User-Agent": '{"user_agent":"AsyncOpenAI/Python 1.54.0"}',
+                    "X-Stainless-Package-Version": "1.54.0",
+                },
+            )
+        ).status_code == 200
+    caller = app.state.store.callers()[0]
+    assert caller["client_family"] == "OpenAI Python"
+    assert caller["client_version"] == "1.54.0"
+
+
+@pytest.mark.asyncio
 async def test_console_preview_is_not_attributed_to_agent(tmp_path):
     app = create_app(str(tmp_path), background=False)
     policy = Client(name="An agent")
