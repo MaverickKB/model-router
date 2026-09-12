@@ -209,7 +209,7 @@ async def test_route_model_and_engine_permissions_apply_to_all_paths(setup):
 
 
 @pytest.mark.asyncio
-async def test_invalid_or_revoked_key_never_uses_shared_network_policy(setup):
+async def test_invalid_or_revoked_key_keeps_network_policy_unclaimed(setup):
     app, http, fleet, *_ = setup
     config = app.state.store.config()
     config.clients[0].source_networks = ["127.0.0.1/32"]
