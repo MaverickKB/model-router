@@ -71,7 +71,15 @@ export function callerDisplayName(caller: ObservedCaller) {
     return caller.name;
   }
   const rawName = `${caller.name} ${caller.software}`;
-  return parsedSoftware(rawName) ? "Unidentified caller" : caller.name;
+  if (parsedSoftware(rawName)) return "Unidentified caller";
+  if (
+    !caller.identity_quality &&
+    caller.name === caller.software &&
+    /^[A-Za-z][A-Za-z0-9._-]*\/[^\s]+$/.test(caller.name)
+  ) {
+    return "Unidentified caller";
+  }
+  return caller.name;
 }
 
 export function callerSummary(caller: ObservedCaller) {
