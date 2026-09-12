@@ -236,6 +236,24 @@ export function App() {
           </button>
         </div>
       )}
+      {state.setup_required && (
+        <div className="setup-banner" role="status">
+          <div>
+            <strong>First-use setup</strong>
+            <span>
+              This private setup session is ready. Connect an engine, review
+              access, then save to finish setup.
+            </span>
+          </div>
+          <button
+            className="subtle"
+            onClick={() => selectTab("Settings", "Access")}
+          >
+            Review access
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
       <div
         className={"workspace " + (tab === "Routes" ? "routes-workspace" : "")}
         ref={workspace}

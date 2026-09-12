@@ -48,7 +48,18 @@ class Identity:
             if target
         )
 
+    @staticmethod
+    def setup_source_allowed(request: Request) -> bool:
+        """Allow first-use setup only from a source that is not publicly routed."""
+        try:
+            source = ipaddress.ip_address(request.client.host)
+        except (ValueError, AttributeError):
+            return False
+        return not source.is_global
+
     async def operator(self, request: Request) -> bool:
+        if self.store.setup_required and self.setup_source_allowed(request):
+            return True
         policy = self.store.config().security
         if not policy.operator_auth_enabled:
             try:
@@ -195,6 +206,7 @@ class Identity:
             valid = await asyncio.to_thread(verify, self.admin_verifier, body["token"])
         if not valid:
             raise HTTPException(401, "Operator key is incorrect")
+        self.store.complete_setup()
         return await self.new_session(
             request, {"ok": True}, remember=body.get("remember", True)
         )
@@ -242,6 +254,7 @@ class Identity:
                 409,
                 "The operator key is managed by MODEL_ROUTER_ADMIN_TOKEN; update that deployment setting to replace it",
             )
+        self.store.complete_setup()
         token = secrets.token_urlsafe(32)
         verifier = await asyncio.to_thread(digest, token)
         await asyncio.to_thread(self.store.set_operator_verifier, verifier)

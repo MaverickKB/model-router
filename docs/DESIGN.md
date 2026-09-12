@@ -109,6 +109,15 @@ Click a caller then a route, or a route then an engine, to review a link. `src/m
 
 ## A request
 
+On a pristine state, `Store` records that first-use setup is still required. The
+management endpoints accept that first-use session only
+when the TCP peer is not publicly routed; browser mutations still pass the
+same-origin check. The first successful configuration save, valid bootstrap-key
+login, or key rotation marks setup complete and establishes the ordinary browser
+session, after which the saved operator authentication policy applies. Existing
+databases are marked complete when the installation table is introduced, so an
+upgrade never receives the fresh-install setup path.
+
 `Identity.identify` resolves one client. An explicitly supplied invalid key fails even when shared access is enabled. A valid key may also have source restrictions. Without a key, optional-key mode selects the most specific enabled network policy, then the configured shared policy.
 
 `decide` evaluates each current engine/model against the client's route, engine, model and cloud permissions. Route names take precedence over model IDs; the console warns when they collide. Raw model access requires explicit permission and an exact ID. Required capabilities and explicit unsupported options exclude candidates. Optional route defaults fill absent options and may be skipped where unsupported.

@@ -135,6 +135,89 @@ async def test_network_client_authentication_requires_explicit_opt_in(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pristine_install_is_configurable_before_auth_then_uses_session(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    origin = "http://router.test"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("8.8.8.8", 1)),
+        base_url=origin,
+    ) as public:
+        assert (await public.get("/api/v1/state")).status_code == 401
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.10", 1)),
+        base_url=origin,
+        headers={"Origin": origin},
+    ) as browser:
+        state = await browser.get("/api/v1/state")
+        assert state.status_code == 200
+        assert state.json()["setup_required"] is True
+        assert app.state.store.setup_required
+
+        saved = await browser.put("/api/v1/config", json=state.json()["config"])
+        assert saved.status_code == 200
+        assert browser.cookies.get("router_operator")
+        assert not app.state.store.setup_required
+        current = await browser.get("/api/v1/state")
+        assert current.status_code == 200
+        assert current.json()["setup_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_login_and_rotation_end_first_use(tmp_path):
+    origin = "http://localhost"
+    app = create_app(str(tmp_path), background=False)
+    token = (tmp_path / "operator-bootstrap.key").read_text().strip()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+        base_url=origin,
+        headers={"Origin": origin},
+    ) as browser:
+        assert app.state.store.setup_required
+        login = await browser.post("/api/v1/login", json={"token": token})
+        assert login.status_code == 200
+        assert not app.state.store.setup_required
+        assert (await browser.get("/api/v1/state")).status_code == 200
+
+    restarted = create_app(str(tmp_path / "rotation"), background=False)
+    rotation_token = (
+        tmp_path / "rotation" / "operator-bootstrap.key"
+    ).read_text().strip()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=restarted, client=("127.0.0.1", 1)),
+        base_url=origin,
+        headers={"Origin": origin},
+    ) as browser:
+        rotated = await browser.post("/api/v1/operator/key")
+        assert rotated.status_code == 200
+        assert rotated.json()["key"]
+        assert not restarted.state.store.setup_required
+        assert not (tmp_path / "rotation" / "operator-bootstrap.key").exists()
+        assert (await browser.get("/api/v1/state")).status_code == 200
+        assert rotation_token
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=restarted, client=("8.8.8.8", 1)),
+        base_url=origin,
+    ) as public:
+        assert (await public.get("/api/v1/state")).status_code == 401
+
+
+def test_setup_marker_survives_store_restart(tmp_path):
+    first = Store(str(tmp_path))
+    assert first.setup_required
+    first.db.close()
+
+    reopened = Store(str(tmp_path))
+    assert reopened.setup_required
+    reopened.complete_setup()
+    reopened.db.close()
+
+    completed = Store(str(tmp_path))
+    assert not completed.setup_required
+    completed.db.close()
+
+
+@pytest.mark.asyncio
 async def test_access_toggles_preserve_agent_keys_and_browser_across_restart(tmp_path):
     from gateway.schema import Security
 
@@ -241,6 +324,7 @@ def test_legacy_installation_upgrades_without_changing_keys_or_source_policies(
     assert store.has_key(caller.id)
     assert not store.config().security.client_auth_enabled
     assert not store.config().security.operator_auth_enabled
+    assert not store.setup_required
     assert store.config().clients[0].allow_network_auth
     assert not hasattr(store.config(), "compatibility")
     assert store.config().upgraded_from_schema == 0
