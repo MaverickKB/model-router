@@ -65,13 +65,10 @@ export function ClientsView({
               <strong>{c.name}</strong>
               <small>
                 {c.kind ? `${c.kind} · ` : ""}
-                {!config.security.client_auth_enabled &&
-                c.id === config.security.anonymous_client_id
-                  ? "Shared access policy"
-                  : !config.security.client_auth_enabled &&
-                      c.allow_network_auth &&
-                      c.source_networks.length
-                    ? "Shared network access"
+                {c.id === config.security.anonymous_client_id
+                  ? "Default unkeyed policy"
+                  : c.allow_network_auth && c.source_networks.length
+                    ? "Explicit source override"
                     : c.has_key
                       ? "Caller key configured"
                       : "Key not created"}
@@ -97,18 +94,24 @@ export function ClientsView({
         <div>
           <CallerIdentity
             caller={connection}
-            policy={config.clients.find((p) => p.id === connection.policy_id)}
-          />
-          <button
-            onClick={() =>
-              onSelect(
-                config.clients.find((p) => p.id === connection.policy_id) ||
-                  null,
-              )
+            policy={
+              connection.policy_id
+                ? config.clients.find((p) => p.id === connection.policy_id)
+                : undefined
             }
-          >
-            Edit assigned permissions
-          </button>
+          />
+          {connection.policy_id && (
+            <button
+              onClick={() =>
+                onSelect(
+                  config.clients.find((p) => p.id === connection.policy_id) ||
+                    null,
+                )
+              }
+            >
+              Edit assigned permissions
+            </button>
+          )}
         </div>
       ) : (
         <div className="detail-empty">

@@ -60,6 +60,7 @@ export interface Route {
   primary: Selector;
   fallback: Selector | null;
   strategy: "ordered" | "least_busy";
+  require_caller_key: boolean;
   defaults: Record<string, unknown>;
 }
 export interface Client {
@@ -102,7 +103,7 @@ export interface Security {
   session_hours: number;
 }
 export interface Config {
-  schema_version: 3;
+  schema_version: 4;
   upgraded_from_schema?: number | null;
   security: Security;
   revision: number;
@@ -139,13 +140,17 @@ export interface Decision {
 }
 export interface ObservedCaller {
   id: string;
-  policy_id: string;
+  policy_id: string | null;
   name: string;
   source_address: string;
   software: string;
   reported_name: string;
   identity_basis:
-    "api_key" | "source_network" | "shared_access" | "operator_test";
+    | "api_key"
+    | "source_network"
+    | "shared_access"
+    | "unassigned"
+    | "operator_test";
   last_seen: number;
   last_path: string;
 }
@@ -208,8 +213,10 @@ export interface RouteMap {
     policy_id: string;
     observed_callers: ObservedCaller[];
   }[];
+  unassigned_callers?: ObservedCaller[];
   caller_routes: {
     caller_id: string;
+    policy_id?: string | null;
     route_id: string;
     ready_engines: string[];
     reason: string;

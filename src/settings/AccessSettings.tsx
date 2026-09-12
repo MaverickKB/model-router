@@ -3,7 +3,6 @@ import { useState } from "react";
 import { post } from "../api";
 import { Field, ListInput, Select, Switch } from "../components";
 import { requireUnchanged, sameRecord } from "../editor-state";
-import { newClient } from "../editors/defaults";
 import type { Config } from "../types";
 import { SavedAccess } from "./SettingsSummary";
 
@@ -48,22 +47,8 @@ export function AccessSettings({
               "access settings",
             );
             const security = { ...draft };
-            let clients = config.clients;
-            if (
-              !security.client_auth_enabled &&
-              !security.anonymous_client_id
-            ) {
-              const shared = {
-                ...newClient(),
-                name: "Shared access",
-                kind: "shared" as const,
-              };
-              clients = [...clients, shared];
-              security.anonymous_client_id = shared.id;
-            }
             const result = await save({
               ...config,
-              clients,
               security,
             });
             setDraft(result.security);
@@ -109,60 +94,29 @@ export function AccessSettings({
             />
           </Field>
         )}
-        <div className="setting-row">
-          <div>
-            <strong>Require caller API keys</strong>
-            <p>
-              {draft.client_auth_enabled
-                ? "Each agent uses its existing caller key and permissions."
-                : "Agents can connect without a key. Source-specific policies take priority, then the shared policy below."}
-            </p>
-          </div>
-          <Switch
-            label="Require caller API keys"
-            checked={draft.client_auth_enabled}
-            onChange={() =>
+        <Field
+          label="Default unkeyed policy (optional)"
+          hint="This policy is used when a caller has no key and no source-specific override. Route settings still decide whether each route accepts an unkeyed request."
+        >
+          <Select
+            value={draft.anonymous_client_id || ""}
+            onChange={(anonymous_client_id) =>
               setDraft({
                 ...draft,
-                client_auth_enabled: !draft.client_auth_enabled,
+                anonymous_client_id: anonymous_client_id || null,
               })
             }
-          />
-        </div>
-        {!draft.client_auth_enabled && (
-          <Field
-            label="Shared caller permissions"
-            hint="Edit this caller's routes, models, and cloud permissions in Callers. Keys that are supplied still select their own caller."
           >
-            <Select
-              value={draft.anonymous_client_id || ""}
-              onChange={(anonymous_client_id) =>
-                setDraft({
-                  ...draft,
-                  anonymous_client_id: anonymous_client_id || null,
-                })
-              }
-            >
-              <option value="">
-                Create shared access to auto, local models only
-              </option>
-              {config.clients
-                .filter((c) => c.enabled)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-            </Select>
-          </Field>
-        )}
-        {draft.client_auth_enabled &&
-          !baseline.client_auth_enabled && (
-            <p className="hint" role="status">
-              Saving will require a valid key for callers that currently use
-              shared access. Existing keys remain valid.
-            </p>
-        )}
+            <option value="">No default policy</option>
+            {config.clients
+              .filter((c) => c.enabled)
+              .map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
         <details className="advanced">
           <summary>Sessions</summary>
           <Field label="Keep this browser signed in (hours)">

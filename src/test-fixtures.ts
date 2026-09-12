@@ -1,7 +1,7 @@
 import type { Config } from "./types";
 export function fixtureConfig(): Config {
   return {
-    schema_version: 3,
+    schema_version: 4,
     revision: 1,
     engines: [],
     routes: [],

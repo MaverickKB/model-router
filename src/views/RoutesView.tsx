@@ -89,7 +89,10 @@ export function RoutesView({
                 <RouteIcon size={17} />
                 <span>
                   <strong>{r.name}</strong>
-                  <small>{r.purpose || "Routing policy"}</small>
+                  <small>
+                    {r.purpose || "Routing policy"} ·{" "}
+                    {r.require_caller_key ? "Caller key required" : "Caller key optional"}
+                  </small>
                 </span>
                 <span
                   className={
