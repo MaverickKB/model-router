@@ -296,6 +296,41 @@ async def test_valid_key_keeps_source_restriction_on_an_open_route(tmp_path):
     assert response.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_bearer_scheme_is_case_insensitive_for_valid_keys(tmp_path):
+    app = create_app(
+        str(tmp_path),
+        background=False,
+        transport=httpx.MockTransport(Endpoint()),
+    )
+    engine = Engine(name="Local endpoint", base_url="http://model.test/v1")
+    caller = Client(name="Key", route_names=["private"])
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[
+                Route(name="free", primary=Selector(engine_ids=[engine.id])),
+                Route(
+                    name="private",
+                    primary=Selector(engine_ids=[engine.id]),
+                    require_caller_key=True,
+                ),
+            ],
+            clients=[caller],
+            security=Security(operator_auth_enabled=False),
+        )
+    )
+    key = app.state.store.issue_key(caller.id)
+    await app.state.discovery.refresh()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.26", 1)),
+        base_url="http://router.test",
+        headers={"Authorization": f"bearer {key}"},
+    ) as client:
+        response = await client.get("/v1/models")
+    assert {item["id"] for item in response.json()["data"]} == {"private"}
+
+
 def test_pre_route_gate_config_materializes_legacy_global_policy():
     route = Route(name="auto", require_caller_key=True)
     raw = Configuration(routes=[route], security=Security(client_auth_enabled=True)).model_dump()
