@@ -165,7 +165,7 @@ async def test_one_key_policy_can_use_multiple_routes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invalid_key_is_observed_without_becoming_a_policy(tmp_path):
+async def test_invalid_key_uses_open_route_without_becoming_a_policy(tmp_path):
     app = create_app(str(tmp_path), background=False)
     app.state.store.save(
         Configuration(
@@ -182,10 +182,34 @@ async def test_invalid_key_is_observed_without_becoming_a_policy(tmp_path):
         ) as client,
     ):
         response = await client.get("/v1/models")
+    assert response.status_code == 200
+    caller = Store(str(tmp_path)).callers()[0]
+    assert caller["policy_id"] is None
+    assert caller["identity_basis"] == "shared_access"
+
+
+@pytest.mark.asyncio
+async def test_invalid_key_still_fails_a_gated_route(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    app.state.store.save(
+        Configuration(
+            routes=[Route(name="private", require_caller_key=True)],
+            security=Security(operator_auth_enabled=False),
+        )
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("192.0.2.23", 1)),
+            base_url="http://router.test",
+            headers={"Authorization": "Bearer invalid", "User-Agent": "BadKey/1"},
+        ) as client,
+    ):
+        response = await client.get("/v1/models")
     assert response.status_code == 401
     caller = Store(str(tmp_path)).callers()[0]
     assert caller["policy_id"] is None
-    assert caller["identity_basis"] == "unassigned"
+    assert caller["identity_basis"] == "shared_access"
 
 
 def test_pre_route_gate_config_materializes_legacy_global_policy():
