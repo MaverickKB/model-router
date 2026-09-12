@@ -117,6 +117,28 @@ async def send(http, model="auto", **extra):
 
 
 @pytest.mark.asyncio
+async def test_built_favicons_are_served_from_the_application_root(tmp_path, monkeypatch):
+    assets = tmp_path / "dist"
+    (assets / "assets").mkdir(parents=True)
+    (assets / "index.html").write_text("<html></html>")
+    (assets / "favicon.ico").write_bytes(b"ico fixture")
+    (assets / "favicon.svg").write_text("<svg></svg>")
+    monkeypatch.setenv("MODEL_ROUTER_UI", str(assets))
+    app = create_app(str(tmp_path / "state"), background=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        ico = await http.get("/favicon.ico")
+        svg = await http.get("/favicon.svg")
+    assert ico.status_code == 200
+    assert ico.headers["content-type"].startswith("image/x-icon")
+    assert ico.content == b"ico fixture"
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert svg.text == "<svg></svg>"
+
+
+@pytest.mark.asyncio
 async def test_model_replacement_preserves_auto_and_removes_old_catalog(setup):
     app, http, fleet, *_ = setup
     first = await send(http)
