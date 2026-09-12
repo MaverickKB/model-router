@@ -134,9 +134,10 @@ class Identity:
             # compatible with those clients without weakening a gated route.
             async with self.verification_slots:
                 client_id = await asyncio.to_thread(self.store.key_client, auth[7:])
-            client = next(
-                (c for c in config.clients if c.id == client_id and c.enabled), None
-            )
+            configured = next((c for c in config.clients if c.id == client_id), None)
+            if configured is not None and not configured.enabled:
+                raise HTTPException(401, "Client key is invalid or revoked")
+            client = configured
             if client is not None:
                 if client.source_networks:
                     try:
@@ -155,9 +156,20 @@ class Identity:
                 request.state.identity_basis = "api_key"
                 request.state.caller_key_present = True
                 return client
-        # Unknown, revoked, or non-Bearer credentials are not a caller policy.
-        # Fall through so free routes can use shared access and routes marked
-        # require_caller_key still reject the request.
+        if auth:
+            # An unusable credential must not select a source or default policy.
+            # Treat it as an unassigned connection so it cannot inherit a
+            # named policy accidentally. Open routes remain compatible with
+            # clients that send a placeholder key, while route gates still
+            # reject the request when a key is required.
+            request.state.identity_basis = "unassigned"
+            request.state.caller_key_present = False
+            return Client(
+                name="Unkeyed connection",
+                kind="shared",
+                route_names=[route.name for route in config.routes],
+                allow_cloud=True,
+            )
         try:
             address = ipaddress.ip_address(request.client.host)
         except (ValueError, AttributeError):

@@ -185,7 +185,7 @@ async def test_invalid_key_uses_open_route_without_becoming_a_policy(tmp_path):
     assert response.status_code == 200
     caller = Store(str(tmp_path)).callers()[0]
     assert caller["policy_id"] is None
-    assert caller["identity_basis"] == "shared_access"
+    assert caller["identity_basis"] == "unassigned"
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_invalid_key_still_fails_a_gated_route(tmp_path):
     assert response.status_code == 401
     caller = Store(str(tmp_path)).callers()[0]
     assert caller["policy_id"] is None
-    assert caller["identity_basis"] == "shared_access"
+    assert caller["identity_basis"] == "unassigned"
 
 
 def test_pre_route_gate_config_materializes_legacy_global_policy():
