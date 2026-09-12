@@ -1,5 +1,6 @@
 import { ChevronRight, Clock3, Route as RouteIcon, Search } from "lucide-react";
 import { useState } from "react";
+import { callerDisplayName } from "../caller-identity";
 import type { Job } from "../types";
 export function ActivityRail({
   events,
@@ -66,7 +67,9 @@ export function ActivityRail({
           >
             <div className="job-top">
               <span className={"status-dot " + j.status} />
-              <strong>{j.caller?.name || "Caller not recorded"}</strong>
+              <strong>
+                {j.caller ? callerDisplayName(j.caller) : "Caller not recorded"}
+              </strong>
               <span>
                 {new Date(j.ts * 1000).toLocaleTimeString([], {
                   hour: "numeric",

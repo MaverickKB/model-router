@@ -407,8 +407,10 @@ export function RoutesMap({
         <div className="map-jobs">
           {active.map((job) => (
             <button key={job.id} onClick={() => inspectJob(job)}>
-              {job.caller?.name || "Caller not recorded"} →{" "}
-              {job.decision.route || job.requested} →{" "}
+              {job.caller
+                ? callerDisplayName(job.caller)
+                : "Caller not recorded"}{" "}
+              → {job.decision.route || job.requested} →{" "}
               {job.engine || "Selecting"}
             </button>
           ))}
