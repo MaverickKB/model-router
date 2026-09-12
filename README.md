@@ -38,7 +38,7 @@ A merge preserves the surviving engine's model policy and limits. It requires bo
 
 When operator sign-in is off, configured trusted source networks can manage the console through its canonical URL or loopback tunnel. Same-origin checks still protect browser writes. `MODEL_ROUTER_PUBLIC_URL` declares the canonical external URL. Keep sign-in enabled when exposing an administrative listener beyond trusted operators.
 
-For each route, the operator can require a caller key or leave it open to unkeyed traffic. A matching source-specific policy takes priority, then the selected default policy. Without either policy, the connection is still observed and can use only routes whose gate is open. A supplied key selects its own policy and can be reused across callers; an invalid key is rejected. Route and model permissions still apply.
+For each route, the operator can require a caller key or leave it open to unkeyed traffic. A matching source-specific policy takes priority, then the selected default policy. Without either policy, the connection is still observed and can use only routes whose gate is open. A supplied valid key selects its own policy and can be reused across callers. An unusable key header follows the unkeyed path for open routes and is rejected by routes that require a key. Route and model permissions still apply.
 
 Enabling sign-in keeps the current browser signed in. Generating a replacement operator key preserves this browser, revokes other operator sessions, and leaves all agent keys unchanged. Upgrades materialize the former global caller-key setting onto each existing route, so an installed access policy is not silently changed.
 
