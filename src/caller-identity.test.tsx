@@ -79,6 +79,19 @@ it("leaves browser-like user agents as transport evidence", () => {
   expect(callerSummary(legacy)).toContain("Mozilla/5.0");
 });
 
+it("does not present an unrecognized legacy name/version token as a caller", () => {
+  const legacy = {
+    ...caller,
+    name: "hermes-cli/0.21.0",
+    software: "hermes-cli/0.21.0",
+    client_family: undefined,
+    client_version: undefined,
+    identity_quality: undefined,
+  };
+  expect(callerDisplayName(legacy)).toBe("Unidentified caller");
+  expect(callerSummary(legacy)).toContain("hermes-cli/0.21.0");
+});
+
 it("shows evidence needed to identify an otherwise generic transport", () => {
   render(<CallerIdentity caller={caller} />);
 
