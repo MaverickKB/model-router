@@ -28,11 +28,15 @@ function peer(caller: ObservedCaller) {
 
 function parsedSoftware(software: string) {
   const match = software.match(
-    /(?:^|\s)(python-requests|Python-urllib|openai-python|OpenAI\/Python|node-fetch|go-http-client|curl|httpx|axios)(?:\/(\S+))?/i,
+    /(?:^|\s)(python-requests|Python-urllib|openai-python|OpenAI\/Python|AsyncOpenAI\/Python|node-fetch|go-http-client|curl|httpx|axios)(?:\/(\S+))?/i,
   );
   if (!match) return null;
   const raw = match[1].toLowerCase();
-  if (raw === "openai/python" || raw === "openai-python") {
+  if (
+    raw === "openai/python" ||
+    raw === "asyncopenai/python" ||
+    raw === "openai-python"
+  ) {
     return { family: "OpenAI Python", version: match[2] || "" };
   }
   const family =

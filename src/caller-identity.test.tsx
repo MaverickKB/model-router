@@ -66,6 +66,19 @@ it("normalizes every backend-known generic transport in legacy rows", () => {
   }
 });
 
+it("leaves browser-like user agents as transport evidence", () => {
+  const legacy = {
+    ...caller,
+    name: "Mozilla/5.0",
+    software: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6)",
+    client_family: undefined,
+    client_version: undefined,
+    identity_quality: undefined,
+  };
+  expect(callerDisplayName(legacy)).toBe("Mozilla/5.0");
+  expect(callerSummary(legacy)).toContain("Mozilla/5.0");
+});
+
 it("shows evidence needed to identify an otherwise generic transport", () => {
   render(<CallerIdentity caller={caller} />);
 
