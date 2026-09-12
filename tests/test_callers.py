@@ -181,6 +181,64 @@ async def test_unknown_user_agent_is_not_promoted_to_a_client_library(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bare_python_user_agent_is_not_promoted_to_a_client_library(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.33", 51005)),
+        base_url="http://router.test",
+    ) as http:
+        assert (
+            await http.get("/v1/models", headers={"User-Agent": "Python/3.12.5"})
+        ).status_code == 200
+    caller = app.state.store.callers()[0]
+    assert caller["client_family"] == ""
+    assert caller["client_version"] == ""
+
+
+@pytest.mark.asyncio
+async def test_openai_json_scans_past_unknown_tokens(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.34", 51006)),
+        base_url="http://router.test",
+    ) as http:
+        assert (
+            await http.get(
+                "/v1/models",
+                headers={
+                    "X-OpenAI-Client-User-Agent": '{"runtime":"foo/1.0","user_agent":"AsyncOpenAI/Python 1.54.0"}',
+                    "X-Stainless-Package-Version": "1.54.0",
+                },
+            )
+        ).status_code == 200
+    caller = app.state.store.callers()[0]
+    assert caller["client_family"] == "OpenAI Python"
+    assert caller["client_version"] == "1.54.0"
+
+
+@pytest.mark.asyncio
 async def test_async_openai_user_agent_uses_real_package_version(tmp_path):
     app = create_app(str(tmp_path), background=False)
     policy = Client(name="Shared access")

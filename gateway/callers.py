@@ -32,7 +32,6 @@ _CLIENT_TOKEN = re.compile(
     r"(?P<name>[A-Za-z][A-Za-z0-9._-]*)/(?P<version>[A-Za-z0-9._+-]+)"
 )
 _CLIENT_NAMES = {
-    "python": "Python",
     "python-requests": "Python requests",
     "python-urllib": "Python urllib",
     "openai-python": "OpenAI Python",
@@ -60,25 +59,19 @@ def client_profile(software: str, hints: dict[str, str]) -> tuple[str, str, str]
         software,
     ]
     for value in values:
-        match = _CLIENT_TOKEN.search(value)
-        if not match:
-            continue
-        raw_name = match.group("name")
-        raw_version = match.group("version")
-        if (
-            raw_name.lower() in {"openai", "asyncopenai"}
-            and raw_version.lower() == "python"
-        ):
-            return "OpenAI Python", "", "Python"
-        family = _CLIENT_NAMES.get(raw_name.lower())
-        if family is None:
-            continue
-        runtime = (
-            "Python"
-            if family.startswith("Python ") or family == "OpenAI Python"
-            else ""
-        )
-        return family, raw_version, runtime
+        for match in _CLIENT_TOKEN.finditer(value):
+            raw_name = match.group("name")
+            raw_version = match.group("version")
+            if (
+                raw_name.lower() in {"openai", "asyncopenai"}
+                and raw_version.lower() == "python"
+            ):
+                return "OpenAI Python", "", "Python"
+            family = _CLIENT_NAMES.get(raw_name.lower())
+            if family is None:
+                continue
+            runtime = "Python" if family.startswith("Python ") else ""
+            return family, raw_version, runtime
     return "", "", ""
 
 
