@@ -4,7 +4,7 @@ The operator controls destinations which receive prompts and credentials. A clie
 
 ## Access modes
 
-Fresh installs require an operator key and client keys. Operator authentication includes loopback and SSH-tunnel connections. Cookie-based writes require a matching Origin, including when the header is absent. Bearer clients can use the API without browser ambient credentials. Forwarded source headers have no authority; the documented server command disables proxy-header trust.
+Fresh installs default to operator and client keys, but a pristine state exposes the first-use console only to a source address that is not publicly routed. Same-origin writes still require a matching Origin, and the first saved configuration, valid bootstrap-key login or key rotation ends that setup session and applies the saved access policy. Operator authentication includes loopback and SSH-tunnel connections. Cookie-based writes require a matching Origin, including when the header is absent. Bearer clients can use the API without browser ambient credentials. Forwarded source headers have no authority; the documented server command disables proxy-header trust.
 
 The owner can disable either authentication requirement in Settings. With operator sign-in disabled, configured trusted source networks and the canonical/loopback host boundary grant administrative access. Every process or tunnel sharing that trusted origin has that authority. This is explicit trusted-network mode, not user isolation. With client keys optional, configured shared client permissions still constrain routing. Enabling key requirements can intentionally exclude shared callers; the UI explains that before saving.
 

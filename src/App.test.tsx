@@ -19,6 +19,7 @@ it("puts independent auth controls on the reachable Settings page", async () => 
       async () =>
         new Response(
           JSON.stringify({
+            setup_required: true,
             config,
             engines: [],
             clients: [],
@@ -45,6 +46,10 @@ it("puts independent auth controls on the reachable Settings page", async () => 
   );
   render(<App />);
   const user = userEvent.setup();
+  expect(await screen.findByText("First-use setup")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Review access" }),
+  ).toBeInTheDocument();
   await user.click(await screen.findByRole("button", { name: "Settings" }));
   expect(
     screen.getByRole("switch", { name: "Operator sign-in" }),

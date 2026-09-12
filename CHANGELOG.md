@@ -11,6 +11,7 @@
 - Targeted engine catalog refresh after add/edit, without refreshing unrelated providers.
 
 - Optional operator and client authentication in Settings, with access-preserving migration and persistent sessions.
+- First-use setup is available on local or private connections before the first completing owner action, then returns to the configured operator authentication boundary.
 - Saved access/discovery summaries, retained-setting notices after upgrade, and matching database/encryption-key backup guidance.
 - Encrypted provider credentials, salted key verification, bounded management requests and login attempts.
 - Program-owned portable discovery, explicit HTTP inspection/admission, identifiable jobs, cancellation and paginated inventories.

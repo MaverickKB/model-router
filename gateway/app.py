@@ -95,6 +95,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             key=lambda c: (c["name"], c["source_address"], c["id"]),
         )
         return {
+            "setup_required": store.setup_required,
             "observed_callers": connections,
             "config": config.model_dump(),
             "network": await asyncio.to_thread(
@@ -175,10 +176,11 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
                         422, "Client networks must be valid IP addresses or CIDRs"
                     )
         old = store.config()
+        setup_required = store.setup_required
         saved = await asyncio.to_thread(store.save, config)
         changed = [e for e in saved.engines if e not in old.engines]
         await asyncio.gather(*(discovery.refresh_engine(e) for e in changed))
-        if old.security != saved.security:
+        if setup_required or old.security != saved.security:
             return await identity.new_session(request, saved.model_dump())
         return saved.model_dump()
 
