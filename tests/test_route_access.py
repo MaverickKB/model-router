@@ -26,13 +26,24 @@ async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path)
         str(tmp_path), background=False, transport=httpx.MockTransport(Endpoint())
     )
     engine = Engine(name="Local endpoint", base_url="http://model.test/v1")
+    cloud = Engine(
+        name="Cloud endpoint",
+        base_url="https://cloud.test/v1",
+        kind="cloud",
+        model_patterns=["*"],
+    )
     app.state.store.save(
         Configuration(
-            engines=[engine],
+            engines=[engine, cloud],
             routes=[
                 Route(
                     name="free",
                     primary=Selector(engine_ids=[engine.id]),
+                    require_caller_key=False,
+                ),
+                Route(
+                    name="cloud-free",
+                    primary=Selector(kind="cloud", engine_ids=[cloud.id]),
                     require_caller_key=False,
                 ),
                 Route(
@@ -55,16 +66,27 @@ async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path)
     ):
         catalog = await client.get("/v1/models")
         assert catalog.status_code == 200
-        assert [item["id"] for item in catalog.json()["data"]] == ["free"]
+        assert {item["id"] for item in catalog.json()["data"]} == {
+            "free",
+            "cloud-free",
+        }
         allowed = await client.post(
             "/v1/chat/completions",
             json={"model": "free", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        cloud_allowed = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "cloud-free",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
         denied = await client.post(
             "/v1/chat/completions",
             json={"model": "private", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert allowed.status_code == 200
+    assert cloud_allowed.status_code == 200
     assert denied.status_code == 401
     callers = Store(str(tmp_path)).callers()
     assert len(callers) == 1
@@ -79,12 +101,27 @@ async def test_one_key_policy_can_use_multiple_routes(tmp_path):
         str(tmp_path), background=False, transport=httpx.MockTransport(Endpoint())
     )
     engine = Engine(name="Local endpoint", base_url="http://model.test/v1")
-    caller = Client(name="Harness key", route_names=["free", "private"])
+    cloud = Engine(
+        name="Cloud endpoint",
+        base_url="https://cloud.test/v1",
+        kind="cloud",
+        model_patterns=["*"],
+    )
+    caller = Client(
+        name="Harness key",
+        route_names=["free", "cloud-private", "private"],
+        allow_cloud=True,
+    )
     app.state.store.save(
         Configuration(
-            engines=[engine],
+            engines=[engine, cloud],
             routes=[
                 Route(name="free", primary=Selector(engine_ids=[engine.id])),
+                Route(
+                    name="cloud-private",
+                    primary=Selector(kind="cloud", engine_ids=[cloud.id]),
+                    require_caller_key=True,
+                ),
                 Route(
                     name="private",
                     primary=Selector(engine_ids=[engine.id]),
@@ -110,9 +147,21 @@ async def test_one_key_policy_can_use_multiple_routes(tmp_path):
             "/v1/chat/completions",
             json={"model": "private", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert {item["id"] for item in catalog.json()["data"]} == {"free", "private"}
+    assert {item["id"] for item in catalog.json()["data"]} == {
+        "free",
+        "cloud-private",
+        "private",
+    }
     assert private.status_code == 200
-    assert Store(str(tmp_path)).callers()[0]["policy_id"] == caller.id
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.23", 1)),
+        base_url="http://router.test",
+        headers={"Authorization": f"Bearer {key}"},
+    ) as second_source:
+        assert (await second_source.get("/v1/models")).status_code == 200
+    callers = Store(str(tmp_path)).callers()
+    assert len(callers) == 2
+    assert {item["policy_id"] for item in callers} == {caller.id}
 
 
 @pytest.mark.asyncio
@@ -140,7 +189,7 @@ async def test_invalid_key_is_observed_without_becoming_a_policy(tmp_path):
 
 
 def test_pre_route_gate_config_materializes_legacy_global_policy():
-    route = Route(name="auto")
+    route = Route(name="auto", require_caller_key=True)
     raw = Configuration(routes=[route], security=Security(client_auth_enabled=True)).model_dump()
     raw["schema_version"] = 3
     raw["routes"][0].pop("require_caller_key")
