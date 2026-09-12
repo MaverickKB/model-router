@@ -212,6 +212,90 @@ async def test_invalid_key_still_fails_a_gated_route(tmp_path):
     assert caller["identity_basis"] == "unassigned"
 
 
+@pytest.mark.asyncio
+async def test_placeholder_header_matches_default_policy_without_claiming_it(tmp_path):
+    app = create_app(
+        str(tmp_path),
+        background=False,
+        transport=httpx.MockTransport(Endpoint()),
+    )
+    engine = Engine(name="Local endpoint", base_url="http://model.test/v1")
+    default = Client(name="Shared policy", route_names=["free"], allow_cloud=False)
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[
+                Route(name="free", primary=Selector(engine_ids=[engine.id])),
+                Route(name="other", primary=Selector(engine_ids=[engine.id])),
+            ],
+            clients=[default],
+            security=Security(
+                operator_auth_enabled=False,
+                anonymous_client_id=default.id,
+            ),
+        )
+    )
+    await app.state.discovery.refresh()
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("192.0.2.24", 1)),
+            base_url="http://router.test",
+        ) as client,
+    ):
+        unkeyed = await client.get("/v1/models")
+        placeholder = await client.get(
+            "/v1/models", headers={"Authorization": "Bearer placeholder"}
+        )
+    assert {item["id"] for item in unkeyed.json()["data"]} == {"free"}
+    assert {item["id"] for item in placeholder.json()["data"]} == {"free"}
+    callers = Store(str(tmp_path)).callers()
+    assert {caller["identity_basis"] for caller in callers} == {
+        "shared_access",
+        "unassigned",
+    }
+    assert all(
+        caller["policy_id"] in {None, default.id}
+        for caller in callers
+    )
+    assert any(
+        caller["identity_basis"] == "unassigned" and caller["policy_id"] is None
+        for caller in callers
+    )
+
+
+@pytest.mark.asyncio
+async def test_valid_key_keeps_source_restriction_on_an_open_route(tmp_path):
+    app = create_app(
+        str(tmp_path),
+        background=False,
+        transport=httpx.MockTransport(Endpoint()),
+    )
+    engine = Engine(name="Local endpoint", base_url="http://model.test/v1")
+    caller = Client(
+        name="Restricted key",
+        route_names=["free"],
+        source_networks=["192.0.2.24/32"],
+    )
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[Route(name="free", primary=Selector(engine_ids=[engine.id]))],
+            clients=[caller],
+            security=Security(operator_auth_enabled=False),
+        )
+    )
+    key = app.state.store.issue_key(caller.id)
+    await app.state.discovery.refresh()
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.25", 1)),
+        base_url="http://router.test",
+        headers={"Authorization": f"Bearer {key}"},
+    ) as client:
+        response = await client.get("/v1/models")
+    assert response.status_code == 403
+
+
 def test_pre_route_gate_config_materializes_legacy_global_policy():
     route = Route(name="auto", require_caller_key=True)
     raw = Configuration(routes=[route], security=Security(client_auth_enabled=True)).model_dump()

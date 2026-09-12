@@ -125,6 +125,7 @@ class Identity:
     async def identify(self, request: Request) -> Client:
         config = self.store.config()
         auth = request.headers.get("Authorization", "")
+        unusable_auth = bool(auth)
         if auth and auth.startswith("Bearer "):
             # A number of OpenAI-compatible clients always send an API-key
             # header, even when the operator has not configured caller keys.
@@ -156,20 +157,6 @@ class Identity:
                 request.state.identity_basis = "api_key"
                 request.state.caller_key_present = True
                 return client
-        if auth:
-            # An unusable credential must not select a source or default policy.
-            # Treat it as an unassigned connection so it cannot inherit a
-            # named policy accidentally. Open routes remain compatible with
-            # clients that send a placeholder key, while route gates still
-            # reject the request when a key is required.
-            request.state.identity_basis = "unassigned"
-            request.state.caller_key_present = False
-            return Client(
-                name="Unkeyed connection",
-                kind="shared",
-                route_names=[route.name for route in config.routes],
-                allow_cloud=True,
-            )
         try:
             address = ipaddress.ip_address(request.client.host)
         except (ValueError, AttributeError):
@@ -187,7 +174,9 @@ class Identity:
                     continue
         if network_clients:
             network_clients.sort(key=lambda item: item[0], reverse=True)
-            request.state.identity_basis = "source_network"
+            request.state.identity_basis = (
+                "unassigned" if unusable_auth else "source_network"
+            )
             request.state.caller_key_present = False
             return network_clients[0][1]
         anonymous = next(
@@ -205,13 +194,13 @@ class Identity:
                 for n in anonymous.source_networks
             )
         ):
-            request.state.identity_basis = "shared_access"
+            request.state.identity_basis = "unassigned" if unusable_auth else "shared_access"
             request.state.caller_key_present = False
             return anonymous
         # Observation is intentionally independent from policy creation.  An
         # unkeyed request receives a transient routing identity; it is never
         # persisted as a permission policy and route gates still apply later.
-        request.state.identity_basis = "shared_access"
+        request.state.identity_basis = "unassigned" if unusable_auth else "shared_access"
         request.state.caller_key_present = False
         return Client(
             name="Unkeyed connection",
