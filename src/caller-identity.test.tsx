@@ -52,6 +52,20 @@ it("normalizes a legacy generic transport label without hiding its evidence", ()
   expect(callerSummary(legacy)).toContain("Python requests 2.33.0");
 });
 
+it("normalizes every backend-known generic transport in legacy rows", () => {
+  for (const name of ["node-fetch/2.6.7", "Go-http-client/1.1"]) {
+    const legacy = {
+      ...caller,
+      name,
+      software: name,
+      client_family: undefined,
+      client_version: undefined,
+      identity_quality: undefined,
+    };
+    expect(callerDisplayName(legacy)).toBe("Unidentified caller");
+  }
+});
+
 it("shows evidence needed to identify an otherwise generic transport", () => {
   render(<CallerIdentity caller={caller} />);
 
