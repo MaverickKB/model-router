@@ -126,7 +126,7 @@ class Identity:
         config = self.store.config()
         auth = request.headers.get("Authorization", "")
         unusable_auth = bool(auth)
-        if auth and auth.startswith("Bearer "):
+        if auth and auth[:7].casefold() == "bearer ":
             # A number of OpenAI-compatible clients always send an API-key
             # header, even when the operator has not configured caller keys.
             # Resolve usable keys here, but let an unusable header continue
