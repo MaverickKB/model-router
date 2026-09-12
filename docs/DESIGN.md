@@ -1,0 +1,138 @@
+# Ownership and call flow
+
+Operator policy, observed service catalogs, and caller identity are independent inputs to routing. `auto` is a route configuration record. Model IDs and endpoint hosts come from saved configuration and observed catalogs.
+
+```mermaid
+flowchart LR
+    UI[Browser: App and focused editors] -->|versioned settings API| API[app.py: composition]
+    API --> ID[identity.py: optional authentication]
+    API --> DB[(store.py: revisioned policy)]
+    DB --> DP[discovery/policy.json]
+    DP --> JOB[network/collector.py: job lifecycle]
+    JOB --> SWEEP[network/sweep.py: observations]
+    SWEEP --> TCP[network/portable.py or scanner.py]
+    TCP -->|addresses and open ports| SWEEP
+    SWEEP -->|approved HTTP inspection| PROTO[network/protocols.py]
+    PROTO --> ADAPT[adapters: catalog metadata]
+    SWEEP --> REPORT[(discovery/network.json)]
+    REPORT --> REG[discovery.py: scoped admission and refresh]
+    DB --> REG
+    REG --> VIEWS[contracts.py: typed engine views]
+    REPORT --> NV[network/views.py: summary and pages]
+    VIEWS --> NV
+    NV --> API
+    CLIENT[Client: model=auto] --> ID
+    ID --> OBS[callers.py: direct connection evidence]
+    OBS -->|bounded observations| DB
+    OBS --> PROXY[proxy.py: request and connection owner]
+    DB --> ROUTE[routing.py: decide]
+    VIEWS --> ROUTE
+    PROXY --> ROUTE
+    ROUTE -->|candidates and rejection reasons| PROXY
+    PROXY -->|selected provider credential| UPSTREAM[Complete serving endpoint]
+    UPSTREAM -->|response or stream| PROXY
+    PROXY -->|response and receipt| CLIENT
+    PROXY -->|metadata only| DB
+    API --> UI
+```
+
+## Engine identity and the routing map
+
+An engine ID identifies one complete API. `base_url` is its operator-selected request address; `aliases` contains its other known addresses. The UI prefers a configured DNS hostname for display and keeps the editable engine name separate. It does not perform reverse-DNS scans or infer identity from model names. An address registered to one engine cannot belong to another. Unknown duplicate addresses remain separate until the operator explicitly merges them.
+
+```mermaid
+flowchart LR
+    EE[EngineEditor: name and preferred URL] -->|revisioned configuration| STORE[(Store: policy and credentials)]
+    MD[MergeEnginesDialog: source, target, URL, credential] --> API[app.py: reserve both identities]
+    API --> MERGE[engine_identity.py: combine aliases and relink references]
+    MERGE -->|one transaction| STORE
+    STORE --> DISC[discovery.py: alias ownership and catalog]
+    DISC -->|registered alias returns existing ID| SAME[One engine view]
+    STORE --> TOPO[topology.py: saved selectors and routing.decide]
+    SAME --> TOPO
+    TOPO -->|caller to route to engine edges| MAP[RoutesMap.tsx]
+    MAP -->|review and save a link| LINKS[links.ts: policy edit]
+    LINKS --> STORE
+    PROXY[proxy.py: active requests] -->|metadata through state API| MAP
+```
+
+Merge keeps the target engine's ID, name, type, model policy and limits. It unions addresses, rewrites explicit primary/backup and caller engine references, and keeps the chosen source/target credential (or none). Policy and credentials commit together; caches update after commit. A failed write rolls back both. Existing caller keys, access settings and request history keep their identities. An engine with active generations cannot merge; both identities reject new admission while the merge commits and refreshes. The operator waits for active work to finish before retrying. A stale revision fails without changing ownership.
+
+Aliases are not automatic transport fallbacks. Requests use the preferred URL, and a catalog refresh follows that URL. Rediscovering a known alias returns its existing engine without an extra probe or row. The Network view remains an address/service inventory and associates every saved alias with that engine ID and name.
+
+A caller is one existing permission record, named `Client` in the schema and `/clients` API for compatibility. Optional `kind` labels are shared, agent, machine and person. They have no authentication or routing semantics. Settings separately selects the policy used by shared access; a label alone never grants that role. Existing keys remain valid, and creating another policy does not require a key or alter shared access.
+
+`gateway/callers.py` records actual catalog and inference connections with direct peer address, client software, optional self-reported name, permission-policy ID and identity basis. API-key names come from the operator-assigned policy. Forwarding headers and reported names never grant authority. Console tests identify the console as the caller. SQLite retains bounded connection metadata for seven days; neither prompts nor credentials enter it. Existing request history without source metadata remains explicitly unrecorded.
+
+The map contains permission policies as its left column, so it remains useful before any traffic exists. Each policy shows its observed connections inside the policy card. Selecting a policy exposes its allowed routes and every recorded connection. Editing a route permission clearly applies to every connection using that policy.
+
+The map's caller edges use `routing.decide` with a text request and without capacity filtering. Engine edges show saved selector membership, including explicit engines awaiting a matching catalog. Green means an eligible text path; blue marks backups; dashed paths are configured but currently unavailable or restricted. Selecting a caller applies its effective permissions to the highlighted destinations. Tools, images and current capacity can further restrict an actual request, which is stated beside the map. Active request metadata adds counts on the edges and opens the existing request detail view.
+
+Click a caller then a route, or a route then an engine, to review a link. `src/map/links.ts` changes only the selected policy relation. Linking an engine pins that tier and explains the change from automatic selection before saving. Existing model/tag filters and caller permissions remain in effect. Pencil controls and the Details view open the precise policy forms.
+
+## Source owners
+
+| Source | Responsibility and decision |
+|---|---|
+| `gateway/schema.py` | Validates engines, routes, clients, discovery and access settings. The configuration has a schema version and revision. |
+| `gateway/contracts.py` | Defines engine/model views, candidate decisions and rejections at JSON boundaries. |
+| `gateway/engine_identity.py` | Validates explicit API merges and rewrites aliases and policy references without I/O. |
+| `gateway/topology.py` | Derives the live routing map from saved selectors, engine views and the routing kernel. |
+| `gateway/store.py` | Owns SQLite transactions, cached policy reads, credential storage and metadata. Mutating request paths dispatch blocking storage work off the event loop. |
+| `gateway/migration.py` | Preserves installed keys, access choices, observer contracts and scan policy during schema upgrades. |
+| `gateway/security/credentials.py` | Encrypts provider secrets and verifies operator/client keys. The encryption key lives outside the state directory. |
+| `gateway/callers.py` | Records bounded connection evidence after authentication, independently of authorization and routing policy. |
+| `gateway/identity.py` | Resolves bearer keys, persisted browser sessions, or explicitly enabled shared client access. Identity never chooses a model. |
+| `gateway/security/limits.py`, `body_limit.py` | Bound login/registration attempts and management JSON before parsing. |
+| `gateway/routing.py` | Pure policy evaluation: route/direct selection, allowlists, cloud permission, availability, capability requirements and ordering. |
+| `gateway/proxy.py` | Rechecks current policy before every attempt, atomically claims capacity, owns the upstream connection, and records the result. |
+| `gateway/discovery.py` | Refreshes catalogs, expires observations, verifies registration scope and applies automatic admission. |
+| `gateway/adapters/` | Catalog dialects and bounded HTTP metadata. Native enrichment preserves the OpenAI catalog's identity when both exist. |
+| `gateway/network/collector.py` | Schedules identifiable jobs, accepts operator cancellation, and publishes failure/interruption status. |
+| `gateway/network/sweep.py` | Combines TCP observations with explicit HTTP inspection policy. Refreshes known service metadata independently of long sweeps. |
+| `gateway/network/portable.py` | Bounded TCP connect discovery across configured IPv4/IPv6 addresses and ports. Sends no application payload. |
+| `gateway/network/scanner.py` | Optional Nmap process ownership, validated arguments, XML parsing and termination. |
+| `gateway/network/local.py`, `announcements.py` | Optional local-socket and model-service announcement adapters. Missing permissions/dependencies stay visible. |
+| `gateway/network/report.py` | Atomic policy, job request and report files. No credentials in this interface. |
+| `gateway/network/views.py` | Small status summaries and paginated inventories, merged with fresh authenticated engine catalogs. |
+| `gateway/app.py` | Constructs dependencies, owns HTTP routes and service lifetime, and serves built assets. |
+| `src/App.tsx`, `useRouterState.ts` | Navigation, action coordination and cancellable polling without overlapping scheduled requests. |
+| `src/views/`, `EngineCard.tsx` | Focused activity, route, client, connection and request-detail views. |
+| `src/editors/` | Separate engine, route, client and discovery editors with stale-draft checks. |
+| `src/settings/AccessSettings.tsx` | Authentication switches, shared permissions and sessions. |
+| `src/settings/SettingsSummary.tsx` | Explains saved access, scope, inspection and admission independently of form drafts. Canonical management address comes from server state. |
+| `src/caller-identity.tsx` | Presents observed source, software, identity basis and the assigned policy without claiming a shared connection is an individual agent. |
+| `src/engine-addresses.ts` | Combines saved URLs and chooses a configured hostname for display. |
+| `src/editors/MergeEnginesDialog.tsx` | Makes the surviving engine, preferred address and credential choice explicit. |
+| `src/map/RoutesMap.tsx`, `links.ts` | Draws live policy relationships and active jobs; saves reviewed links through the configuration API. |
+| `src/network/` | Evidence, search, paging, inspection status and job cancellation. |
+
+## A request
+
+`Identity.identify` resolves one client. An explicitly supplied invalid key fails even when shared access is enabled. A valid key may also have source restrictions. Without a key, optional-key mode selects the most specific enabled network policy, then the configured shared policy.
+
+`decide` evaluates each current engine/model against the client's route, engine, model and cloud permissions. Route names take precedence over model IDs; the console warns when they collide. Raw model access requires explicit permission and an exact ID. Required capabilities and explicit unsupported options exclude candidates. Optional route defaults fill absent options and may be skipped where unsupported.
+
+Primary candidates precede fallback candidates. Ordered routes follow the configured engine list. Least-busy routes compare this process's active requests to configured admission limits. Distributed engine members are descriptive membership, never independent failover candidates.
+
+Before each attempt, `Proxy.dispatch` reads current policy and identity again. `InflightRequest.claim` checks and increments capacity synchronously, without yielding. Each endpoint/model pair is attempted once. The connection owner releases capacity after completion, cancellation or failure. Stream cancellation shields final metadata and upstream cleanup from Starlette's repeated cancellation at await points. Capacity is released after the connection closes, including when closure raises. This follows [AnyIO's finalization contract](https://anyio.readthedocs.io/en/stable/cancellation.html#finalization).
+
+Selected transient failures can try another permitted candidate before any stream has been delivered. A 404 causes a catalog refresh; retry is justified only when that fresh catalog shows the requested model disappeared. Other 404 responses pass through. Once streaming begins, failure ends the stream with an error and never splices in a backup answer. Non-stream responses and management requests have size bounds. Cooldowns and upstream response limits are operator settings.
+
+## Discovery and trust
+
+The collector reads `policy.json` and writes `network.json` under the discovery directory. It never changes routes or credentials. The gateway reads observations, validates each advertised URL against current discovery scope, probes its catalog, and applies registration policy. A report-file entry alone cannot grant availability.
+
+Open ports and HTTP inspection have separate policies. Complete TCP coverage can be enabled independently of inspection. HTTP requests go only to approved ports unless the operator enables broad inspection. Unknown, protected and non-chat services remain visible. Nmap port labels never prove a protocol. Router provenance uses the explicit catalog extension `model_serving: {version: 1, kind: "router"}`; owner names have no provenance authority. Undeclared relays cannot be proven to be backing engines, so automatic registration requires a trusted operator-selected scope.
+
+Every job has an ID and a state. Overlapping Discover requests return the queued/running job rather than a false new success. Cancellation and policy changes end the current job. A new job rechecks its configured scope; there are no partial-report resume heuristics. Previous observations retain timestamps during a sweep. A filtered or silent address is inconclusive, not proof of absence.
+
+The default worker runs inside the gateway using portable TCP connections. To run the optional external worker, set `MODEL_ROUTER_DISCOVERY_WORKER=external` on the gateway and launch `python -m gateway.network.collector --state <discovery-directory>` under the chosen service account. `MODEL_ROUTER_DISCOVERY_STATE` selects that directory. Only the optional Nmap SYN mode needs raw-packet capability. Give an external worker access to discovery files, not the router database or encryption key. Service management must ensure one worker owns this directory.
+
+Registered catalogs refresh independently. Failed probes clear current models, stale observations become unroutable, and a generation check prevents an old response from overwriting a newer probe or edited endpoint. Network views use authenticated registered observations when an anonymous inspection disagrees.
+
+## Persistence and restart
+
+SQLite owns durable configuration, credentials, sessions and request metadata. Configuration reads use a cached immutable copy. File and SQLite writes run outside the request event loop. Provider secrets are encrypted; operator/client verifiers are separately salted. Legacy client digests upgrade on successful use of the same key. Unused legacy keys remain valid until explicitly revoked.
+
+Browser cookies contain random session tokens; only their hashes and expirations are persisted. Restart preserves sessions and settings while rebuilding catalog observations. Active generations and capacity counters belong to one process, so a restart interrupts those generations. Shared admission and high availability remain open work.

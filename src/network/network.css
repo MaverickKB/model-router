@@ -1,0 +1,243 @@
+.network-summary {
+  display: flex;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  margin: 22px 0;
+  padding: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: #aaa;
+}
+.network-summary > span {
+  flex: 1;
+}
+.network-summary strong {
+  display: block;
+  color: #d0d0d0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.network-summary small {
+  display: block;
+  color: #777;
+  font-size: 10px;
+  margin-top: 5px;
+}
+.network-view {
+  max-width: 1160px;
+  margin: auto;
+  padding: 0 0 40px;
+}
+.network-progress {
+  margin: 26px 0 20px;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.network-progress > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.network-progress strong {
+  font-weight: 500;
+  font-size: 12px;
+}
+.network-progress span,
+.network-progress p {
+  color: #858585;
+  font-size: 11px;
+}
+.network-progress p {
+  margin-top: 9px;
+  line-height: 1.6;
+}
+.network-progress progress {
+  width: 100%;
+  height: 3px;
+  accent-color: var(--green);
+  margin-top: 14px;
+}
+.network-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+.network-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 230px;
+  color: #777;
+}
+.network-search input {
+  font-size: 11px;
+  padding: 8px;
+}
+.network-host {
+  border-bottom: 1px solid var(--line);
+}
+.host-heading {
+  display: flex;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 19px 0;
+  text-align: left;
+  gap: 15px;
+  justify-content: flex-start;
+}
+.host-heading > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.host-heading strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.host-heading small {
+  display: block;
+  font-size: 10px;
+  color: #777;
+  font-weight: 400;
+  margin-top: 5px;
+}
+.host-heading > svg:first-child {
+  color: #7899ad;
+}
+.host-count {
+  font-size: 11px;
+  font-weight: 400;
+  text-align: right;
+}
+.host-services {
+  padding: 0 0 20px 36px;
+}
+.network-service {
+  padding: 15px 0;
+  border-top: 1px solid #ffffff0b;
+}
+.service-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+}
+.service-heading strong {
+  font-size: 11px;
+  font-weight: 500;
+  color: #aaa;
+}
+.service-heading small {
+  display: block;
+  color: #777;
+  font-size: 10px;
+  margin-top: 5px;
+}
+.network-model {
+  padding: 12px 0 0;
+}
+.network-model strong {
+  display: block;
+  font-weight: 450;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.network-model span,
+.network-service p {
+  display: block;
+  color: #808080;
+  font-size: 10px;
+  line-height: 1.6;
+  margin-top: 4px;
+}
+.network-model-preview {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin: -5px 0 18px 36px;
+}
+.network-model-preview span {
+  padding: 4px 7px;
+  background: #ffffff05;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 10px;
+  color: #999;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .network-toolbar {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .network-search {
+    width: 100%;
+  }
+  .host-count {
+    max-width: 120px;
+  }
+  .network-view .section-heading {
+    align-items: flex-start;
+  }
+  .host-services {
+    padding-left: 0;
+  }
+  .service-heading {
+    align-items: flex-start;
+  }
+  .network-summary small {
+    line-height: 1.6;
+  }
+  .host-heading strong {
+    overflow-wrap: anywhere;
+  }
+}
+
+.network-toolbar .filter-tabs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.network-toolbar .filter-tabs button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 3px;
+  color: #858585;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.network-toolbar .filter-tabs button.selected {
+  color: #eee;
+  border-bottom-color: var(--green);
+}
+.network-progress progress {
+  appearance: none;
+  border: 0;
+  background: #ffffff0a;
+  border-radius: 2px;
+}
+.network-progress progress::-webkit-progress-bar {
+  background: #ffffff0a;
+  border-radius: 2px;
+}
+.network-progress progress::-webkit-progress-value {
+  background: var(--green);
+  border-radius: 2px;
+}
+@media (max-width: 1000px) {
+  .network-toolbar {
+    flex-direction: column;
+    gap: 12px;
+  }
+  .network-search {
+    width: 100%;
+  }
+}

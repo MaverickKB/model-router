@@ -1,0 +1,27 @@
+[Unit]
+Description=Model Router network discovery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@PROJECT@
+# Discovery files only. This directory must not contain router.db or credentials.
+ExecStart=@PROJECT@/.venv/bin/python -m gateway.network.collector --state @DISCOVERY_STATE@
+Restart=on-failure
+RestartSec=5
+# Portable TCP discovery needs no packet capability. For optional Nmap SYN mode,
+# add --privileged above and CAP_NET_RAW to both capability settings below.
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DISCOVERY_STATE@
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

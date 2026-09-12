@@ -1,0 +1,1 @@
+<nmaprun><host><status state="up" reason="syn-ack"/><address addr="2001:db8::17" addrtype="ipv6"/><ports><port protocol="tcp" portid="65535"><state state="open"/></port></ports></host><runstats><finished exit="success"/></runstats></nmaprun>

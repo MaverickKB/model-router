@@ -1,0 +1,255 @@
+.routes-map {
+  padding: 6px 0 30px;
+}
+.map-intro {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+}
+.map-intro h2 {
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0 0 9px;
+}
+.map-intro p {
+  color: #999;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+}
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  margin: 25px 0 22px;
+  color: #aaa;
+  font-size: 11px;
+}
+.map-legend span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.map-legend i {
+  display: block;
+  width: 20px;
+  border-top: 2px solid #a5df08;
+}
+.map-legend .backup i {
+  border-color: #62a8dd;
+}
+.map-legend .waiting i {
+  border-top: 2px dashed #666;
+}
+.map-scroll {
+  overflow-x: auto;
+  padding: 5px 0 20px;
+}
+.route-map-board {
+  min-width: 640px;
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+}
+.route-map-board > svg {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+  overflow: visible;
+}
+.map-column {
+  width: 28%;
+  z-index: 1;
+  pointer-events: none;
+}
+.map-column h3 {
+  height: 50px;
+  margin: 0;
+  font-weight: 500;
+  font-size: 13px;
+  color: #aaa;
+}
+.map-node {
+  min-height: 84px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  background: #17191a;
+  border: 1px solid #ffffff18;
+  border-radius: 9px;
+  pointer-events: auto;
+  transition: border-color 100ms ease;
+}
+.map-node.selected {
+  border-color: #a5df08;
+  background: #20251a;
+}
+.map-node.disabled {
+  opacity: 0.55;
+}
+.map-node-select {
+  border: 0;
+  background: none;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px;
+  text-align: left;
+}
+.map-node-select > svg {
+  flex-shrink: 0;
+  color: #9aa7b2;
+}
+.map-node-select span {
+  min-width: 0;
+}
+.map-node strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.map-node small {
+  display: block;
+  font-size: 10px;
+  color: #9aa0a4;
+  margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.map-node .map-observations {
+  margin-top: 5px;
+  color: #cbd7c2;
+  white-space: normal;
+}
+.map-observations span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.map-node .icon-button {
+  flex-shrink: 0;
+  width: 24px;
+  margin-right: 5px;
+}
+.map-edge path {
+  fill: none;
+  stroke: #a5df08;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.7;
+}
+.map-edge.backup path {
+  stroke: #62a8dd;
+}
+.map-edge.waiting path {
+  stroke: #666;
+  stroke-dasharray: 4 5;
+}
+.map-edge.dim {
+  opacity: 0.17;
+}
+.map-edge.active path {
+  stroke-width: 2.6;
+  stroke-dasharray: 6 5;
+  animation: map-flow 1.2s linear infinite;
+  opacity: 1;
+}
+.map-edge text {
+  fill: #ddd;
+  font-size: 10px;
+}
+.map-empty {
+  color: #888;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.map-reasons {
+  font-size: 12px;
+  color: #999;
+}
+.map-reasons strong {
+  color: #ddd;
+  margin-right: 12px;
+}
+.map-jobs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.map-jobs button {
+  font-size: 11px;
+}
+.routes-workspace > .activity-rail {
+  display: none;
+}
+.routes-workspace main {
+  padding-left: 0;
+}
+.routes-mode {
+  margin-bottom: 26px;
+  display: flex;
+  gap: 8px;
+}
+.engine-addresses {
+  border-bottom: 1px solid var(--line);
+  padding: 0 0 16px;
+  margin-bottom: 16px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.engine-addresses strong {
+  color: #aaa;
+  font-weight: 500;
+}
+.engine-addresses p {
+  margin: 7px 0 14px;
+}
+@keyframes map-flow {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .map-edge.active path {
+    animation: none;
+  }
+}
+
+.caller-identity {
+  margin: 24px 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.caller-identity h3 {
+  font-size: 17px;
+  font-weight: 500;
+}
+.caller-identity p {
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.caller-identity dl {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 10px 18px;
+  font-size: 12px;
+}
+.caller-identity dt {
+  color: #92999e;
+}
+.caller-identity dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

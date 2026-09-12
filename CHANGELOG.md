@@ -1,0 +1,18 @@
+# Changes
+
+## 0.3.0
+
+- Observed caller connections, source addresses and identification evidence, separate from permission policies; console tests keep their own identity.
+- Cancellation-safe request history and upstream cleanup; text maps exclude speech-only catalogs.
+
+- One engine identity with editable name, preferred URL, saved aliases and explicit transactional merge of references and selected credentials.
+- One caller policy with optional shared, agent, machine or person labels; existing optional access and keys stay intact.
+- Live caller/route/engine map with reviewed click-to-link edits, effective permission paths, precise forms and active request metadata.
+- Targeted engine catalog refresh after add/edit, without refreshing unrelated providers.
+
+- Optional operator and client authentication in Settings, with access-preserving migration and persistent sessions.
+- Saved access/discovery summaries, retained-setting notices after upgrade, and matching database/encryption-key backup guidance.
+- Encrypted provider credentials, salted key verification, bounded management requests and login attempts.
+- Program-owned portable discovery, explicit HTTP inspection/admission, identifiable jobs, cancellation and paginated inventories.
+- Catalog adapters, typed routing boundaries, response limits and explicit admission ownership.
+- Focused UI modules, interaction coverage, versioned management API and operational documentation.

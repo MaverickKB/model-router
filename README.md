@@ -1,0 +1,86 @@
+# Model Router
+
+An operator console and OpenAI-compatible chat gateway. Clients keep one endpoint and a stable route such as `auto` while serving models change. Operators configure engine selection, purpose routes, cloud backups, and each caller's permissions in the browser.
+
+The interface takes visual and workflow cues from NVIDIA PAIR. Attribution and the applicable third-party license are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The project is licensed under [Apache License 2.0](LICENSE).
+
+## Run a separate test drive
+
+Requirements: Python 3.11+, uv, Node.js 22.12+ and npm.
+
+```sh
+uv sync --frozen
+npm ci
+npm run build
+uv run uvicorn gateway.app:create_app --factory --host 127.0.0.1 --port 8690 --no-proxy-headers --no-access-log
+```
+
+Open `http://localhost:8690`. A fresh installation creates an operator key in `state/operator-bootstrap.key`. Enter it once. Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
+
+1. Connect a serving engine by its OpenAI-compatible base URL. Provider credentials stay on the server. New cloud connections require explicit model selection.
+2. Configure `auto` or add a purpose route. Routes opens a policy-to-route-to-engine map immediately, then nests observed connections under each permission policy as traffic arrives. Click adjacent nodes to link them; use Details for model patterns, tags, ordering, and optional defaults.
+3. Start with shared caller access, then add caller policies as needed. Each has permitted routes, engines, models, cloud access and an optional shared/agent/machine/person label. Labels do not change permissions. Separate keys are additive; existing keys keep their values on upgrade.
+4. Point the client at this router's `/v1` endpoint and use its route name. The gateway chooses from fresh catalogs and records its decision.
+
+## Identify actual callers
+
+The Callers page lists observed connections separately from their permission policies. A policy's existence does not claim an agent is connected. Dedicated keys identify the operator-named caller; optional-key connections show the direct source address and reported client software. Reported names and forwarding headers never grant access. Console route tests identify the console explicitly. A shared key/address cannot distinguish every process behind it; dedicated keys are additive when individual identity is needed.
+
+## One engine, many addresses
+
+Name each API once. Engine settings holds the editable name, preferred request URL and aliases. The engine row shows a configured hostname when available. To combine duplicate LAN, overlay, loopback or DNS rows, expand a row and choose **Merge duplicate engine**. Select the surviving engine, preferred URL and credential. Explicit route and caller references follow the surviving engine. Rediscovery of any saved alias returns that same engine.
+
+A merge preserves the surviving engine's model policy and limits. It requires both engines to have finished active requests. Requests use the preferred URL; aliases do not count as extra capacity or independent backups.
+
+## Access is optional
+
+**Settings > Access** has separate switches for **Operator sign-in** and **Require caller API keys**. They take effect when saved, without restarting the service.
+
+When operator sign-in is off, configured trusted source networks can manage the console through its canonical URL or loopback tunnel. Same-origin checks still protect browser writes. `MODEL_ROUTER_PUBLIC_URL` declares the canonical external URL. Keep sign-in enabled when exposing an administrative listener beyond trusted operators.
+
+When client keys are optional, a matching source-specific client policy takes priority. Other callers use the selected shared policy. The UI can create a shared `auto` policy restricted to local models. A supplied key always selects its own client; an invalid key is rejected. Optional keys do not remove route or model permissions.
+
+Enabling sign-in keeps the current browser signed in. Generating a replacement operator key preserves this browser, revokes other operator sessions, and leaves all agent keys unchanged. Requiring client keys is an explicit operator choice: callers using shared access will then need a key. Upgrades preserve installed access modes rather than silently enabling that requirement.
+
+Settings identifies installations upgraded from the earlier schema and shows the saved access and discovery mode separately from unsaved edits. Inherited broad inspection and automatic registration stay enabled until you choose otherwise. With sign-in off, everyone using the trusted management boundary shares administrative authority. Scoped endpoint registration also remains open, independently of scheduled sweeps; automatic registration determines whether new endpoints become engines.
+
+Back up the database and its matching external encryption key. Restore that key before starting a restored database. [Credential backup and restore](docs/THREAT_MODEL.md#back-up-and-restore-credentials) explains the key location, consistent SQLite backups and the effect of losing the key.
+
+## Discovery belongs to the application
+
+Fresh installations have automatic discovery, automatic registration, and mDNS disabled. Settings selects targets, complete TCP ranges, attempt rate, address budget, and sweep timing. `8000-8100` is the initial editable range; `1-65535` enables full TCP coverage.
+
+The portable TCP scanner needs no external binary or packet privileges. It inventories open ports without sending application payloads. HTTP catalog inspection runs on explicitly approved ports, or across every open port when **Inspect all open ports as HTTP** is enabled. Choose that broader mode only for services which can safely receive HTTP requests. Every observed open port remains visible, including unverified and credential-protected surfaces.
+
+Discovery and admission are separate switches. Automatic registration trusts recognized endpoints in the selected scope to receive client requests. With it off, discovered catalogs remain available for operator connection. Every admitted engine still passes client permissions. The Discover action creates an identifiable job; Network shows progress, incomplete responses, failures, and cancellation.
+
+Optional adapters:
+
+```sh
+uv sync --frozen --extra discovery
+```
+
+This enables loopback-listener inventory through psutil and scoped `_model-serving._tcp.local.` announcements through zeroconf. The Nmap scanner is separately installed and selected in Settings. Missing dependencies and denied inventory permissions appear as errors or warnings. [Architecture](docs/DESIGN.md) explains worker ownership and the external-worker option.
+
+## Protocol and operating scope
+
+Chat transport supports `/v1/chat/completions` and `/v1/completions`, including streaming, tool and image message payloads when the selected model declares those capabilities. Catalog adapters support OpenAI-compatible and native Ollama metadata. Observed speech, embedding, transcription and image-generation surfaces remain visible in Network, labelled as inventory when chat routing is unavailable. Transport for those operations is open work, not an advertised capability.
+
+The current service is one process. Requests have admission limits and explicit connection ownership; restarts interrupt in-flight work. Multi-process admission and high availability require further work. A catalog proves advertisement, not inference success. Per-user memory injection also remains open work.
+
+The versioned management API is `/api/v1`; `/api` remains an installed-client alias. OpenAPI is at `/openapi.json`.
+
+## Verification and review
+
+```sh
+uv run python -m pytest -q
+uv run ruff check gateway tests
+npm run test:ui
+npm run build
+```
+
+Tests use controlled HTTP services, loopback sockets and scanner-process fixtures. They do not initiate LAN scans, exercise a real cloud account, establish visual acceptance, or authorize deployment. [DESIGN.md](docs/DESIGN.md) records ownership and flow. [THREAT_MODEL.md](docs/THREAT_MODEL.md) records the access, discovery and credential assumptions.
+
+## Contributing
+
+Issues and pull requests are welcome. Start with the focused tests for the area you change, then run the complete verification commands above. Keep endpoint addresses, provider credentials and runtime state in local configuration; do not commit them.
