@@ -1,5 +1,6 @@
 """Operator endpoints manage accounts and activation links; secrets are issued once."""
 
+import asyncio
 import hashlib
 import json
 import time
@@ -36,11 +37,17 @@ TABLES = (
 class Fleet:
     def __init__(self):
         self.calls = 0
+        self.hold: tuple[asyncio.Event, asyncio.Event] | None = None
 
     async def handle(self, request):
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "local-model"}]})
         self.calls += 1
+        if self.hold:
+            # Park the completion so a test can act while it is in flight.
+            entered, release = self.hold
+            entered.set()
+            await release.wait()
         body = json.loads(request.content)
         return httpx.Response(
             200,
@@ -289,6 +296,10 @@ async def test_suspended_pending_account_returns_to_pending_and_activates(tmp_pa
         restored = await http.put(path, json={"status": "active"})
         assert restored.status_code == 200
         assert restored.json()["account"]["status"] == "pending"
+        # The link issued before suspension stays dead; a fresh one is required.
+        assert restored.json()["account"]["activation_pending"] is False
+        assert harness.store.activation_for(account["id"]) is None
+        assert harness.activate(first["token"]) is None
         link = await http.post(f"{path}/activation")
         assert link.status_code == 200
         assert harness.store.activation_for(account["id"])["purpose"] == "activate"
@@ -355,6 +366,36 @@ async def test_delete_account_cascades_via_api(tmp_path):
         assert not any(harness.rows(account_id).values())
         assert (await http.get(f"/api/v1/accounts/{account_id}")).status_code == 404
         assert (await http.delete(f"/api/v1/accounts/{account_id}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_during_in_flight_request_records_no_usage(tmp_path):
+    harness = await build(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+    harness.fleet.hold = (entered, release)
+    async with harness.operator() as http:
+        account, activation = await harness.add_account(http)
+        account_id = account["id"]
+        assert harness.activate(activation["token"]) == account_id
+        key, _ = harness.store.create_account_key(account_id, "laptop")
+        async with harness.caller(key) as caller:
+            pending = asyncio.create_task(
+                caller.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "private",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            deleted = await http.delete(f"/api/v1/accounts/{account_id}")
+            assert deleted.status_code == 200
+            release.set()
+            completed = await pending
+    assert completed.status_code == 200
+    assert not any(harness.rows(account_id).values())
+    assert harness.store.open_usage_windows(time.time()) == []
 
 
 @pytest.mark.asyncio

@@ -165,8 +165,10 @@ def admin_router(store: Store, identity, discovery, proxy) -> APIRouter:
                     422, "Activate the account with its link before enabling it"
                 )
             # Suspended before it was ever activated: re-enabling returns the
-            # account to pending so the operator can issue an activation link.
+            # account to pending. The link issued before suspension is voided
+            # first so it is never live again; the operator issues a fresh one.
             status = "pending"
+            await asyncio.to_thread(store.clear_activation, account_id)
         try:
             updated = await asyncio.to_thread(
                 store.update_account,
