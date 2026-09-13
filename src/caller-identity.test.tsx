@@ -111,3 +111,26 @@ it("shows evidence needed to identify an otherwise generic transport", () => {
   expect(screen.getByText("SDK language")).toBeVisible();
   expect(screen.getByText(/library identifies the transport/)).toBeVisible();
 });
+
+it("describes unknown credentials as identity evidence rather than a refused request", () => {
+  render(
+    <CallerIdentity caller={{ ...caller, identity_basis: "unassigned" }} />,
+  );
+
+  expect(
+    screen.getByText(
+      /supplied credentials did not identify a named permission policy/,
+    ),
+  ).toBeVisible();
+  expect(screen.getByText(/Route settings determine access/)).toBeVisible();
+  expect(screen.getByText("Last observed identity")).toBeVisible();
+  expect(screen.getByText("No named policy identified")).toBeVisible();
+  expect(
+    screen.queryByText(/No configured permission policy accepted/),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /Application labels and client metadata are self-reported/,
+    ),
+  ).toBeVisible();
+});

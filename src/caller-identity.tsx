@@ -56,7 +56,7 @@ function parsedSoftware(software: string) {
   return { family, version: match[2] || "" };
 }
 
-function clientLabel(caller: ObservedCaller) {
+export function callerClientLabel(caller: ObservedCaller) {
   if (caller.client_family && caller.client_version) {
     return `${caller.client_family} ${caller.client_version}`;
   }
@@ -83,7 +83,7 @@ export function callerDisplayName(caller: ObservedCaller) {
 }
 
 export function callerSummary(caller: ObservedCaller) {
-  return `${peer(caller)} · ${clientLabel(caller)}`;
+  return `${peer(caller)} · ${callerClientLabel(caller)}`;
 }
 
 export function identityExplanation(caller: ObservedCaller) {
@@ -95,7 +95,7 @@ export function identityExplanation(caller: ObservedCaller) {
     case "shared_access":
       return "No caller key was supplied. The direct connection and client metadata are recorded, while any application label is self-reported.";
     case "unassigned":
-      return "No configured permission policy accepted this request. The direct connection evidence is retained so the request can be reviewed.";
+      return "The supplied credentials did not identify a named permission policy. Route settings determine access; this identity state alone does not mean a request was refused.";
     default:
       return "This connection was created by a route test in the operator console.";
   }
@@ -121,14 +121,14 @@ export function CallerIdentity({
       <h3>{callerDisplayName(caller)}</h3>
       <p>{identityExplanation(caller)}</p>
       <dl>
-        <dt>Identity evidence</dt>
+        <dt>Last observed identity</dt>
         <dd>
           {QUALITY_LABELS[quality]} · {caller.identity_basis}
         </dd>
         <dt>Direct peer</dt>
         <dd>{peer(caller)}</dd>
         <dt>Client library</dt>
-        <dd>{clientLabel(caller)}</dd>
+        <dd>{callerClientLabel(caller)}</dd>
         {caller.client_runtime && (
           <>
             <dt>Runtime</dt>
@@ -158,8 +158,8 @@ export function CallerIdentity({
             </dd>
           </>
         )}
-        <dt>Permissions</dt>
-        <dd>{policy?.name || "No permission policy assigned"}</dd>
+        <dt>Named policy on last request</dt>
+        <dd>{policy?.name || "No named policy identified"}</dd>
         <dt>Requests observed</dt>
         <dd>{caller.request_count ?? 1}</dd>
         <dt>First seen</dt>
@@ -195,8 +195,8 @@ export function CallerIdentity({
       )}
       <p className="hint">
         A Python or HTTP library identifies the transport, not the person or
-        agent using it. A self-reported label helps an operator recognize a
-        connection, while a caller key is what selects named permissions.
+        agent using it. Application labels and client metadata are self-reported
+        and do not grant access.
       </p>
     </section>
   );

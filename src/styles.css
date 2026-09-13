@@ -867,6 +867,45 @@ code {
   margin-top: 5px;
   line-height: 1.5;
 }
+.caller-source {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.caller-source button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 8px;
+  gap: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #c7c7c7;
+  text-align: left;
+}
+.caller-source button:hover,
+.caller-source button.selected {
+  background: #ffffff09;
+}
+.caller-source button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+.caller-source-toggle svg {
+  flex-shrink: 0;
+  transition: transform 120ms;
+}
+.caller-source-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.caller-source-observations {
+  border-left: 1px solid var(--line);
+  margin: 0 0 12px 8px;
+  padding-left: 8px;
+}
+.caller-source-observations button.selected {
+  border-color: var(--green);
+}
 .caller-summary {
   overflow-wrap: anywhere;
 }

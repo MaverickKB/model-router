@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 
+from .caller_records import caller_id, merge_observations
 from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
 from .network.report import write_json
@@ -81,6 +82,7 @@ class Store:
                 "SELECT setup_complete FROM installation WHERE id=1"
             ).fetchone()[0]
         )
+        self._migrate_callers()
         self.publish_discovery_policy()
         self._secrets = {}
         migrated = False
@@ -200,6 +202,7 @@ class Store:
             )
             if config.revision != current.revision:
                 raise Conflict("Settings changed elsewhere. Refresh before saving.")
+            config.validate_endpoint_changes(current)
             config = config.model_copy(
                 update={
                     "revision": current.revision + 1,
@@ -295,13 +298,23 @@ class Store:
             self._key_owners.add(client_id)
 
     def key_client(self, key: str) -> str | None:
+        lookup = self.cipher.lookup(key)
         with self.lock:
             row = self.db.execute(
                 "SELECT verifier, client_id FROM client_credentials WHERE lookup=?",
-                (self.cipher.lookup(key),),
+                (lookup,),
             ).fetchone()
         if row:
-            return row[1] if verify(row[0], key) else None
+            if not verify(row[0], key):
+                return None
+            # Verification is expensive and must not hold up other requests.
+            # Revocation or reassignment during that work invalidates this read.
+            with self.lock:
+                current = self.db.execute(
+                    "SELECT verifier, client_id FROM client_credentials WHERE lookup=?",
+                    (lookup,),
+                ).fetchone()
+                return row[1] if current == row else None
         # Existing high-entropy API keys remain valid. On their first successful
         # use, replace the legacy verifier without changing the caller's key.
         old_digest = hashlib.sha256(key.encode()).hexdigest()
@@ -311,11 +324,27 @@ class Store:
                 (old_digest,),
             ).fetchone()
         if legacy and hmac.compare_digest(legacy[0], old_digest):
-            self.add_key(legacy[1], key)
+            verifier = digest(key)
             with self.lock:
-                self.db.execute("DELETE FROM client_keys WHERE digest=?", (old_digest,))
-                self.db.commit()
-            return legacy[1]
+                with self.db:
+                    self.db.execute("BEGIN IMMEDIATE")
+                    current = self.db.execute(
+                        "SELECT digest, client_id FROM client_keys WHERE digest=?",
+                        (old_digest,),
+                    ).fetchone()
+                    modern = self.db.execute(
+                        "SELECT lookup FROM client_credentials WHERE lookup=?",
+                        (lookup,),
+                    ).fetchone()
+                    if current != legacy or modern:
+                        return None
+                    self.db.execute(
+                        "INSERT INTO client_credentials VALUES (?, ?, ?)",
+                        (lookup, verifier, legacy[1]),
+                    )
+                    self.db.execute("DELETE FROM client_keys WHERE digest=?", (old_digest,))
+                self._key_owners.add(legacy[1])
+                return legacy[1]
         return None
 
     def revoke_keys(self, client_id: str):
@@ -350,33 +379,57 @@ class Store:
                 )
             ]
 
+    def _migrate_callers(self):
+        """Consolidate old auth-dependent IDs without rewriting request events."""
+        with self.lock, self.db:
+            # Another process may open the store while requests are arriving.
+            # Reserve the write transaction before reading so no row is lost.
+            self.db.execute("BEGIN IMMEDIATE")
+            rows = self.db.execute(
+                "SELECT id, body FROM callers ORDER BY seen, id"
+            ).fetchall()
+            merged = {}
+            changed = False
+            for old_id, body in rows:
+                caller = json.loads(body)
+                identifier = caller_id(caller)
+                changed |= old_id != identifier or caller.get("id") != identifier
+                caller["id"] = identifier
+                if identifier in merged:
+                    changed = True
+                    caller = merge_observations(merged[identifier], caller)
+                merged[identifier] = caller
+            if changed:
+                self.db.execute("DELETE FROM callers")
+                self.db.executemany(
+                    "INSERT INTO callers VALUES (?, ?, ?)",
+                    [
+                        (row["id"], row["last_seen"], json.dumps(row))
+                        for row in merged.values()
+                    ],
+                )
+
     def observe_caller(self, caller: dict):
         with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
             previous_row = self.db.execute(
                 "SELECT body FROM callers WHERE id=?", (caller["id"],)
             ).fetchone()
             if previous_row:
-                previous = json.loads(previous_row[0])
-                caller["first_seen"] = previous.get(
-                    "first_seen", previous.get("last_seen", caller["first_seen"])
-                )
-                try:
-                    previous_count = int(previous.get("request_count", 1))
-                except (TypeError, ValueError):
-                    previous_count = 1
-                caller["request_count"] = max(previous_count, 1) + 1
-                stored_ports = previous.get("recent_source_ports", [])
-                ports = list(stored_ports) if isinstance(stored_ports, list) else []
+                stored = merge_observations(json.loads(previous_row[0]), caller)
             else:
-                ports = []
-            source_port = caller.get("source_port")
-            if source_port is not None:
-                ports = [port for port in ports if port != source_port]
-                ports.append(source_port)
-            caller["recent_source_ports"] = ports[-8:]
+                stored = dict(caller)
+                source_port = caller.get("source_port")
+                stored["recent_source_ports"] = (
+                    [source_port] if source_port is not None else []
+                )
+            # Events describe this request even if a later observation has
+            # already arrived. Only aggregate history is shared back with it.
+            for field in ("first_seen", "request_count", "recent_source_ports"):
+                caller[field] = stored[field]
             self.db.execute(
                 "INSERT OR REPLACE INTO callers VALUES (?, ?, ?)",
-                (caller["id"], caller["last_seen"], json.dumps(caller)),
+                (stored["id"], stored["last_seen"], json.dumps(stored)),
             )
             self.db.execute(
                 "DELETE FROM callers WHERE seen < ?", (time.time() - 7 * 86400,)

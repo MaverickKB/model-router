@@ -46,10 +46,10 @@ def _hostname_alias(base_url: str, hostname: str | None) -> str | None:
         pass
     else:
         return None
-    parts = urlsplit(base_url)
-    host = f"[{value}]" if ":" in value else value
-    netloc = host + (f":{parts.port}" if parts.port is not None else "")
     try:
+        parts = urlsplit(base_url)
+        host = f"[{value}]" if ":" in value else value
+        netloc = host + (f":{parts.port}" if parts.port is not None else "")
         return Engine.validate_url(
             urlunsplit((parts.scheme, netloc, parts.path, "", ""))
         )
@@ -172,21 +172,20 @@ class DiscoveryService:
             obs.status = "draining" if engine.draining else "available"
             obs.error = ""
             obs.latency_ms = round((time.monotonic() - started) * 1000)
-        except (httpx.HTTPError, ValueError, TypeError) as exc:
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError) as exc:
             if not current_probe():
                 return
             obs.status = "offline"
             obs.models = []
             # Only class/status is retained. Upstream bodies and credentials are not logged.
-            obs.error = (
-                f"Catalog HTTP {exc.response.status_code}"
-                if isinstance(exc, httpx.HTTPStatusError)
-                else (
-                    str(exc)
-                    if isinstance(exc, ValueError)
-                    else "Endpoint did not answer"
-                )
-            )
+            if isinstance(exc, httpx.InvalidURL):
+                obs.error = "Endpoint URL is invalid"
+            elif isinstance(exc, httpx.HTTPStatusError):
+                obs.error = f"Catalog HTTP {exc.response.status_code}"
+            elif isinstance(exc, ValueError):
+                obs.error = str(exc)
+            else:
+                obs.error = "Endpoint did not answer"
         finally:
             if current_probe():
                 obs.checked_at = time.time()
@@ -341,7 +340,7 @@ class DiscoveryService:
         try:
             async with self.probe_limit:
                 models = await self.probe(candidate)
-        except (httpx.HTTPError, ValueError, TypeError):
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
             return None
         config = self.store.config()
         if candidate.base_url in config.discovery.ignored_urls:
