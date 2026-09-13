@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import callers
-from .accounts.api import admin_router
+from .accounts.api import admin_router, portal_router
+from .accounts.portal import PortalIdentity
 from .accounts.principal import derive_principal, level_for
 from .discovery import DiscoveryService
 from .engine_identity import MergeEngines
@@ -43,6 +44,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     )
     discovery = DiscoveryService(store, http)
     proxy = Proxy(store, discovery, http, identity)
+    portal = PortalIdentity(store, identity)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -79,6 +81,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         identity,
     )
     app.state.proxy = proxy
+    app.state.portal = portal
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""
@@ -518,7 +521,12 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         }
         return await proxy.dispatch_connected(request, payload, client)
 
-    management.include_router(admin_router(store, identity, discovery, proxy))
+    management.include_router(
+        admin_router(store, identity, discovery, proxy, portal=portal)
+    )
+    management.include_router(
+        portal_router(store, identity, portal, discovery, proxy), prefix="/portal"
+    )
     app.include_router(management, prefix="/api/v1")
     app.include_router(management, prefix="/api", include_in_schema=False)
 
@@ -549,5 +557,11 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         return JSONResponse(
             {"detail": "Build the interface with npm run build"}, status_code=503
         )
+
+    # The portal is the same build in path mode; the page chooses at load time.
+    @app.get("/portal")
+    @app.get("/portal/{path:path}")
+    async def portal_page(path: str = ""):
+        return await index()
 
     return app

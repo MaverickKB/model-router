@@ -7,6 +7,7 @@
 - Account keys (`mru_`) authenticate as level-derived principals: exact level access, refused while accounts are disabled, re-derived before every attempt (a policy change between attempts is reported as a denial); account callers observed by id and grouped on the routing map.
 - Account token budgets and concurrency limits enforced before upstream send: fixed windows with in-flight reservation, 429 `rate_limit_exceeded` bodies with `Retry-After`, the `limited` request status, forced `stream_options.include_usage` on streamed requests, and metadata-only usage rows that survive restarts.
 - Operator endpoints for accounts (`/api/v1/accounts`): create with a one-time activation link, rename, reassign level, suspend and re-enable, delete with cascade, revoke a user key, and read per-account usage; `/api/v1/state` reports accounts per level.
+- Self-service portal API (`/api/v1/portal`): activation links set the password and sign in, username/password sign-in with separate `router_portal` sessions, `me` with level, route readiness, usage, keys and observed connections, user-created API keys shown once, and password change that signs out other browsers; `/portal` serves the console build for the portal page.
 
 ## 0.3.0
 

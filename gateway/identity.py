@@ -23,6 +23,29 @@ from .security.limits import RateLimit
 from .store import Store
 
 
+def origin_allowed(request: Request) -> bool:
+    origin = urlsplit(request.headers.get("Origin", ""))
+    # The browser may reach the same service through its canonical URL or an
+    # SSH tunnel. Authentication is checked separately from this CSRF test.
+    targets = [str(request.base_url), os.environ.get("MODEL_ROUTER_PUBLIC_URL", "")]
+    return bool(origin.scheme and origin.netloc) and any(
+        (origin.scheme, origin.netloc)
+        == (urlsplit(target).scheme, urlsplit(target).netloc)
+        for target in targets
+        if target
+    )
+
+
+def cookie_secure(request: Request) -> bool:
+    return (
+        urlsplit(
+            request.headers.get("Origin")
+            or os.environ.get("MODEL_ROUTER_PUBLIC_URL", str(request.url))
+        ).scheme
+        == "https"
+    )
+
+
 class Identity:
     def __init__(self, store: Store):
         self.store = store
@@ -50,16 +73,7 @@ class Identity:
         return token
 
     def origin_allowed(self, request: Request) -> bool:
-        origin = urlsplit(request.headers.get("Origin", ""))
-        # The browser may reach the same service through its canonical URL or an
-        # SSH tunnel. Authentication is checked separately from this CSRF test.
-        targets = [str(request.base_url), os.environ.get("MODEL_ROUTER_PUBLIC_URL", "")]
-        return bool(origin.scheme and origin.netloc) and any(
-            (origin.scheme, origin.netloc)
-            == (urlsplit(target).scheme, urlsplit(target).netloc)
-            for target in targets
-            if target
-        )
+        return origin_allowed(request)
 
     @staticmethod
     def setup_source_allowed(request: Request) -> bool:
@@ -251,19 +265,12 @@ class Identity:
             self.store.save_operator_session, key, self.sessions[key]
         )
         response = JSONResponse(body)
-        secure = (
-            urlsplit(
-                request.headers.get("Origin")
-                or os.environ.get("MODEL_ROUTER_PUBLIC_URL", str(request.url))
-            ).scheme
-            == "https"
-        )
         response.set_cookie(
             "router_operator",
             session,
             httponly=True,
             samesite="strict",
-            secure=secure,
+            secure=cookie_secure(request),
             max_age=lifetime,
         )
         return response

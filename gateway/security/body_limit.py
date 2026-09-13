@@ -15,7 +15,8 @@ class BodyLimit:
             or not (path.startswith("/api/") or path.endswith("/register"))
         ):
             return await self.app(scope, receive, send)
-        limit = 8192 if path.endswith(("/login", "/operator/key")) else 2 * 1024 * 1024
+        small = ("/login", "/operator/key", "/portal/activate", "/portal/password")
+        limit = 8192 if path.endswith(small) else 2 * 1024 * 1024
         parts, length = [], 0
         while True:
             message = await receive()
