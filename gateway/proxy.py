@@ -150,7 +150,14 @@ class Proxy:
 
         async def refuse(decision):
             status = decision.get("status", 503)
-            await finish("denied" if 400 <= status < 500 else "unavailable", status)
+            outcome = (
+                "denied"
+                if status in {401, 403}
+                else "failed"
+                if 400 <= status < 500
+                else "unavailable"
+            )
+            await finish(outcome, status)
             return JSONResponse(
                 {
                     "error": {

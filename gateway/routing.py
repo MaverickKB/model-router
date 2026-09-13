@@ -73,6 +73,19 @@ def selector_reason(selector: Selector, engine: EngineView, model: ModelView) ->
     return ""
 
 
+def missing_name_error(requested: str, *, route_only: bool = False) -> dict:
+    subject = (
+        "configured route" if route_only else "configured route or advertised model"
+    )
+    return {
+        "status": 404,
+        "error": f"No {subject} named {requested!r}. "
+        "Use GET /v1/models to list the names available to this caller.",
+        "error_type": "invalid_request_error",
+        "error_code": "model_not_found",
+    }
+
+
 def decide(
     config: Configuration,
     engines: list[EngineView],
@@ -84,6 +97,9 @@ def decide(
 ) -> Decision:
     requested = str(payload.get("model", ""))
     route = next((r for r in config.routes if r.name == requested), None)
+    known_exact_model = any(
+        model["id"] == requested for engine in engines for model in engine["models"]
+    )
     rejected: list[Rejection] = []
     candidates: list[Candidate] = []
     required = requirements(payload)
@@ -124,13 +140,21 @@ def decide(
         )
     else:
         if not client.allow_direct_models:
+            if not known_exact_model:
+                return {
+                    "candidates": [],
+                    "rejections": [],
+                    **missing_name_error(requested, route_only=True),
+                }
             return {
                 "candidates": [],
                 "rejections": [],
                 "error": "This client may use its allowed routes only",
                 "status": 403,
             }
-        tiers = [("primary", Selector(kind="any", model_patterns=[requested]))]
+        # A raw model name is exact, even when it contains glob characters.
+        # Saved selector patterns apply to routes; the loop below checks IDs.
+        tiers = [("primary", Selector(kind="any"))]
     for tier, selector in tiers:
         for engine in engines:
             if engine["status"] != "available":
@@ -237,6 +261,8 @@ def decide(
                 "status": 403,
                 "error": "Client permissions exclude the matching models",
             }
+        elif not route and not known_exact_model and not other_blocker:
+            failure = missing_name_error(requested)
         elif missing_capabilities and not other_blocker:
             # Only requirements of this request enter the public error. Engine
             # and model identities remain in operator-only rejection details.

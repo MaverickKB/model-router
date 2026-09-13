@@ -30,6 +30,8 @@ A policy's existence does not claim an agent is connected. Optional-key connecti
 
 When every eligible destination lacks a required capability, the router returns HTTP 400 with `unsupported_capability` and names the missing request features. Check the engine's capability settings or select a compatible route. Temporary engine or capacity failures remain HTTP 503. Request details in the console retain each destination's rejection reason.
 
+An unrecognized route or model name returns HTTP 404 with `model_not_found`. Use `GET /v1/models` to find the names available to the caller. Existing route and model permissions still apply. In request history, authentication and permission refusals are **denied**; an unknown name or unsupported capability is **failed**. Both remain visible under Errors.
+
 ## One engine, many addresses
 
 Name each API once. Engine settings holds the editable name, preferred request URL and aliases. The engine row shows a configured hostname when available. To combine duplicate LAN, overlay, loopback or DNS rows, expand a row and choose **Merge duplicate engine**. Select the surviving engine, preferred URL and credential. Explicit route and caller references follow the surviving engine. Rediscovery of any saved alias returns that same engine.
