@@ -68,6 +68,7 @@ class Fleet:
         self.usage: dict | None = dict(USAGE)
         self.stream_documents: list[dict] | None = None
         self.oversize = False
+        self.dead_stream: httpx.AsyncByteStream | None = None
         self.gate: asyncio.Event | None = None
         self.inflight = 0
         self.on_call = None
@@ -80,8 +81,10 @@ class Fleet:
     async def handle(self, request):
         host = request.url.host
         if request.url.path.endswith("/models"):
+            if host not in self.models:
+                return httpx.Response(503, json={"error": "catalog down"})
             return httpx.Response(
-                200, json={"data": [{"id": m} for m in self.models.get(host, [])]}
+                200, json={"data": [{"id": m} for m in self.models[host]]}
             )
         body = json.loads(request.content)
         self.calls.append((host, body))
@@ -100,6 +103,8 @@ class Fleet:
             self.inflight -= 1
         if self.oversize:
             return httpx.Response(200, content=b"x" * 4096)
+        if self.dead_stream is not None:
+            return httpx.Response(200, stream=self.dead_stream)
         if body.get("stream"):
             documents = self.stream_documents or [
                 {"choices": [{"delta": {"content": word}}]} for word in REPLY.split()
@@ -157,6 +162,7 @@ async def build(
     max_concurrency=2,
     clients=(),
     unsupported=(),
+    unsupported_b=None,
     max_response_bytes=8 * 1024 * 1024,
 ) -> Setup:
     fleet = Fleet()
@@ -168,10 +174,17 @@ async def build(
         Engine(
             name=name,
             base_url=f"http://{host}/v1",
-            unsupported_parameters=list(unsupported),
+            unsupported_parameters=list(parameters),
             max_response_bytes=max_response_bytes,
         )
-        for name, host in (("Local A", "local-a.test"), ("Local B", "local-b.test"))
+        for name, host, parameters in (
+            ("Local A", "local-a.test", unsupported),
+            (
+                "Local B",
+                "local-b.test",
+                unsupported if unsupported_b is None else unsupported_b,
+            ),
+        )
     ]
     ordered = Selector(engine_ids=[engine.id for engine in engines])
     level = AccountLevel(
@@ -433,6 +446,55 @@ async def test_admission_is_held_across_retry_and_released_on_every_exit(
     )
 
 
+class DeadStream(httpx.AsyncByteStream):
+    """An engine body whose read fails and whose close never returns."""
+
+    def __init__(self):
+        self.closing = asyncio.Event()
+
+    async def __aiter__(self):
+        raise httpx.ReadError("engine died mid-response")
+        yield b""  # pragma: no cover - marks this method as an async generator
+
+    async def aclose(self):
+        self.closing.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_attempt_cleanup_settles_admission(tmp_path):
+    # The body read fails after 200 headers, so the transport handler is
+    # closing the dead connection when the caller disconnects: the
+    # cancellation lands in that handler's own await, outside the attempt try.
+    setup = await build(tmp_path)
+    account = setup.account["id"]
+    setup.fleet.dead_stream = DeadStream()
+    async with setup.caller() as http:
+        request = asyncio.create_task(complete(http))
+        async with asyncio.timeout(5):
+            await setup.fleet.dead_stream.closing.wait()
+        assert setup.limits.active(account) == 1
+        assert setup.counter().reserved > 0
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(5):
+                await request
+    counter = setup.counter()
+    prompt = estimate_prompt_tokens(payload())
+    assert setup.limits.active(account) == 0
+    assert counter.reserved == 0
+    assert counter.used == prompt and counter.requests == 1
+    event = setup.store.events()[0]
+    assert event["status"] == "cancelled"
+    assert event["usage"] == {
+        "prompt_tokens": prompt,
+        "completion_tokens": 0,
+        "estimated": True,
+    }
+    [row] = setup.store.usage_windows(account)
+    assert row["estimated_tokens"] == prompt
+
+
 @asynccontextmanager
 async def serving(app):
     sock = socket.socket()
@@ -564,15 +626,26 @@ async def test_caller_cannot_opt_out_of_include_usage(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stream_options_not_injected_when_engine_lists_it_unsupported(tmp_path):
-    setup = await build(tmp_path, unsupported=["stream_options"])
+@pytest.mark.parametrize("after_retry", [False, True])
+async def test_stream_options_not_injected_when_engine_lists_it_unsupported(
+    tmp_path, after_retry
+):
+    if after_retry:
+        # Local A takes the option but answers 503; Local B serves without it.
+        setup = await build(tmp_path, unsupported_b=["stream_options"])
+        setup.fleet.statuses = [503]
+    else:
+        setup = await build(tmp_path, unsupported=["stream_options"])
     async with setup.caller() as http:
         response = await complete(http, stream=True)
     assert response.status_code == 200
     assert '"usage"' not in response.text
-    [(_, body)] = setup.fleet.calls
+    assert len(setup.fleet.calls) == (2 if after_retry else 1)
+    host, body = setup.fleet.calls[-1]
+    assert host == ("local-b.test" if after_retry else "local-a.test")
     assert "stream_options" not in body
     event = setup.store.events()[0]
+    assert event["engine"] == ("Local B" if after_retry else "Local A")
     assert "stream_options_injected" not in event
     # One content chunk is roughly one token; the [DONE] marker is excluded.
     assert event["usage"] == {
@@ -676,6 +749,55 @@ async def test_client_and_unkeyed_principals_are_never_limited_or_metered(
         )
     streamed = next(body for _, body in setup.fleet.calls if body.get("stream"))
     assert "stream_options" not in streamed
+
+
+@pytest.mark.asyncio
+async def test_no_candidates_refusal_claims_no_admission(tmp_path, monkeypatch):
+    setup = await build(tmp_path)
+    account = setup.account["id"]
+    config = setup.store.config()
+    offline = Engine(name="Offline", base_url="http://offline.test/v1")
+    setup.store.save(
+        config.model_copy(
+            update={
+                "engines": [*config.engines, offline],
+                "routes": [
+                    *config.routes,
+                    Route(
+                        name="offline",
+                        primary=Selector(engine_ids=[offline.id]),
+                        strategy="ordered",
+                    ),
+                    Route(name="restricted", primary=config.routes[0].primary),
+                ],
+                "account_levels": [
+                    setup.level.model_copy(
+                        update={"route_names": [*setup.level.route_names, "offline"]}
+                    )
+                ],
+            }
+        )
+    )
+    await setup.app.state.discovery.refresh()
+    admissions = []
+    original = setup.limits.admit
+    monkeypatch.setattr(
+        setup.limits,
+        "admit",
+        lambda *args, **kwargs: admissions.append(args) or original(*args, **kwargs),
+    )
+    async with setup.caller() as http:
+        denied = await complete(http, "restricted")
+        unavailable = await complete(http, "offline")
+    assert denied.status_code == 403 and unavailable.status_code == 503
+    assert admissions == [] and setup.fleet.calls == []
+    assert setup.limits.active(account) == 0
+    assert setup.limits.ledger.windows == {}
+    assert setup.store.usage_windows(account) == []
+    events = setup.store.events()
+    assert sorted(e["status"] for e in events) == ["denied", "unavailable"]
+    for event in events:
+        assert not {"usage", "limit"} & set(event)
 
 
 @pytest.mark.asyncio

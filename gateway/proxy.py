@@ -243,234 +243,266 @@ class Proxy:
             admission = outcome
             meter = UsageMeter(payload)
 
-        attempted = set()
-        while True:
-            # Re-evaluate the complete policy after each failed attempt.
-            try:
-                if operator_test:
-                    await self.identity.require_operator(request)
-                    current_client = next(
-                        (c for c in self.store.config().clients if c.id == client.id),
-                        None,
-                    )
-                    if current_client is None:
-                        raise HTTPException(403, "Test permission policy was removed")
-                else:
-                    current_client = await self.identity.identify(request)
-            except HTTPException as exc:
-                event["decision"] = {
-                    "candidates": [],
-                    "rejections": [],
-                    "status": exc.status_code,
-                    "error": exc.detail,
-                }
-                await finish("denied", exc.status_code)
-                raise
-            current_config = self.store.config()
-            caller_key_present = (
-                True if operator_test else request.state.caller_key_present
-            )
-            fresh = decide(
-                current_config,
-                self.discovery.views(),
-                current_client,
-                payload,
-                caller_key_present=caller_key_present,
-            )
-            event.update(
-                client_id=current_client.id,
-                client=current_client.name,
-                decision=fresh,
-                revision=current_config.revision,
-            )
-            if not fresh["candidates"] and fresh.get("status"):
-                return await refuse(fresh)
-            candidate = next(
-                (
-                    c
-                    for c in fresh["candidates"]
-                    if (c["engine_id"], c["model"]) not in attempted
-                ),
-                None,
-            )
-            if candidate is None:
-                break
-            attempted.add((candidate["engine_id"], candidate["model"]))
-            engine = next(
-                e for e in current_config.engines if e.id == candidate["engine_id"]
-            )
-            obs = self.discovery.observation(engine.id)
-            optional_defaults = {
-                k: v
-                for k, v in fresh.get("defaults", {}).items()
-                if k not in engine.unsupported_parameters
-            }
-            body = apply_defaults(payload, optional_defaults)
-            body["model"] = candidate["model"]
-            body.pop("session_id", None)
-            for field, mapping in engine.value_mappings.items():
-                if isinstance(body.get(field), str):
-                    body[field] = mapping.get(body[field], body[field])
-            if (
-                meter is not None
-                and body.get("stream")
-                and "stream_options" not in engine.unsupported_parameters
-            ):
-                # A key holder must not be able to force the estimate path, so
-                # a caller-supplied include_usage is overridden, not honoured.
-                options = body.get("stream_options")
-                body["stream_options"] = {
-                    **(options if isinstance(options, dict) else {}),
-                    "include_usage": True,
-                }
-                event["stream_options_injected"] = True
-            path = (
-                "/completions"
-                if request.url.path.endswith("/completions")
-                and not request.url.path.endswith("/chat/completions")
-                else "/chat/completions"
-            )
-            connection = InflightRequest.claim(
-                obs, engine.max_inflight, engine.failure_cooldown_seconds
-            )
-            if connection is None:
-                continue
-            attempt = {**candidate, "status": "waiting"}
-            event["attempts"].append(attempt)
-            event.update(
-                engine_id=engine.id,
-                engine=engine.name,
-                model=candidate["model"],
-                tier=candidate["tier"],
-                status="waiting",
-            )
-            try:
-                await asyncio.to_thread(self.store.event, event)
-                headers = {
-                    "Content-Type": "application/json",
-                    "Accept-Encoding": "identity",
-                    **self.discovery.headers(engine),
-                }
-                req = self.http.build_request(
-                    "POST",
-                    engine.base_url + path,
-                    json=body,
-                    headers=headers,
-                    timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
+        try:
+            attempted = set()
+            while True:
+                # Re-evaluate the complete policy after each failed attempt.
+                try:
+                    if operator_test:
+                        await self.identity.require_operator(request)
+                        current_client = next(
+                            (
+                                c
+                                for c in self.store.config().clients
+                                if c.id == client.id
+                            ),
+                            None,
+                        )
+                        if current_client is None:
+                            raise HTTPException(
+                                403, "Test permission policy was removed"
+                            )
+                    else:
+                        current_client = await self.identity.identify(request)
+                except HTTPException as exc:
+                    event["decision"] = {
+                        "candidates": [],
+                        "rejections": [],
+                        "status": exc.status_code,
+                        "error": exc.detail,
+                    }
+                    await finish("denied", exc.status_code)
+                    raise
+                current_config = self.store.config()
+                caller_key_present = (
+                    True if operator_test else request.state.caller_key_present
                 )
-                upstream = connection.response = await self.http.send(req, stream=True)
-                attempt.update(http_status=upstream.status_code, status="responded")
-                content = None
-                if upstream.status_code == 404:
-                    content = await read_limited(upstream, engine.max_response_bytes)
-                    await self.discovery.refresh_engine(engine)
-                    if obs.status == "available" and candidate["model"] not in {
-                        m["id"] for m in obs.models
-                    }:
-                        await connection.release()
-                        continue
-                if upstream.status_code in {408, 429, 500, 502, 503, 504}:
-                    status = upstream.status_code
-                    await connection.release()
-                    obs.circuit_until = time.time() + (
-                        engine.rate_limit_cooldown_seconds
-                        if status == 429
-                        else engine.failure_cooldown_seconds
-                    )
+                fresh = decide(
+                    current_config,
+                    self.discovery.views(),
+                    current_client,
+                    payload,
+                    caller_key_present=caller_key_present,
+                )
+                event.update(
+                    client_id=current_client.id,
+                    client=current_client.name,
+                    decision=fresh,
+                    revision=current_config.revision,
+                )
+                if not fresh["candidates"] and fresh.get("status"):
+                    return await refuse(fresh)
+                candidate = next(
+                    (
+                        c
+                        for c in fresh["candidates"]
+                        if (c["engine_id"], c["model"]) not in attempted
+                    ),
+                    None,
+                )
+                if candidate is None:
+                    break
+                attempted.add((candidate["engine_id"], candidate["model"]))
+                engine = next(
+                    e for e in current_config.engines if e.id == candidate["engine_id"]
+                )
+                obs = self.discovery.observation(engine.id)
+                optional_defaults = {
+                    k: v
+                    for k, v in fresh.get("defaults", {}).items()
+                    if k not in engine.unsupported_parameters
+                }
+                body = apply_defaults(payload, optional_defaults)
+                body["model"] = candidate["model"]
+                body.pop("session_id", None)
+                for field, mapping in engine.value_mappings.items():
+                    if isinstance(body.get(field), str):
+                        body[field] = mapping.get(body[field], body[field])
+                injected = (
+                    meter is not None
+                    and bool(body.get("stream"))
+                    and "stream_options" not in engine.unsupported_parameters
+                )
+                if injected:
+                    # A key holder must not be able to force the estimate path, so
+                    # a caller-supplied include_usage is overridden, not honoured.
+                    options = body.get("stream_options")
+                    body["stream_options"] = {
+                        **(options if isinstance(options, dict) else {}),
+                        "include_usage": True,
+                    }
+                    event["stream_options_injected"] = True
+                else:
+                    # Per attempt: a retry to an engine that cannot take the option
+                    # must not inherit the flag from an attempt that was not served.
+                    event.pop("stream_options_injected", None)
+                path = (
+                    "/completions"
+                    if request.url.path.endswith("/completions")
+                    and not request.url.path.endswith("/chat/completions")
+                    else "/chat/completions"
+                )
+                connection = InflightRequest.claim(
+                    obs, engine.max_inflight, engine.failure_cooldown_seconds
+                )
+                if connection is None:
                     continue
+                attempt = {**candidate, "status": "waiting"}
+                event["attempts"].append(attempt)
                 event.update(
                     engine_id=engine.id,
                     engine=engine.name,
                     model=candidate["model"],
                     tier=candidate["tier"],
-                    status="running",
+                    status="waiting",
                 )
-                await asyncio.to_thread(self.store.event, event)
-                receipt = {
-                    "x-router-engine": engine.id,
-                    "x-router-model": candidate["model"],
-                    "x-router-request": event["id"],
-                }
-                if payload.get("stream") and upstream.is_success:
-                    # Content-Encoding is not forwarded. Relay decoded bytes,
-                    # including when an upstream compresses its event stream.
-                    iterator = upstream.aiter_bytes()
-                    first = await anext(iterator, None)
-                    if first is None:
-                        obs.circuit_until = (
-                            time.time() + engine.failure_cooldown_seconds
-                        )
-                        await connection.release()
-                        continue
-
-                    return StreamingResponse(
-                        connection.relay(
-                            first,
-                            iterator,
-                            finish,
-                            observe=meter.feed if meter is not None else None,
-                        ),
-                        status_code=upstream.status_code,
-                        media_type=upstream.headers.get(
-                            "content-type", "text/event-stream"
-                        ),
-                        headers={
-                            **receipt,
-                            "Cache-Control": "no-cache",
-                            "X-Accel-Buffering": "no",
-                        },
+                try:
+                    await asyncio.to_thread(self.store.event, event)
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Accept-Encoding": "identity",
+                        **self.discovery.headers(engine),
+                    }
+                    req = self.http.build_request(
+                        "POST",
+                        engine.base_url + path,
+                        json=body,
+                        headers=headers,
+                        timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
                     )
-                if content is None:
-                    content = await read_limited(upstream, engine.max_response_bytes)
-                if meter is not None:
-                    meter.feed_json(content)
-                code = upstream.status_code
-                content_type = upstream.headers.get("content-type", "application/json")
-                if upstream.is_success:
-                    obs.last_success = time.time()
-                await finish("completed" if upstream.is_success else "failed", code)
-                await connection.release()
-                return Response(
-                    content, status_code=code, media_type=content_type, headers=receipt
-                )
-            except ResponseTooLarge:
-                await connection.release()
-                if meter is not None:
-                    meter.oversized(admission.reserve)
-                await finish("failed", 502)
-                return JSONResponse(
-                    {
-                        "error": {
-                            "message": "Upstream response exceeded the configured size limit"
-                        }
-                    },
-                    status_code=502,
-                )
-            except (httpx.HTTPError, OSError):
-                attempt.update(
-                    error="Upstream connection failed or timed out", status="failed"
-                )
-                obs.circuit_until = time.time() + engine.failure_cooldown_seconds
-                obs.error = "Completion transport failed"
-                await connection.release()
-            except BaseException:
-                with CancelScope(shield=True):
-                    try:
-                        await finish("cancelled")
-                    finally:
+                    upstream = connection.response = await self.http.send(
+                        req, stream=True
+                    )
+                    attempt.update(http_status=upstream.status_code, status="responded")
+                    content = None
+                    if upstream.status_code == 404:
+                        content = await read_limited(
+                            upstream, engine.max_response_bytes
+                        )
+                        await self.discovery.refresh_engine(engine)
+                        if obs.status == "available" and candidate["model"] not in {
+                            m["id"] for m in obs.models
+                        }:
+                            await connection.release()
+                            continue
+                    if upstream.status_code in {408, 429, 500, 502, 503, 504}:
+                        status = upstream.status_code
                         await connection.release()
-                raise
-        await finish("failed", 503)
-        return JSONResponse(
-            {
-                "error": {
-                    "message": "All permitted engines were unavailable",
-                    "type": "upstream_unavailable",
+                        obs.circuit_until = time.time() + (
+                            engine.rate_limit_cooldown_seconds
+                            if status == 429
+                            else engine.failure_cooldown_seconds
+                        )
+                        continue
+                    event.update(
+                        engine_id=engine.id,
+                        engine=engine.name,
+                        model=candidate["model"],
+                        tier=candidate["tier"],
+                        status="running",
+                    )
+                    await asyncio.to_thread(self.store.event, event)
+                    receipt = {
+                        "x-router-engine": engine.id,
+                        "x-router-model": candidate["model"],
+                        "x-router-request": event["id"],
+                    }
+                    if payload.get("stream") and upstream.is_success:
+                        # Content-Encoding is not forwarded. Relay decoded bytes,
+                        # including when an upstream compresses its event stream.
+                        iterator = upstream.aiter_bytes()
+                        first = await anext(iterator, None)
+                        if first is None:
+                            obs.circuit_until = (
+                                time.time() + engine.failure_cooldown_seconds
+                            )
+                            await connection.release()
+                            continue
+
+                        return StreamingResponse(
+                            connection.relay(
+                                first,
+                                iterator,
+                                finish,
+                                observe=meter.feed if meter is not None else None,
+                            ),
+                            status_code=upstream.status_code,
+                            media_type=upstream.headers.get(
+                                "content-type", "text/event-stream"
+                            ),
+                            headers={
+                                **receipt,
+                                "Cache-Control": "no-cache",
+                                "X-Accel-Buffering": "no",
+                            },
+                        )
+                    if content is None:
+                        content = await read_limited(
+                            upstream, engine.max_response_bytes
+                        )
+                    if meter is not None:
+                        meter.feed_json(content)
+                    code = upstream.status_code
+                    content_type = upstream.headers.get(
+                        "content-type", "application/json"
+                    )
+                    if upstream.is_success:
+                        obs.last_success = time.time()
+                    await finish("completed" if upstream.is_success else "failed", code)
+                    await connection.release()
+                    return Response(
+                        content,
+                        status_code=code,
+                        media_type=content_type,
+                        headers=receipt,
+                    )
+                except ResponseTooLarge:
+                    await connection.release()
+                    if meter is not None:
+                        meter.oversized(admission.reserve)
+                    await finish("failed", 502)
+                    return JSONResponse(
+                        {
+                            "error": {
+                                "message": "Upstream response exceeded the configured size limit"
+                            }
+                        },
+                        status_code=502,
+                    )
+                except (httpx.HTTPError, OSError):
+                    attempt.update(
+                        error="Upstream connection failed or timed out", status="failed"
+                    )
+                    obs.circuit_until = time.time() + engine.failure_cooldown_seconds
+                    obs.error = "Completion transport failed"
+                    await connection.release()
+                except BaseException:
+                    with CancelScope(shield=True):
+                        try:
+                            await finish("cancelled")
+                        finally:
+                            await connection.release()
+                    raise
+            await finish("failed", 503)
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": "All permitted engines were unavailable",
+                        "type": "upstream_unavailable",
+                    },
+                    "request_id": event["id"],
                 },
-                "request_id": event["id"],
-            },
-            status_code=503,
-        )
+                status_code=503,
+            )
+        except BaseException:
+            # Every exit must settle the admission, including a cancellation
+            # that lands in a handler's own cleanup await. finish settles
+            # synchronously before its first await, so only durability is
+            # at stake here, never a slot or a reservation.
+            if admission is not None and not admission.settled:
+                with CancelScope(shield=True):
+                    await finish("cancelled")
+            raise
 
     async def dispatch_connected(self, request: Request, payload: dict, client: Client):
         # ASGI does not cancel non-streaming handlers when their caller leaves.
