@@ -107,8 +107,10 @@ Select a source and a route to inspect access. Select a permission policy and a 
 | `gateway/network/local.py`, `announcements.py` | Optional local-socket and model-service announcement adapters. Missing permissions/dependencies stay visible. |
 | `gateway/network/report.py` | Atomic policy, job request and report files. No credentials in this interface. |
 | `gateway/network/views.py` | Small status summaries and paginated inventories, merged with fresh authenticated engine catalogs. |
-| `gateway/app.py` | Constructs dependencies, owns HTTP routes and service lifetime, and serves built assets; `/portal` and `/portal/*` serve the same build so the page can choose the portal at load time (`src/main.tsx`, a later change). |
+| `gateway/app.py` | Constructs dependencies, owns HTTP routes and service lifetime, and serves built assets; `/portal` and `/portal/*` serve the same build so the page can choose the portal at load time (`src/main.tsx`). |
 | `src/App.tsx`, `useRouterState.ts` | Navigation, action coordination and cancellable polling without overlapping scheduled requests. |
+| `src/main.tsx` | Chooses the page by path at load time: `/portal` and `/portal/*` render `PortalApp`, everything else the console `App`. One build, one origin. |
+| `src/portal/` | The account holder's page: `usePortalState` fetches only `/api/v1/portal/status` and `/me` (never operator state); a 401 signs out and a 403 re-reads the status so the disabled and suspended states come from the server's answer, not from parsing messages. Sign-in and activation (token from the address fragment, cleared after use), overview with route readiness and the usage meter, one-time key display with a paste-ready snippet, observed and — only while the switch is on — registered devices, password change and sign-out. Reuses the console's classes; `portal.css` styles the shell only. |
 | `src/views/`, `EngineCard.tsx` | Focused activity, route, client, connection and request-detail views. |
 | `src/editors/` | Separate engine, route, client and discovery editors with stale-draft checks. |
 | `src/settings/AccessSettings.tsx` | Operator sign-in, optional default unkeyed policy and sessions. Route key gates live in the route editor. |
