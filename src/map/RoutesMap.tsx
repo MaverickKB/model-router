@@ -475,9 +475,13 @@ export function RoutesMap({
                             ? "ready"
                             : "blocked"
                           : "unknown";
-                        const policy = config.clients.find(
-                          (entry) => entry.id === edge?.policy_id,
-                        );
+                        // An account caller's policy id is its account id,
+                        // never a configured client.
+                        const policy = caller.account_id
+                          ? undefined
+                          : config.clients.find(
+                              (entry) => entry.id === edge?.policy_id,
+                            );
                         return (
                           <li
                             key={caller.id}
@@ -494,12 +498,14 @@ export function RoutesMap({
                             </p>
                             <small>
                               Permission policy:{" "}
-                              {edge
-                                ? policy?.name ||
-                                  (edge.policy_id
-                                    ? "Policy no longer configured"
-                                    : "No named policy identified")
-                                : "Not yet reported"}
+                              {caller.account_id
+                                ? "User account (Settings › Accounts)"
+                                : edge
+                                  ? policy?.name ||
+                                    (edge.policy_id
+                                      ? "Policy no longer configured"
+                                      : "No named policy identified")
+                                  : "Not yet reported"}
                             </small>
                           </li>
                         );

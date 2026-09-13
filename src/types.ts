@@ -164,6 +164,9 @@ export interface Decision {
 export interface ObservedCaller {
   id: string;
   policy_id: string | null;
+  account_id?: string | null;
+  key_id?: string | null;
+  device_id?: string | null;
   name: string;
   source_key?: string;
   source_label?: string;
@@ -189,6 +192,8 @@ export interface ObservedCaller {
   identity_hints?: Record<string, string>;
   identity_basis:
     | "api_key"
+    | "account_key"
+    | "registered_device"
     | "source_network"
     | "shared_access"
     | "unassigned"
@@ -277,6 +282,12 @@ export interface PolicyRoute {
 export interface RouteMap {
   policies?: {
     policy_id: string;
+    observed_callers: ObservedCaller[];
+  }[];
+  account_callers?: {
+    account_id: string;
+    name: string;
+    level_id: string | null;
     observed_callers: ObservedCaller[];
   }[];
   caller_routes: CallerRoute[];

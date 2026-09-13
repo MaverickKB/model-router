@@ -2,6 +2,7 @@
 
 import ipaddress
 
+from .accounts.principal import derive_principal, level_for
 from .contracts import EngineView
 from .request_policy import resolve_unkeyed_policy
 from .routing import decide, matches, selector_reason
@@ -47,6 +48,18 @@ def _observed_policy(
     return policy, keyed, ""
 
 
+def _account_policy(
+    config: Configuration, account: dict | None
+) -> tuple[Client | None, str]:
+    """Derive an account caller's principal; it exists only while accounts are on."""
+    if not config.accounts.enabled:
+        return None, "User accounts are disabled"
+    level = level_for(config, account["level_id"]) if account else None
+    if account is None or level is None:
+        return None, "Account access is unavailable"
+    return derive_principal(account, level), ""
+
+
 def _route_access(
     config: Configuration,
     engines: list[EngineView],
@@ -83,23 +96,39 @@ def _route_access(
 
 
 def route_map(
-    config: Configuration, engines: list[EngineView], callers: list[dict]
+    config: Configuration,
+    engines: list[EngineView],
+    callers: list[dict],
+    accounts: list[dict] | None = None,
 ) -> dict:
     """Keep observation IDs on live paths and policy IDs on key previews.
 
     Each observed path uses its own authentication evidence and current policy.
     Saved policies can be previewed before traffic exists without inventing a
     connected caller. Source grouping belongs to presentation, never permission.
+    Account callers are grouped by account and never resolve against
+    `config.clients`; their edges use the level-derived principal, which exists
+    only while user accounts are enabled.
     """
     observed_by_policy: dict[str, list[dict]] = {
         client.id: [] for client in config.clients
     }
+    observed_by_account: dict[str, list[dict]] = {}
+    account_rows = {account["id"]: account for account in accounts or []}
     caller_routes = []
     for caller in callers:
-        policy, keyed, rejection = _observed_policy(config, caller)
-        policy_id = policy.id if policy and policy.id in observed_by_policy else None
-        if policy_id is not None:
-            observed_by_policy[policy_id].append(caller)
+        account_id = caller.get("account_id")
+        if account_id:
+            observed_by_account.setdefault(account_id, []).append(caller)
+            policy, rejection = _account_policy(config, account_rows.get(account_id))
+            policy_id, keyed = account_id, True
+        else:
+            policy, keyed, rejection = _observed_policy(config, caller)
+            policy_id = (
+                policy.id if policy and policy.id in observed_by_policy else None
+            )
+            if policy_id is not None:
+                observed_by_policy[policy_id].append(caller)
         for route in config.routes:
             caller_routes.append(
                 {
@@ -121,6 +150,17 @@ def route_map(
         for policy in config.clients
         for route in config.routes
         if matches(route.name, policy.route_names)
+    ]
+    account_callers = [
+        {
+            "account_id": account_id,
+            "name": account_rows[account_id]["name"]
+            if account_id in account_rows
+            else observed[0]["name"],
+            "level_id": account_rows.get(account_id, {}).get("level_id"),
+            "observed_callers": observed,
+        }
+        for account_id, observed in observed_by_account.items()
     ]
     route_engines = []
     for route in config.routes:
@@ -172,6 +212,7 @@ def route_map(
             }
             for client in config.clients
         ],
+        "account_callers": account_callers,
         "caller_routes": caller_routes,
         "policy_routes": policy_routes,
         "route_engines": route_engines,

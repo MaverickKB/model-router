@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import callers
+from .accounts.principal import derive_principal, level_for
 from .discovery import DiscoveryService
 from .engine_identity import MergeEngines
 from .engine_suggestions import suggestions
@@ -95,7 +96,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         configured = {policy.id for policy in store.config().clients}
         observed_policy = (
             client
-            if client.id in configured
+            if (client.id in configured or getattr(request.state, "account_id", None))
             and getattr(request.state, "identity_basis", "") != "unassigned"
             else None
         )
@@ -132,7 +133,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             ),
             "engines": engines,
             "engine_merge_suggestions": suggestions(engines),
-            "route_map": route_map(config, engines, connections),
+            "route_map": route_map(config, engines, connections, store.accounts()),
             "events": await asyncio.to_thread(store.events),
             "clients": [
                 {**c.model_dump(), "has_key": store.has_key(c.id)}
@@ -347,8 +348,13 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         client = next(
             (c for c in config.clients if c.id == body.get("client_id")), None
         )
+        if client is None and body.get("account_id"):
+            account = store.account_snapshot(str(body["account_id"]))
+            level = level_for(config, account["level_id"]) if account else None
+            if account and level:
+                client = derive_principal(account, level)
         if not client:
-            raise HTTPException(422, "Choose a configured client")
+            raise HTTPException(422, "Choose a configured client or account")
         return decide(config, discovery.views(), client, body.get("payload", {}))
 
     @app.get("/health")

@@ -231,9 +231,11 @@ export function CallerSourceDetails({
       </p>
       <div className="source-metadata-list">
         {source.callers.map((caller) => {
-          const policy = policies.find(
-            (entry) => entry.id === caller.policy_id,
-          );
+          // An account caller's policy id is its account id, never a
+          // configured client; its permissions live in Settings › Accounts.
+          const policy = caller.account_id
+            ? undefined
+            : policies.find((entry) => entry.id === caller.policy_id);
           return (
             <details key={caller.id} className="source-metadata-record">
               <summary>
@@ -243,9 +245,11 @@ export function CallerSourceDetails({
                     {caller.reported_name && (
                       <>Reported name: {caller.reported_name} · </>
                     )}
-                    {policy
-                      ? `Policy identified by request: ${policy.name}`
-                      : "No named policy identified by the request"}
+                    {caller.account_id
+                      ? "User account (Settings › Accounts)"
+                      : policy
+                        ? `Policy identified by request: ${policy.name}`
+                        : "No named policy identified by the request"}
                   </span>
                 </span>
               </summary>

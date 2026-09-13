@@ -85,6 +85,10 @@ export function identityExplanation(caller: ObservedCaller) {
   switch (caller.identity_basis) {
     case "api_key":
       return "A configured caller key selected this permission policy. The policy name is operator-assigned; the client metadata below is observed evidence.";
+    case "account_key":
+      return "Identified by a key the account holder created in the portal. Permissions come from the account's level.";
+    case "registered_device":
+      return "Matched by a pre-registered device address without a key — the less-secure dev-mode path enabled in Settings › Accounts.";
     case "source_network":
       return "The direct source address matched a configured policy. Any application name below is self-reported and does not grant access.";
     case "shared_access":
@@ -156,7 +160,11 @@ export function CallerIdentity({
           </>
         )}
         <dt>Policy identified by the request</dt>
-        <dd>{policy?.name || "No named policy identified by the request"}</dd>
+        <dd>
+          {caller.account_id
+            ? "User account (Settings › Accounts)"
+            : policy?.name || "No named policy identified by the request"}
+        </dd>
         <dt>Requests observed</dt>
         <dd>{caller.request_count ?? 1}</dd>
         <dt>First seen</dt>
