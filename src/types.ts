@@ -308,3 +308,64 @@ export interface RouteMap {
     ready: boolean;
   }[];
 }
+export interface AccountUsage {
+  window_start: number;
+  window_seconds: number;
+  max_tokens: number | null;
+  used: number;
+  reserved: number;
+  active_requests: number;
+  max_concurrency: number | null;
+  resets_at: number;
+}
+export interface AccountSummary {
+  id: string;
+  username: string;
+  name: string;
+  level_id: string;
+  status: "pending" | "active" | "suspended";
+  created: number;
+  activated_at: number | null;
+  last_login: number | null;
+  activation_pending: boolean;
+  activation_expires: number | null;
+  key_count: number;
+  device_count: number;
+  usage: AccountUsage | null;
+}
+export interface AccountKey {
+  id: string;
+  name: string;
+  created: number;
+  last_used: number | null;
+}
+export interface RegisteredDevice {
+  id: string;
+  account_id: string;
+  address: string;
+  name: string;
+  enabled: boolean;
+  created: number;
+  last_matched: number | null;
+  account_name?: string;
+  shadows?: { client_id: string; client_name: string; network: string }[];
+}
+export interface UsageWindow {
+  window_start: number;
+  window_seconds: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_tokens: number;
+  requests: number;
+}
+export interface AccountDetail {
+  account: AccountSummary;
+  keys: AccountKey[];
+  devices: RegisteredDevice[];
+  usage_windows: UsageWindow[];
+}
+export interface ActivationLink {
+  token: string;
+  url: string;
+  expires: number;
+}

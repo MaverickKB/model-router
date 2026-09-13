@@ -1,4 +1,4 @@
-import type { Config } from "../types";
+import type { AccountSummary, Config } from "../types";
 
 function scopeLabel(config: Config) {
   const { targets, include_loopback } = config.discovery;
@@ -134,6 +134,51 @@ export function SavedDiscovery({ config }: { config: Config }) {
             Model-service announcements {policy.mdns ? "on" : "off"}.
             Router-local listener inventory{" "}
             {policy.include_loopback ? "on" : "off"}.
+          </dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+export function portalAddress(baseUrl: string) {
+  return baseUrl.replace(/\/v1$/, "") + "/portal";
+}
+
+export function SavedAccounts({
+  config,
+  baseUrl,
+  accounts = [],
+}: {
+  config: Config;
+  baseUrl: string;
+  accounts?: AccountSummary[];
+}) {
+  const settings = config.accounts;
+  const levels = config.account_levels.length;
+  const pending = accounts.filter((a) => a.status === "pending").length;
+  const plural = (n: number, word: string) =>
+    `${n} ${word}${n === 1 ? "" : "s"}`;
+  return (
+    <section className="settings-summary" aria-label="Saved accounts state">
+      <p className="settings-eyebrow">Saved settings · In effect now</p>
+      <h2 id="accounts-heading">
+        {settings.enabled ? "User accounts on" : "User accounts off"}
+      </h2>
+      <p>
+        {settings.enabled
+          ? `User accounts on · ${plural(levels, "level")} · ${plural(accounts.length, "account")} (${pending} pending) · Portal: ${portalAddress(baseUrl)}`
+          : "User accounts off — user keys are refused. Levels and accounts can be prepared now."}
+      </p>
+      <dl>
+        <div>
+          <dt>Device pre-registration</dt>
+          <dd>
+            {settings.enabled && settings.device_registration_enabled
+              ? "On (dev mode). Less secure: a registered source address can use key-gated routes without an API key, limited to that account's level. Direct connection address only — forwarding headers are ignored."
+              : settings.device_registration_enabled
+                ? "Saved on, inert while user accounts are off. Registered devices grant nothing until both switches are on."
+                : "Off. Registered devices grant nothing; the portal shows observed connections only."}
           </dd>
         </div>
       </dl>

@@ -1,12 +1,15 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { fixtureConfig } from "../test-fixtures";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fixtureConfig, mockJsonFetch } from "../test-fixtures";
 import type { Config } from "../types";
 import { SettingsPage } from "./SettingsPage";
 
 describe("Saved settings and inherited choices", () => {
+  beforeEach(() => {
+    mockJsonFetch(() => ({ accounts: [], devices: [] }));
+  });
   it("makes an inherited open scope visible without changing it on visit", async () => {
     const config = fixtureConfig();
     config.upgraded_from_schema = 0;
@@ -28,6 +31,7 @@ describe("Saved settings and inherited choices", () => {
       <SettingsPage
         config={config}
         operatorUrl="https://console.test"
+        baseUrl="https://console.test/v1"
         save={save}
         onSignOut={() => {}}
       />,
@@ -54,6 +58,28 @@ describe("Saved settings and inherited choices", () => {
     expect(discovery).toHaveTextContent(
       "receive requests allowed by caller policies",
     );
+    // The Accounts tab is reachable by click and by arrow keys across all three.
+    await user.click(screen.getByRole("tab", { name: "Accounts" }));
+    const accounts = screen.getByRole("region", {
+      name: "Saved accounts state",
+    });
+    expect(accounts).toBeVisible();
+    expect(accounts).toHaveTextContent("User accounts off");
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Discovery" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Access" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Discovery" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(save).not.toHaveBeenCalled();
   });
 
@@ -67,6 +93,7 @@ describe("Saved settings and inherited choices", () => {
         <SettingsPage
           config={config}
           operatorUrl={null}
+          baseUrl="http://router.test/v1"
           onSignOut={() => {}}
           save={async (value) => {
             const next = { ...value, revision: value.revision + 1 };

@@ -115,13 +115,16 @@ Select a source and a route to inspect access. Select a permission policy and a 
 | `src/editors/` | Separate engine, route, client and discovery editors with stale-draft checks. |
 | `src/settings/AccessSettings.tsx` | Operator sign-in, optional default unkeyed policy and sessions. Route key gates live in the route editor. |
 | `src/settings/SettingsSummary.tsx` | Explains saved access, scope, inspection and admission independently of form drafts. Canonical management address comes from server state. |
+| `src/settings/AccountsSettings.tsx`, `AccountsTable.tsx`, `AccountDetail.tsx`, `CreateAccountDialog.tsx`, `ActivationDialog.tsx`, `DevicesTable.tsx`, `DeleteLevelDialog.tsx`, `UsageMeter.tsx` | Settings › Accounts: the two switches and session hours as a revisioned draft, the level list, and account, key and device management through the accounts API. Activation links are shown once and never re-read; usage is rendered from counts only. |
+| `src/editors/LevelEditor.tsx` | Level permissions and limits in the caller-policy shape with stale-draft checks; a referenced level is removed only after its accounts are moved. |
+| `src/useAccounts.ts` | Fetches account summaries outside the configuration revision and reloads them after every account action. |
 | `src/caller-identity.tsx` | Presents connection evidence and uses the direct source as the fallback label when no application name is supplied. |
 | `src/caller-sources.tsx` | Groups observations by direct address and exposes software and permission evidence in source details. |
 | `src/views/request-history.ts`, `ActivityRail.tsx` | Groups loaded requests by direct source, summarizes outcomes, and preserves individual request inspection and filtering. |
 | `src/map/source-topology.ts` | Projects per-observation decisions into ready, mixed, blocked or unknown source paths and attributes active requests by source. |
 | `src/engine-addresses.ts` | Combines saved URLs and chooses a configured hostname for display. |
 | `src/editors/MergeEnginesDialog.tsx` | Makes the surviving engine, preferred address and credential choice explicit. |
-| `src/map/RoutesMap.tsx`, `links.ts` | Draws live policy relationships and active jobs; saves reviewed links through the configuration API. |
+| `src/map/RoutesMap.tsx`, `links.ts` | Draws live policy relationships and active jobs; saves reviewed links through the configuration API. Account connections are grouped in a read-only Accounts tray and never resolved against permission policies. |
 | `src/network/` | Evidence, search, paging, inspection status and job cancellation. |
 
 ## A request

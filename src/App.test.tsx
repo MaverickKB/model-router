@@ -75,6 +75,7 @@ it("puts operator access and route gates on reachable Settings and Routes pages"
         new Response(
           JSON.stringify({
             setup_required: true,
+            account_levels_in_use: {},
             config,
             engines: [],
             clients: [],

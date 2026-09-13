@@ -28,7 +28,7 @@ import { JobDialog } from "./views/JobDialog";
 import { RoutesView } from "./views/RoutesView";
 
 import { EngineCard } from "./EngineCard";
-import { SettingsPage } from "./settings/SettingsPage";
+import { SettingsPage, type Section } from "./settings/SettingsPage";
 import { MergeEnginesDialog } from "./editors/MergeEnginesDialog";
 import { engineUrls } from "./engine-addresses";
 
@@ -37,9 +37,7 @@ export function App() {
   const { state, locked, connectionError, reload } = useRouterState();
   const [error, setError] = useState("");
   const [tab, setTab] = useState<Tab>("Overview");
-  const [settingsSection, setSettingsSection] = useState<
-    "Access" | "Discovery"
-  >("Access");
+  const [settingsSection, setSettingsSection] = useState<Section>("Access");
   const [focusDiscoveryTargets, setFocusDiscoveryTargets] = useState(false);
   const [engine, setEngine] = useState<Engine | null>(null),
     [route, setRoute] = useState<Route | null>(null),
@@ -183,7 +181,7 @@ export function App() {
   const activeClient = state.clients.find((c) => c.id === client?.id) || client;
   function selectTab(
     t: Tab,
-    section: "Access" | "Discovery" = "Access",
+    section: Section = "Access",
     focusTargets = false,
   ) {
     setSettingsSection(section);
@@ -599,6 +597,8 @@ export function App() {
               focusDiscoveryTargets={focusDiscoveryTargets}
               config={config}
               operatorUrl={state.operator_url ?? null}
+              baseUrl={state.base_url}
+              levelsInUse={state.account_levels_in_use}
               save={save}
               onSignOut={() => void action(() => post("/api/v1/logout", {}))}
             />
