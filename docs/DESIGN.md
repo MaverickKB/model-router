@@ -88,6 +88,7 @@ Click a caller then a route, or a route then an engine, to review a link. `src/m
 | `gateway/security/limits.py`, `body_limit.py` | Bound login/registration attempts and management JSON before parsing. |
 | `gateway/routing.py` | Pure policy evaluation: route/direct selection, allowlists, cloud permission, availability, capability requirements and ordering. |
 | `gateway/proxy.py` | Rechecks current policy before every attempt, atomically claims capacity, owns the upstream connection, and records the result. |
+| `gateway/stream_protocol.py` | Recognizes complete OpenAI SSE terminal events with bounded framing state, independently of HTTP connection closure. |
 | `gateway/discovery.py` | Refreshes catalogs, expires observations, verifies registration scope and applies automatic admission. |
 | `gateway/adapters/` | Catalog dialects and bounded HTTP metadata. Native enrichment preserves the OpenAI catalog's identity when both exist. |
 | `gateway/network/collector.py` | Schedules identifiable jobs, accepts operator cancellation, and publishes failure/interruption status. |
@@ -128,7 +129,7 @@ Primary candidates precede fallback candidates. Ordered routes follow the config
 
 Before each attempt, `Proxy.dispatch` reads current policy and identity again. `InflightRequest.claim` checks and increments capacity synchronously, without yielding. Each endpoint/model pair is attempted once. The connection owner releases capacity after completion, cancellation or failure. Stream cancellation shields final metadata and upstream cleanup from Starlette's repeated cancellation at await points. Capacity is released after the connection closes, including when closure raises. This follows [AnyIO's finalization contract](https://anyio.readthedocs.io/en/stable/cancellation.html#finalization).
 
-Selected transient failures can try another permitted candidate before any stream has been delivered. A 404 causes a catalog refresh; retry is justified only when that fresh catalog shows the requested model disappeared. Other 404 responses pass through. Once streaming begins, failure ends the stream with an error and never splices in a backup answer. Non-stream responses and management requests have size bounds. Cooldowns and upstream response limits are operator settings.
+Selected transient failures can try another permitted candidate before any stream has been delivered. A 404 causes a catalog refresh; retry is justified only when that fresh catalog shows the requested model disappeared. Other 404 responses pass through. Once streaming begins, failure ends the stream with an error and never splices in a backup answer. A complete SSE `[DONE]` event records completion even when the client immediately closes the connection; an earlier disconnect remains cancellation. Final outcome persistence and connection cleanup are shielded together. Non-stream responses and management requests have size bounds. Cooldowns and upstream response limits are operator settings.
 
 ## Discovery and trust
 

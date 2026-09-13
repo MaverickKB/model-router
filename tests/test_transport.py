@@ -19,7 +19,10 @@ from gateway.schema import Client, Configuration, Discovery, Engine, Route, Sele
 
 
 @pytest.mark.asyncio
-async def test_stream_cancellation_finishes_history_and_closes_upstream():
+@pytest.mark.parametrize(
+    "first", [b"first", b"data: [DONE]\n", b"data: [DONE]\ndata: more\n\n"]
+)
+async def test_stream_cancellation_finishes_history_and_closes_upstream(first):
     observation = Observation(engine_id="stream-test")
     connection = InflightRequest(observation, failure_cooldown=1)
     statuses = []
@@ -43,7 +46,7 @@ async def test_stream_cancellation_finishes_history_and_closes_upstream():
         statuses.append(status)
 
     async def consume():
-        async for _ in connection.relay(b"first", chunks(), finish):
+        async for _ in connection.relay(first, chunks(), finish):
             pass
 
     async with create_task_group() as tasks:
@@ -229,6 +232,10 @@ async def test_real_http_model_swap_cloud_fallback_stream_and_cancel(tmp_path):
             assert not remote_calls, (
                 "A partially delivered stream must not replay to a backup"
             )
+            failed = app.state.store.events()[0]
+            assert failed["status"] == "failed"
+            assert failed["http_status"] == 502
+            assert app.state.discovery.observation(local.id).inflight == 0
             app.state.discovery.observation(local.id).circuit_until = 0
             state["fail"] = True
             assert (await http.post("/v1/chat/completions", json=payload)).json()[
@@ -242,3 +249,59 @@ async def test_real_http_model_swap_cloud_fallback_stream_and_cancel(tmp_path):
                 await http.post("/v1/chat/completions", json=payload)
             ).status_code == 503
             assert len(remote_calls) == 1
+
+
+async def test_client_close_at_done_records_completed_before_upstream_eof(tmp_path):
+    upstream = FastAPI()
+    upstream_closed = asyncio.Event()
+
+    @upstream.get("/v1/models")
+    async def catalog():
+        return {"data": [{"id": "tool-model", "capabilities": {"tools": True}}]}
+
+    @upstream.post("/v1/chat/completions")
+    async def completion():
+        async def chunks():
+            try:
+                yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"inspect","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+                yield b"data: [DO"
+                await asyncio.sleep(0.01)
+                yield b"NE]\r\n\r\n"
+                # Some upstreams keep the HTTP connection open after their
+                # protocol terminal event. The router owns closing this stream.
+                await asyncio.Future()
+            finally:
+                upstream_closed.set()
+
+        return StreamingResponse(chunks(), media_type="text/event-stream")
+
+    async with serving(upstream) as upstream_url:
+        app = create_app(str(tmp_path), background=False)
+        engine = Engine(name="Tool service", base_url=upstream_url + "/v1")
+        app.state.store.save(Configuration(engines=[engine]))
+        await app.state.discovery.refresh()
+        async with serving(app) as router_url, httpx.AsyncClient(timeout=5) as client:
+            async with client.stream(
+                "POST",
+                router_url + "/v1/chat/completions",
+                json={
+                    "model": "auto",
+                    "messages": [{"role": "user", "content": "inspect"}],
+                    "tools": [{"type": "function", "function": {"name": "inspect"}}],
+                    "stream": True,
+                },
+            ) as response:
+                assert response.status_code == 200
+                async for line in response.aiter_lines():
+                    if line == "data: [DONE]":
+                        break
+                else:
+                    pytest.fail("No protocol completion marker was delivered")
+            async with asyncio.timeout(3):
+                while app.state.discovery.observation(engine.id).inflight:
+                    await asyncio.sleep(0.01)
+            event = app.state.store.events()[0]
+            assert event["status"] == "completed"
+            assert event["http_status"] == 200
+            assert app.state.discovery.observation(engine.id).last_success is not None
+            await asyncio.wait_for(upstream_closed.wait(), 3)
