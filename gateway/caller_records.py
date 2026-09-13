@@ -9,6 +9,8 @@ import ipaddress
 import json
 import re
 
+from .caller_sources import ensure_source_identity
+
 _CLIENT_TOKEN = re.compile(
     r"(?P<name>[A-Za-z][A-Za-z0-9._-]*)/(?P<version>[A-Za-z0-9._+-]+)"
 )
@@ -49,11 +51,13 @@ def client_profile(software: str, hints: dict[str, str]) -> tuple[str, str, str]
 
 def caller_id(record: dict) -> str:
     """Keep connection identity stable across ports, key changes and SDK upgrades."""
-    source = record.get("source_address", "Unknown source")
-    try:
-        source = str(ipaddress.ip_address(source))
-    except ValueError:
-        pass
+    source = record.get("source_key")
+    if not source:
+        source = record.get("source_address", "Unknown source")
+        try:
+            source = str(ipaddress.ip_address(source))
+        except ValueError:
+            pass
     software = record.get("software", "")
     # Retain the complete product string so two applications mentioning the same
     # SDK do not merge. Optional runtime headers never split an existing source.
@@ -77,6 +81,8 @@ def caller_id(record: dict) -> str:
 
 def merge_observations(older: dict, newer: dict) -> dict:
     """Sum history while the latest request alone supplies identity and auth facts."""
+    older = ensure_source_identity(older)
+    newer = ensure_source_identity(newer)
     ordered = sorted((older, newer), key=lambda row: row.get("last_seen", 0))
     latest = dict(ordered[-1])
     latest["first_seen"] = min(
@@ -84,6 +90,7 @@ def merge_observations(older: dict, newer: dict) -> dict:
     )
     count = 0
     ports = []
+    addresses = []
     for row in ordered:
         try:
             count += max(int(row.get("request_count", 1)), 1)
@@ -96,6 +103,16 @@ def merge_observations(older: dict, newer: dict) -> dict:
             if isinstance(port, int) and 0 < port <= 65535:
                 ports = [previous for previous in ports if previous != port]
                 ports.append(port)
+        recent_addresses = row.get("recent_source_addresses", [])
+        recent_addresses = (
+            list(recent_addresses) if isinstance(recent_addresses, list) else []
+        )
+        recent_addresses.append(row.get("source_address"))
+        for address in recent_addresses:
+            if isinstance(address, str) and address:
+                addresses = [previous for previous in addresses if previous != address]
+                addresses.append(address)
     latest["request_count"] = count
     latest["recent_source_ports"] = ports[-8:]
+    latest["recent_source_addresses"] = addresses[-8:]
     return latest

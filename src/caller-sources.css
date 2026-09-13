@@ -38,6 +38,13 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+.source-name-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 24px;
+}
 .source-metadata-list {
   margin-top: 20px;
 }
@@ -85,6 +92,9 @@
   .source-reported-metadata {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+  .source-name-form {
+    grid-template-columns: 1fr;
   }
   .source-reported-metadata dd + dt {
     margin-top: 8px;

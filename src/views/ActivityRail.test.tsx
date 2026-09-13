@@ -128,6 +128,32 @@ it("keeps source status totals and the latest failure visible before expansion",
   expect(group("192.0.2.31")).toBeVisible();
 });
 
+it("keeps a named caller endpoint together when its reported device moves addresses", () => {
+  const first = {
+    ...completed,
+    id: "before-dhcp",
+    caller: {
+      ...completed.caller!,
+      source_key: "device:abc123",
+      source_label: "Studio Mac",
+      source_label_source: "operator" as const,
+      source_identity_quality: "reported_device" as const,
+      source_address: "192.0.2.30",
+    },
+  };
+  const second = {
+    ...completed,
+    id: "after-dhcp",
+    ts: completed.ts + 1,
+    caller: { ...first.caller, source_address: "192.0.2.31" },
+  };
+  render(<ActivityRail {...props([first, second])} />);
+
+  expect(screen.getByText("2 recent requests · 1 source")).toBeVisible();
+  expect(group("Studio Mac")).toBeVisible();
+  expect(within(group("Studio Mac")).getByText("192.0.2.31")).toBeVisible();
+});
+
 it("shows preserved legacy failure reasons without treating a completed request's rejected alternative as an error", async () => {
   const decision = {
     candidates: [],

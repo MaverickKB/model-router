@@ -1,12 +1,14 @@
 import json
 import sqlite3
 import time
+from urllib.parse import quote
 
 import httpx
 import pytest
 
 from gateway.app import create_app
 from gateway.caller_records import caller_id
+from gateway.network.report import write_json
 from gateway.schema import Client, Configuration, Security
 from gateway.store import Store
 from gateway.topology import route_map
@@ -445,7 +447,7 @@ def test_existing_auth_dependent_rows_merge_once_without_rewriting_events(tmp_pa
     records = reopened.callers()
     assert len(records) == 2
     merged = next(row for row in records if row["source_address"] == "192.0.2.52")
-    assert merged["id"] == caller_id(latest)
+    assert merged["id"] == caller_id(merged)
     assert merged["first_seen"] == old["first_seen"]
     assert merged["last_seen"] == latest["last_seen"]
     assert merged["request_count"] == 9
@@ -454,9 +456,572 @@ def test_existing_auth_dependent_rows_merge_once_without_rewriting_events(tmp_pa
     assert merged["policy_id"] is None
     assert merged["name"] == "Unidentified caller"
     assert merged["software"] == "python-requests/2.0"
-    assert reopened.events() == [event]
+    raw_event = json.loads(
+        reopened.db.execute("SELECT body FROM events WHERE id='historical'").fetchone()[
+            0
+        ]
+    )
+    assert raw_event == event
+    presented_event = reopened.events()[0]
+    assert presented_event["caller"]["source_key"] == "addr:192.0.2.52"
+    assert presented_event["caller"]["source_label"] == "192.0.2.52"
     assert reopened.db.execute("SELECT body FROM config").fetchall() == config_before
     assert Store(str(tmp_path)).callers() == records
+
+
+@pytest.mark.asyncio
+async def test_operator_source_name_follows_reported_device_id_across_addresses(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    headers = {
+        "User-Agent": "ExampleAgent/1.0",
+        "X-Router-Device-Id": "workstation-device-key",
+        "X-Router-Hostname": "workstation.local",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.60", 52100)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+        source_key = app.state.store.callers()[0]["source_key"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 52199)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.put(
+                f"/api/v1/caller-sources/{quote(source_key, safe='')}/name",
+                json={"name": "Lab workstation"},
+                headers={"Origin": "http://localhost"},
+            )
+        ).status_code == 200
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.61", 52101)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+
+    records = app.state.store.callers()
+    assert len(records) == 1
+    caller = records[0]
+    assert caller["source_key"] == source_key
+    assert caller["source_label"] == "Lab workstation"
+    assert caller["source_label_source"] == "operator"
+    assert caller["source_hostname"] == "workstation.local"
+    assert caller["source_identity_quality"] == "reported_device"
+    assert caller["recent_source_addresses"] == ["192.0.2.60", "192.0.2.61"]
+    raw_caller = json.loads(
+        app.state.store.db.execute("SELECT body FROM callers").fetchone()[0]
+    )
+    app.state.store.event(
+        {"id": "device-event", "ts": time.time(), "caller": raw_caller}
+    )
+    presented_event = app.state.store.events()[0]
+    assert presented_event["caller"]["source_label"] == "Lab workstation"
+    stored_event = app.state.store.db.execute(
+        "SELECT body FROM events WHERE id=?", (presented_event["id"],)
+    ).fetchone()[0]
+    assert "Lab workstation" not in stored_event
+
+
+@pytest.mark.asyncio
+async def test_address_only_source_name_does_not_follow_dhcp_change(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    headers = {"User-Agent": "ExampleAgent/1.0"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.62", 52102)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+        source_key = app.state.store.callers()[0]["source_key"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 52200)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.put(
+                f"/api/v1/caller-sources/{quote(source_key, safe='')}/name",
+                json={"name": "Workshop tablet"},
+                headers={"Origin": "http://localhost"},
+            )
+        ).status_code == 200
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.63", 52103)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+
+    records = sorted(app.state.store.callers(), key=lambda row: row["source_address"])
+    assert len(records) == 2
+    assert records[0]["source_address"] == "192.0.2.62"
+    assert records[0]["source_label"] == "Workshop tablet"
+    assert records[1]["source_address"] == "192.0.2.63"
+    assert records[1]["source_label"] == "192.0.2.63"
+    assert records[1]["source_label_source"] == "address"
+
+
+@pytest.mark.asyncio
+async def test_reported_hostname_is_display_evidence_not_dhcp_identity(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    headers = {
+        "User-Agent": "ExampleAgent/1.0",
+        "X-Router-Hostname": "shared-name.local",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.66", 52106)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+        source_key = app.state.store.callers()[0]["source_key"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 52201)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.put(
+                f"/api/v1/caller-sources/{quote(source_key, safe='')}/name",
+                json={"name": "First source"},
+                headers={"Origin": "http://localhost"},
+            )
+        ).status_code == 200
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.67", 52107)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models", headers=headers)).status_code == 200
+
+    records = sorted(app.state.store.callers(), key=lambda row: row["source_address"])
+    assert [row["source_key"] for row in records] == [
+        "addr:192.0.2.66",
+        "addr:192.0.2.67",
+    ]
+    assert records[0]["source_label"] == "First source"
+    assert records[1]["source_label"] == "shared-name.local"
+    assert records[1]["source_label_source"] == "reported_hostname"
+
+
+@pytest.mark.asyncio
+async def test_discovered_hostname_labels_address_without_merging_sources(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    write_json(
+        tmp_path / "discovery" / "network.json",
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.64",
+                    "name": "workstation.local",
+                    "status": "up",
+                    "scope": "network",
+                    "services": [],
+                },
+                {
+                    "address": "192.0.2.65",
+                    "name": "tablet.local",
+                    "status": "up",
+                    "scope": "network",
+                    "services": [],
+                },
+            ],
+            "error": "",
+            "completed_at": time.time(),
+        },
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.64", 52104)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models")).status_code == 200
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.65", 52105)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models")).status_code == 200
+
+    records = sorted(app.state.store.callers(), key=lambda row: row["source_address"])
+    assert len(records) == 2
+    assert records[0]["source_key"] == "addr:192.0.2.64"
+    assert records[0]["source_label"] == "workstation.local"
+    assert records[0]["source_label_source"] == "discovered_hostname"
+    assert records[0]["source_identity_quality"] == "address"
+    assert records[1]["source_key"] == "addr:192.0.2.65"
+    assert records[1]["source_label"] == "tablet.local"
+    assert records[1]["source_label_source"] == "discovered_hostname"
+
+
+@pytest.mark.asyncio
+async def test_discovered_hostname_can_label_a_device_key_without_becoming_identity(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    write_json(
+        tmp_path / "discovery" / "network.json",
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.68",
+                    "name": "lab-device.local",
+                    "status": "up",
+                    "scope": "network",
+                    "services": [],
+                }
+            ],
+            "error": "",
+            "completed_at": time.time(),
+        },
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.68", 52108)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.get(
+                "/v1/models",
+                headers={
+                    "User-Agent": "ExampleAgent/1.0",
+                    "X-Router-Device-Id": "lab-device-id",
+                },
+            )
+        ).status_code == 200
+
+    caller = app.state.store.callers()[0]
+    assert caller["source_key"].startswith("device:")
+    assert caller["source_label"] == "lab-device.local"
+    assert caller["source_label_source"] == "discovered_hostname"
+    assert caller["source_identity_quality"] == "reported_device"
+
+
+@pytest.mark.asyncio
+async def test_network_hardware_identity_carries_name_across_dhcp_change(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    report_path = tmp_path / "discovery" / "network.json"
+    write_json(
+        report_path,
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.70",
+                    "hardware_address": "00:11:22:33:44:55",
+                    "name": "studio-mac.local",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                    "services": [],
+                }
+            ],
+            "error": "",
+            "completed_at": time.time(),
+        },
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.70", 52110)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.get(
+                "/v1/models",
+                headers={
+                    "X-Router-Device-Id": "caller-device-id",
+                    "X-Router-Hostname": "studio-mac.local",
+                    "X-Stainless-OS": "MacOS",
+                },
+            )
+        ).status_code == 200
+    source_key = app.state.store.callers()[0]["source_key"]
+    assert source_key.startswith("hardware:")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 52111)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.put(
+                f"/api/v1/caller-sources/{quote(source_key, safe='')}/name",
+                json={"name": "Studio Mac"},
+                headers={"Origin": "http://localhost"},
+            )
+        ).status_code == 200
+
+    write_json(
+        report_path,
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.71",
+                    "hardware_address": "00-11-22-33-44-55",
+                    "name": "studio-mac.local",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                    "services": [],
+                },
+                {
+                    "address": "192.0.2.70",
+                    "hardware_address": "66:77:88:99:AA:BB",
+                    "name": "studio-mac.local",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                    "services": [],
+                },
+            ],
+            "error": "",
+            "completed_at": time.time(),
+        },
+    )
+    for address, port in (("192.0.2.71", 52112), ("192.0.2.70", 52113)):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=(address, port)),
+            base_url="http://localhost",
+        ) as http:
+            assert (
+                await http.get(
+                    "/v1/models",
+                    headers={
+                        "X-Router-Device-Id": "caller-device-id",
+                        "X-Router-Hostname": "studio-mac.local",
+                        "X-Stainless-OS": "MacOS",
+                    },
+                )
+            ).status_code == 200
+
+    records = app.state.store.callers()
+    named = next(record for record in records if record["source_key"] == source_key)
+    other = next(record for record in records if record["source_key"] != source_key)
+    assert named["source_label"] == "Studio Mac"
+    assert named["source_identity_quality"] == "network_hardware"
+    assert named["recent_source_addresses"] == ["192.0.2.70", "192.0.2.71"]
+    assert other["source_key"].startswith("hardware:")
+    assert other["source_key"] != source_key
+    assert other["source_label"] == "studio-mac.local"
+    assert other["source_label_source"] == "reported_hostname"
+    assert not (tmp_path / "discovery" / "request.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_hardware_identity_never_inherits_an_old_address_bound_name(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    policy = Client(name="Shared access")
+    app.state.store.save(
+        Configuration(
+            clients=[policy],
+            security=Security(
+                operator_auth_enabled=False,
+                client_auth_enabled=False,
+                anonymous_client_id=policy.id,
+            ),
+        )
+    )
+    address = "192.0.2.78"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(address, 52114)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models")).status_code == 200
+    address_source_key = app.state.store.callers()[0]["source_key"]
+    assert address_source_key == f"addr:{address}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 52115)),
+        base_url="http://localhost",
+    ) as http:
+        assert (
+            await http.put(
+                f"/api/v1/caller-sources/{quote(address_source_key, safe='')}/name",
+                json={"name": "Old IP label"},
+                headers={"Origin": "http://localhost"},
+            )
+        ).status_code == 200
+
+    write_json(
+        tmp_path / "discovery" / "network.json",
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": address,
+                    "hardware_address": "00:11:22:33:44:99",
+                    "name": "replacement-device.local",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                }
+            ],
+            "completed_at": time.time(),
+        },
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(address, 52116)),
+        base_url="http://localhost",
+    ) as http:
+        assert (await http.get("/v1/models")).status_code == 200
+
+    records = {record["source_key"]: record for record in app.state.store.callers()}
+    assert records[address_source_key]["source_label"] == "Old IP label"
+    hardware = next(
+        record for key, record in records.items() if key != address_source_key
+    )
+    assert hardware["source_key"].startswith("hardware:")
+    assert hardware["source_label"] == "replacement-device.local"
+    assert hardware["source_label_source"] == "discovered_hostname"
+
+
+def test_discovery_hardware_identity_rejects_ambiguous_invalid_and_stale_evidence(
+    tmp_path,
+):
+    store = Store(str(tmp_path))
+    report_path = tmp_path / "discovery" / "network.json"
+    write_json(
+        report_path,
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.73",
+                    "hardware_address": "not-a-mac-001122334455",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                },
+                {
+                    "address": "192.0.2.74",
+                    "hardware_address": "00:11:22:33:44:66",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                },
+                {
+                    "address": "192.0.2.75",
+                    "hardware_address": "00:11:22:33:44:66",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                },
+            ],
+            "completed_at": time.time(),
+        },
+    )
+    assert store.source_identity("192.0.2.73", {})["source_key"] == "addr:192.0.2.73"
+    assert store.source_identity("192.0.2.74", {})["source_key"] == "addr:192.0.2.74"
+    assert store.source_identity("192.0.2.75", {})["source_key"] == "addr:192.0.2.75"
+
+    write_json(
+        report_path,
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.76",
+                    "hardware_address": "00:11:22:33:44:77",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                }
+            ],
+            "completed_at": time.time()
+            - store.config().discovery.network_interval_seconds
+            - 1,
+        },
+    )
+    assert store.source_identity("192.0.2.76", {})["source_key"] == "addr:192.0.2.76"
+    assert not (tmp_path / "discovery" / "request.json").exists()
+
+
+def test_discovery_hardware_identity_expires_without_a_new_snapshot(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    completed_at = time.time()
+    write_json(
+        tmp_path / "discovery" / "network.json",
+        {
+            "phase": "complete",
+            "hosts": [
+                {
+                    "address": "192.0.2.77",
+                    "hardware_address": "00:11:22:33:44:88",
+                    "status": "up",
+                    "scope": "network",
+                    "scan_complete": True,
+                }
+            ],
+            "completed_at": completed_at,
+        },
+    )
+    assert store.source_identity("192.0.2.77", {})["source_key"].startswith(
+        "hardware:"
+    )
+
+    monkeypatch.setattr(
+        "gateway.network.caller_evidence.time.time",
+        lambda: completed_at + store.config().discovery.network_interval_seconds + 1,
+    )
+    assert store.source_identity("192.0.2.77", {})["source_key"] == "addr:192.0.2.77"
 
 
 def test_caller_migration_rolls_back_as_one_transaction(tmp_path):
@@ -479,7 +1044,8 @@ def test_caller_migration_rolls_back_as_one_transaction(tmp_path):
         )
     with pytest.raises(sqlite3.IntegrityError, match="disk failure"):
         Store(str(tmp_path))
-    assert store.callers() == [row]
+    assert json.loads(store.db.execute("SELECT body FROM callers").fetchone()[0]) == row
+    assert store.callers()[0]["source_key"] == "addr:192.0.2.52"
 
 
 def test_late_observation_preserves_latest_auth_and_its_own_event_evidence(tmp_path):

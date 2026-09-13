@@ -111,6 +111,10 @@ class Sweep:
                 ports_seen = set(observed["ports"]) | responsive
                 if item.get("partial"):
                     ports_seen |= set(host["ports"])
+                if "hardware_address" not in observed:
+                    # A portable TCP observation cannot confirm the prior
+                    # link-layer identity for a reused DHCP address.
+                    host.pop("hardware_address", None)
                 host.update({k: v for k, v in observed.items() if k != "ports"})
                 host.update(
                     ports=sorted(ports_seen),

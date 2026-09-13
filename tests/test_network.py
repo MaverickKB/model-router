@@ -164,6 +164,33 @@ async def test_discovery_coverage_is_visible_before_scan_finishes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scan_without_hardware_evidence_clears_prior_hardware_address(tmp_path):
+    async def runner(*args, **kwargs):
+        yield {
+            "host": {
+                "address": "192.0.2.9",
+                "status": "up",
+                "evidence": "TCP connection accepted",
+                "name": "",
+                "ports": [],
+                "filtered_ports": 0,
+            }
+        }
+
+    host = {
+        "address": "192.0.2.9",
+        "hardware_address": "00:11:22:33:44:55",
+        "ports": [],
+        "services": [],
+    }
+    collector = Collector(tmp_path, runner=runner)
+    collector.report = {"hosts": [host], "packets_per_second": 100}
+    async with httpx.AsyncClient() as http:
+        await collector.pass_scan(http, [host["address"]], "1-65535", "full_scan")
+    assert "hardware_address" not in host
+
+
+@pytest.mark.asyncio
 async def test_disabled_admission_keeps_catalog_observable_and_network_view_current(
     tmp_path,
 ):

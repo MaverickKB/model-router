@@ -42,6 +42,7 @@ async def test_nmap_xml_and_exact_scan_arguments(
     if fixture == "ipv4.xml":
         assert hosts[0]["ports"] == [51387]
         assert hosts[0]["filtered_ports"] == 99
+        assert hosts[0]["hardware_address"] == "00:11:22:33:44:55"
     else:
         assert hosts[0]["address"] == "2001:db8::17"
         assert endpoint(hosts[0]["address"], 65535) == "http://[2001:db8::17]:65535/v1"

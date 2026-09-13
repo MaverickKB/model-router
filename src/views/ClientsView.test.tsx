@@ -49,6 +49,7 @@ function props(callers: ObservedCaller[], clients: Client[] = []) {
     activeClient: null,
     onSelect: vi.fn(),
     onDelete: vi.fn(),
+    onRenameSource: vi.fn(async () => {}),
     save: vi.fn(async (config: Config) => config),
   };
 }
@@ -223,6 +224,166 @@ it("orders sources by address and their metadata by recency without changing obs
   ]);
   expect(grouped[0].lastSeen).toBe(30);
   expect(callers).toEqual(original);
+});
+
+it("shows a friendly source name without hiding address evidence", async () => {
+  const input = props([
+    observation("macbook-older-address", {
+      source_key: "device:workstation",
+      source_label: "workstation.local",
+      source_label_source: "reported_hostname",
+      source_hostname: "workstation.local",
+      source_identity_quality: "reported_device",
+      source_address: "192.0.2.49",
+      last_seen: 1799999900,
+    }),
+    observation("macbook-openai", {
+      source_key: "device:workstation",
+      source_label: "Lab workstation",
+      source_label_source: "operator",
+      source_hostname: "workstation.local",
+      source_identity_quality: "reported_device",
+      source_address: "192.0.2.50",
+    }),
+  ]);
+  render(<ClientsView {...input} />);
+  const user = userEvent.setup();
+
+  await user.click(
+    screen.getByRole("button", { name: "Inspect source Lab workstation" }),
+  );
+
+  const details = screen.getByRole("region", {
+    name: "Source details for Lab workstation",
+  });
+  expect(
+    within(details).getByRole("heading", { name: "Lab workstation" }),
+  ).toBeVisible();
+  expect(
+    within(details).getByText("Observed addresses").nextElementSibling,
+  ).toHaveTextContent("192.0.2.49, 192.0.2.50");
+  expect(
+    within(details).getByText("Hostname evidence").nextElementSibling,
+  ).toHaveTextContent("workstation.local");
+  expect(
+    within(details).getByText("Association").nextElementSibling,
+  ).toHaveTextContent("Caller-reported device identifier");
+});
+
+it("explains when a friendly name follows current network hardware evidence", async () => {
+  const input = props([
+    observation("studio-mac", {
+      source_key: "hardware:workstation",
+      source_label: "Studio Mac",
+      source_label_source: "operator",
+      source_identity_quality: "network_hardware",
+      source_address: "192.0.2.50",
+    }),
+  ]);
+  render(<ClientsView {...input} />);
+  const user = userEvent.setup();
+
+  await user.click(
+    screen.getByRole("button", { name: "Inspect source Studio Mac" }),
+  );
+
+  const details = screen.getByRole("region", {
+    name: "Source details for Studio Mac",
+  });
+  expect(
+    within(details).getByText("Association").nextElementSibling,
+  ).toHaveTextContent("Network-observed hardware identifier");
+  expect(
+    within(details).getByText("Association").nextElementSibling,
+  ).toHaveTextContent("does not grant access");
+});
+
+it("saves caller source names through the source key", async () => {
+  const input = props([
+    observation("macbook-openai", {
+      source_key: "addr:192.0.2.30",
+      source_label: "workstation.local",
+      source_label_source: "reported_hostname",
+      source_hostname: "workstation.local",
+      source_identity_quality: "address",
+    }),
+  ]);
+  render(<ClientsView {...input} />);
+  const user = userEvent.setup();
+
+  await user.click(
+    screen.getByRole("button", { name: "Inspect source workstation.local" }),
+  );
+  await user.clear(screen.getByLabelText("Friendly name"));
+  await user.type(screen.getByLabelText("Friendly name"), "Lab workstation");
+  await user.click(screen.getByRole("button", { name: "Save name" }));
+
+  expect(input.onRenameSource).toHaveBeenCalledWith(
+    "addr:192.0.2.30",
+    "Lab workstation",
+  );
+});
+
+it("keeps the existing friendly name and explains a failed save", async () => {
+  const input = props([
+    observation("macbook-openai", {
+      source_key: "addr:192.0.2.30",
+      source_label: "Lab workstation",
+      source_label_source: "operator",
+    }),
+  ]);
+  input.onRenameSource = vi.fn(async () => {
+    throw new Error("The router did not save this name");
+  });
+  render(<ClientsView {...input} />);
+  const user = userEvent.setup();
+
+  await user.click(
+    screen.getByRole("button", { name: "Inspect source Lab workstation" }),
+  );
+  await user.clear(screen.getByLabelText("Friendly name"));
+  await user.type(screen.getByLabelText("Friendly name"), "New name");
+  await user.click(screen.getByRole("button", { name: "Save name" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "The router did not save this name",
+  );
+  expect(screen.getByLabelText("Friendly name")).toHaveValue(
+    "Lab workstation",
+  );
+});
+
+it("uses discovered hostnames as display evidence while staying address-bound", async () => {
+  const input = props([
+    observation("discovered", {
+      source_key: "addr:192.0.2.30",
+      source_label: "workstation.local",
+      source_label_source: "discovered_hostname",
+      source_hostname: "workstation.local",
+      source_identity_quality: "address",
+    }),
+  ]);
+  render(<ClientsView {...input} />);
+  const user = userEvent.setup();
+
+  const card = screen.getByRole("button", {
+    name: "Inspect source workstation.local",
+  });
+  expect(card).toHaveTextContent("Discovered hostname");
+  await user.click(card);
+
+  const details = screen.getByRole("region", {
+    name: "Source details for workstation.local",
+  });
+  expect(
+    within(details).getByText("Association").nextElementSibling,
+  ).toHaveTextContent("Address-bound");
+  expect(
+    within(details).getByText("Association").nextElementSibling,
+  ).toHaveTextContent("current, unique network hardware identifier");
+  expect(
+    within(details).getByText("Hostname evidence").nextElementSibling,
+  ).toHaveTextContent("workstation.local");
 });
 
 it("has an explicit empty state without inventing connected clients", () => {

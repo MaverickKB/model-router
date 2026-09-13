@@ -30,12 +30,16 @@ def read_host(element: ET.Element) -> dict:
     address = element.find("address[@addrtype='ipv4']")
     if address is None:
         address = element.find("address[@addrtype='ipv6']")
+    hardware_address = element.find("address[@addrtype='mac']")
     status = element.find("status")
     if address is None or status is None:
         return {}
     names = element.findall("hostnames/hostname")
     return {
         "address": address.get("addr"),
+        "hardware_address": (
+            hardware_address.get("addr") if hardware_address is not None else ""
+        ),
         "name": next((n.get("name") for n in names if n.get("name")), ""),
         "status": status.get("state"),
         "evidence": status.get("reason", ""),

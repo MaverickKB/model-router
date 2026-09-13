@@ -283,6 +283,21 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         await asyncio.to_thread(store.revoke_keys, client_id)
         return {"ok": True}
 
+    @management.put("/caller-sources/{source_key}/name")
+    async def name_caller_source(source_key: str, request: Request):
+        await identity.require_operator(request, True)
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Caller source name must be a JSON object")
+        try:
+            return await asyncio.to_thread(
+                store.set_caller_source_name,
+                source_key,
+                str(body.get("name") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+
     @management.post("/discover")
     async def discover(request: Request):
         await identity.require_operator(request, True)
