@@ -15,6 +15,10 @@ def canonical_address(value: str) -> str:
         parsed = ipaddress.ip_address(str(value).strip())
     except ValueError:
         raise ValueError(ADDRESS_RULE)
+    # A zoned literal (fe80::1%eth0) can never equal a reported peer address and
+    # would let one host be registered under several distinct strings.
+    if getattr(parsed, "scope_id", None) is not None:
+        raise ValueError(ADDRESS_RULE)
     # An IPv4-mapped IPv6 literal names the same host as its IPv4 form.
     parsed = getattr(parsed, "ipv4_mapped", None) or parsed
     # Loopback is a real peer (every process on the router host); it is checked

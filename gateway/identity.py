@@ -241,7 +241,10 @@ class Identity:
 
         Only the direct TCP peer participates; forwarding headers are never
         read. Any failed check falls through to the source and default policies
-        rather than refusing, so a stale row never locks a host out.
+        rather than refusing, so a stale row never locks a host out. An
+        unusable bearer header is deliberately ignored here: the clients this
+        mode exists for send a placeholder key, and an ``mru_`` key has already
+        been resolved or refused before this step runs.
         """
         settings = config.accounts
         if not (settings.enabled and settings.device_registration_enabled):
@@ -256,8 +259,9 @@ class Identity:
         level = level_for(config, account["level_id"])
         if level is None:
             return None
+        touched = self._device_touched.get(device["id"])
         now = time.monotonic()
-        if now - self._device_touched.get(device["id"], 0) > 60:
+        if touched is None or now - touched > 60:
             self._device_touched[device["id"]] = now
             await asyncio.to_thread(self.store.touch_device, device["id"])
         request.state.identity_basis = "registered_device"

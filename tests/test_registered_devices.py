@@ -268,6 +268,22 @@ async def test_registered_device_reaches_key_gated_route_with_level_permissions_
 
 
 @pytest.mark.asyncio
+async def test_unusable_key_header_from_registered_address_is_still_the_device(tmp_path):
+    # Clients that always send a placeholder key header are the reason this
+    # mode exists: an unusable bearer from the registered host is still the
+    # device, while the same header from a neighbour stays unassigned.
+    setup = await build(tmp_path)
+    async with setup.caller(Authorization="Bearer sk-placeholder") as placeholder:
+        assert (await complete(placeholder, "private")).status_code == 200
+    async with setup.caller(NEIGHBOUR, Authorization="Bearer sk-placeholder") as other:
+        assert (await complete(other, "private")).status_code == 403
+    row = setup.caller_row(REGISTERED)
+    assert row["identity_basis"] == "registered_device"
+    assert row["device_id"] == setup.device["id"]
+    assert setup.caller_row(NEIGHBOUR)["identity_basis"] == "unassigned"
+
+
+@pytest.mark.asyncio
 async def test_device_outranks_network_policy_and_state_names_the_policy(tmp_path):
     setup = await build(tmp_path)
     async with setup.caller() as registered, setup.caller(NEIGHBOUR) as neighbour:
@@ -392,7 +408,14 @@ async def test_device_address_must_be_single_literal_and_globally_unique(tmp_pat
     setup = await build(tmp_path)
     bob = setup.add_account("bob", "Bob")
     async with setup.portal("bob") as portal:
-        for address in ("192.0.2.0/24", "224.0.0.1", "169.254.1.1", "0.0.0.0", "desk"):
+        for address in (
+            "192.0.2.0/24",
+            "224.0.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "2001:db8::1%eth0",
+            "desk",
+        ):
             response = await portal.post(
                 "/api/v1/portal/devices", json={"address": address, "name": "x"}
             )
@@ -484,3 +507,33 @@ async def test_portal_delete_is_scoped_and_admin_delete_is_not(tmp_path):
     async with setup.caller() as http:
         assert (await complete(http, "private")).status_code == 403
     assert setup.caller_row(REGISTERED)["identity_basis"] == "source_network"
+
+
+@pytest.mark.asyncio
+async def test_portal_device_writes_require_same_origin(tmp_path):
+    setup = await build(tmp_path)
+    async with setup.portal() as portal:
+        cookies = {"router_portal": portal.cookies["router_portal"]}
+    for origin in (None, "http://evil.test"):
+        http = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=setup.app, client=("127.0.0.1", 1)),
+            base_url=ORIGIN,
+            headers={"Origin": origin} if origin else {},
+            cookies=cookies,
+        )
+        async with http:
+            assert (await http.get("/api/v1/portal/me")).status_code == 200
+            writes = [
+                await http.post(
+                    "/api/v1/portal/devices", json={"address": NEIGHBOUR, "name": "x"}
+                ),
+                await http.delete(f"/api/v1/portal/devices/{setup.device['id']}"),
+            ]
+        for response in writes:
+            assert response.status_code == 403, origin
+            assert (
+                response.json()["detail"]
+                == "Portal changes require a same-origin request"
+            )
+    (device,) = setup.store.devices_for(setup.account["id"])
+    assert device["id"] == setup.device["id"]
