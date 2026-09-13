@@ -31,6 +31,15 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
           Permission policy: {job.client}
         </p>
         {job.model && <p className="observed-model">{job.model}</p>}
+        {job.usage && (
+          <p className="hint">
+            {job.usage.estimated ? "≈ " : ""}
+            {job.usage.prompt_tokens + job.usage.completion_tokens} tokens
+          </p>
+        )}
+        {job.status === "limited" && (
+          <p className="hint">Refused by account limit: {job.limit?.code}</p>
+        )}
         {job.attempts.length > 0 && (
           <>
             <h3>Attempts</h3>

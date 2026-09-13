@@ -77,6 +77,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         discovery,
         identity,
     )
+    app.state.proxy = proxy
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""

@@ -223,6 +223,12 @@ export interface Job {
   elapsed_ms?: number;
   http_status?: number;
   stream: boolean;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    estimated: boolean;
+  };
+  limit?: { code: string; retry_after: number | null };
 }
 export interface State {
   setup_required: boolean;
