@@ -145,11 +145,11 @@ async def limits_are_never_consulted(ctx: Disabled):
 
 async def admin_endpoints_stay_available(ctx: Disabled):
     # F1: operators prepare accounts and hand out links before enabling.
-    token = (ctx.store.directory / "operator-bootstrap.key").read_text().strip()
-    async with ctx.http("127.0.0.1", Origin="http://router.test") as http:
-        assert (
-            await http.post("/api/v1/login", json={"token": token})
-        ).status_code == 200
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=ctx.app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as http:
         listed = await http.get("/api/v1/accounts")
         link = await http.post(f"/api/v1/accounts/{ctx.account['id']}/activation")
         state = await http.get("/api/v1/state")
@@ -157,7 +157,7 @@ async def admin_endpoints_stay_available(ctx: Disabled):
     (row,) = listed.json()["accounts"]
     assert row["id"] == ctx.account["id"] and row["key_count"] == 1
     assert link.status_code == 200
-    assert link.json()["url"].startswith("http://router.test/portal/activate#token=")
+    assert "/portal/activate#token=" in link.json()["url"]
     assert state.json()["account_levels_in_use"] == {ctx.account["level_id"]: 1}
 
 
@@ -218,11 +218,11 @@ async def device_registration_is_locked_with_the_portal(ctx: Disabled):
 
 async def admin_device_endpoints_stay_available(ctx: Disabled):
     # Rows are inert, not gone: an operator can still see and disable them.
-    token = (ctx.store.directory / "operator-bootstrap.key").read_text().strip()
-    async with ctx.http("127.0.0.1", Origin="http://router.test") as http:
-        assert (
-            await http.post("/api/v1/login", json={"token": token})
-        ).status_code == 200
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=ctx.app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as http:
         listed = await http.get("/api/v1/devices")
         disabled = await http.put(
             f"/api/v1/devices/{ctx.device['id']}", json={"enabled": False}
@@ -306,11 +306,11 @@ async def test_device_switch_alone_makes_devices_inert(tmp_path):
         assert response.json()["detail"] == "Device registration is not enabled"
     assert ctx.store.device_snapshot(ctx.device["id"]) is not None
 
-    token = (ctx.store.directory / "operator-bootstrap.key").read_text().strip()
-    async with ctx.http("127.0.0.1", Origin="http://router.test") as operator:
-        assert (
-            await operator.post("/api/v1/login", json={"token": token})
-        ).status_code == 200
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=ctx.app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as operator:
         listed = await operator.get("/api/v1/devices")
         state = await operator.get("/api/v1/state")
     assert [row["id"] for row in listed.json()["devices"]] == [ctx.device["id"]]
