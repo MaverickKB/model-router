@@ -69,16 +69,34 @@ export function usePortalState() {
     return () => controller.abort();
   }, [loadStatus, reload]);
 
-  const signedIn = me !== null;
+  // Only a 401 (or the server's own signed_in=false) signs the page out, so a
+  // transient failure of /me keeps polling until it answers.
+  const active = status?.enabled === true && !signedOut;
   useEffect(() => {
-    if (!signedIn) return;
+    if (!active) return;
     const controller = new AbortController();
     const timer = setInterval(() => void reload(controller.signal), POLL_MS);
     return () => {
       controller.abort();
       clearInterval(timer);
     };
-  }, [signedIn, reload]);
+  }, [active, reload]);
 
-  return { status, me, signedOut, error, reload, loadStatus, setError };
+  const signOut = useCallback(() => {
+    generation.current += 1;
+    setMe(null);
+    setSignedOut(true);
+    setError("");
+  }, []);
+
+  return {
+    status,
+    me,
+    signedOut,
+    error,
+    reload,
+    loadStatus,
+    signOut,
+    setError,
+  };
 }

@@ -1,6 +1,7 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { api, post } from "../api";
+import { Field } from "../components";
 import { dateLabel } from "./format";
 import type { PortalMe, RegisteredDevice } from "./types";
 
@@ -44,7 +45,16 @@ export function PortalDevices({
         {me.devices.observed.length ? (
           <ul className="portal-list" aria-label="Recently seen devices">
             {me.devices.observed.map((device) => (
-              <li key={`${device.source_address}-${device.credential_name}`}>
+              <li
+                // One host can hold several observed connections on one key.
+                key={[
+                  device.via,
+                  device.source_address,
+                  device.credential_name,
+                  device.reported_name,
+                  device.software,
+                ].join("|")}
+              >
                 <div>
                   <strong>
                     {device.reported_name || device.software || "Connection"}
@@ -90,19 +100,17 @@ export function PortalDevices({
               });
             }}
           >
-            <label className="field">
-              <span>Address</span>
+            <Field
+              label="Address"
+              hint="One IPv4 or IPv6 address. Prefilled with this browser's address as the router sees it."
+            >
               <input
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 maxLength={64}
                 required
               />
-              <small>
-                One IPv4 or IPv6 address. Prefilled with this browser's address
-                as the router sees it.
-              </small>
-            </label>
+            </Field>
             <label className="field">
               <span>Name</span>
               <input

@@ -319,3 +319,125 @@ it("a 403 from /me reloads status and shows the disabled state", async () => {
   ).toBeInTheDocument();
   expect(status).toHaveBeenCalledTimes(2);
 });
+
+it("shows the connecting state, not the sign-in form, until /me answers and retries a failed first load", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let reachable = false;
+  stubFetch({
+    "GET /api/v1/portal/status": () => ({ body: enabled }),
+    "GET /api/v1/portal/me": () => {
+      if (!reachable) throw new TypeError("Failed to fetch");
+      return { body: fixtureMe() };
+    },
+  });
+  render(<PortalApp />);
+  expect(await screen.findByText("Failed to fetch")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Username")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  reachable = true;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(
+    await screen.findByRole("heading", { name: "Alice" }),
+  ).toBeInTheDocument();
+});
+
+it("activation form appears from the hash token even while another session is signed in", async () => {
+  history.replaceState(null, "", "/portal/activate#token=mra_reset");
+  let username = "alice";
+  const activate = vi.fn(() => {
+    username = "bob";
+    return { body: { ok: true } };
+  });
+  stubFetch({
+    "GET /api/v1/portal/status": () => ({ body: enabled }),
+    "POST /api/v1/portal/activate": activate,
+    "GET /api/v1/portal/me": () => ({
+      body: fixtureMe({
+        account: { ...fixtureMe().account, username, name: "" },
+      }),
+    }),
+  });
+  render(<PortalApp />);
+  const user = userEvent.setup();
+  await user.type(
+    await screen.findByLabelText(/^New password/),
+    "correct horse battery",
+  );
+  expect(screen.queryByRole("heading", { name: "alice" })).toBeNull();
+  await user.type(
+    screen.getByLabelText("Confirm password"),
+    "correct horse battery",
+  );
+  await user.click(screen.getByRole("button", { name: "Activate account" }));
+  expect(
+    await screen.findByRole("heading", { name: "bob" }),
+  ).toBeInTheDocument();
+  expect(activate).toHaveBeenCalledWith({
+    token: "mra_reset",
+    password: "correct horse battery",
+  });
+  expect(location.hash).toBe("");
+});
+
+it("a failed sign-out is reported and keeps the dashboard; a successful one shows the sign-in form", async () => {
+  let reachable = false;
+  stubFetch({
+    "GET /api/v1/portal/status": () => ({ body: enabled }),
+    "GET /api/v1/portal/me": () => ({ body: fixtureMe() }),
+    "POST /api/v1/portal/logout": () => {
+      if (!reachable) throw new TypeError("Failed to fetch");
+      return { body: { ok: true } };
+    },
+  });
+  render(<PortalApp />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Account" }));
+  await user.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Sign out failed. Failed to fetch",
+  );
+  expect(screen.getByRole("heading", { name: "Account" })).toBeInTheDocument();
+  reachable = true;
+  await user.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Account" })).toBeNull();
+});
+
+it("observed connections from one host on one key render as distinct rows without key collisions", async () => {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const observed = {
+    source_address: "192.0.2.41",
+    reported_name: "",
+    last_seen: 1_700_000_300,
+    last_path: "/v1/chat/completions",
+    via: "key" as const,
+    credential_name: "laptop",
+  };
+  stubFetch({
+    "GET /api/v1/portal/status": () => ({ body: enabled }),
+    "GET /api/v1/portal/me": () => ({
+      body: fixtureMe({
+        devices: {
+          observed: [
+            { ...observed, software: "curl/8.7.1" },
+            { ...observed, software: "python-requests/2.33.0" },
+          ],
+          registered: null,
+        },
+      }),
+    }),
+  });
+  render(<PortalApp />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Devices" }));
+  const list = screen.getByRole("list", { name: "Recently seen devices" });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+  expect(
+    errors.mock.calls.some((call) => String(call[0]).includes("same key")),
+  ).toBe(false);
+  errors.mockRestore();
+});

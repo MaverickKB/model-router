@@ -83,22 +83,7 @@
   margin: 12px 0;
 }
 .portal .key-result {
-  background: #131b0b;
-  border: 1px solid #a5de1533;
-  border-radius: 5px;
-  padding: 14px;
   margin: 8px 0 20px;
-}
-.portal .key-result > p {
-  margin: 0 0 10px;
-  font-size: 12px;
-}
-.portal .key-result > code {
-  display: block;
-  overflow-wrap: anywhere;
-  word-break: break-all;
-  font-size: 11px;
-  margin-bottom: 10px;
 }
 .portal-snippet {
   margin: 12px 0 0;

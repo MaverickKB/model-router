@@ -1,17 +1,19 @@
 import { LogOut } from "lucide-react";
 import { useState } from "react";
-import { api, post } from "../api";
+import { api, ApiError, post } from "../api";
 import { dateLabel } from "./format";
 import type { PortalMe } from "./types";
 
 export function PortalAccount({
   me,
   onChange,
+  onError,
   onSignedOut,
 }: {
   me: PortalMe;
   onChange: () => Promise<void>;
-  onSignedOut: () => Promise<void>;
+  onError: (message: string) => void;
+  onSignedOut: () => void;
 }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -31,9 +33,17 @@ export function PortalAccount({
           onClick={async () => {
             try {
               await post("/api/v1/portal/logout");
-            } finally {
-              await onSignedOut();
+            } catch (err) {
+              // A 401 means the session is already gone; anything else keeps
+              // the page so the person sees that sign-out did not happen.
+              if (!(err instanceof ApiError && err.status === 401)) {
+                onError(
+                  `Sign out failed. ${err instanceof Error ? err.message : String(err)}`,
+                );
+                return;
+              }
             }
+            onSignedOut();
           }}
         >
           <LogOut size={15} />

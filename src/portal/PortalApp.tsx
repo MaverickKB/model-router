@@ -6,7 +6,7 @@ import { PortalDevices } from "./PortalDevices";
 import { PortalDisabled } from "./PortalDisabled";
 import { PortalKeys } from "./PortalKeys";
 import { PortalOverview } from "./PortalOverview";
-import { PortalSignIn } from "./PortalSignIn";
+import { hashToken, PortalSignIn } from "./PortalSignIn";
 import "./portal.css";
 import { usePortalState } from "./usePortalState";
 
@@ -14,30 +14,38 @@ const TABS = ["Overview", "API keys", "Devices", "Account"] as const;
 type Tab = (typeof TABS)[number];
 
 export function PortalApp() {
-  const { status, me, signedOut, error, reload, loadStatus, setError } =
+  const { status, me, signedOut, error, reload, signOut, setError } =
     usePortalState();
   const [tab, setTab] = useState<Tab>("Overview");
-  if (!status)
-    return (
-      <div className="unlock">
-        <Network size={32} />
-        <h1>Model Router · Portal</h1>
-        <p>{error || "Connecting to your router…"}</p>
-      </div>
-    );
+  // An activation link is honoured even while another session is signed in:
+  // the form stays until the token is consumed, and /activate issues the new session.
+  const [token, setToken] = useState(hashToken);
+  const connecting = (
+    <div className="unlock">
+      <Network size={32} />
+      <h1>Model Router · Portal</h1>
+      <p>{error || "Connecting to your router…"}</p>
+    </div>
+  );
+  if (!status) return connecting;
   if (!status.enabled) return <PortalDisabled />;
-  if (!me || signedOut)
+  if (signedOut || token)
     return (
       <PortalSignIn
         key={error}
+        token={token}
         error={error}
         onSignedIn={async () => {
           setError("");
           setTab("Overview");
           await reload();
+          setToken("");
         }}
       />
     );
+  // Signed in per /status but /me has not answered yet (or failed transiently):
+  // the hook keeps polling, so this is never the sign-in form.
+  if (!me) return connecting;
   return (
     <div className="application portal">
       <header className="titlebar">
@@ -94,9 +102,8 @@ export function PortalApp() {
             <PortalAccount
               me={me}
               onChange={reload}
-              onSignedOut={async () => {
-                await loadStatus();
-              }}
+              onError={setError}
+              onSignedOut={signOut}
             />
           )}
         </main>

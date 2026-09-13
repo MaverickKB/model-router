@@ -1,20 +1,22 @@
 import { KeyRound, Network } from "lucide-react";
 import { useState } from "react";
 import { post } from "../api";
+import { Field } from "../components";
 
-function hashToken() {
+export function hashToken() {
   const match = /(?:^#|[#&])token=([^&]+)/.exec(location.hash);
   return match ? decodeURIComponent(match[1]) : "";
 }
 
 export function PortalSignIn({
+  token,
   error,
   onSignedIn,
 }: {
+  token: string;
   error: string;
   onSignedIn: () => Promise<void>;
 }) {
-  const [token, setToken] = useState(hashToken);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -59,7 +61,6 @@ export function PortalSignIn({
               await post("/api/v1/portal/activate", { token, password });
               // The one-time token must not survive in the address bar.
               history.replaceState(null, "", "/portal");
-              setToken("");
             });
           } else {
             void submit(() =>
@@ -70,8 +71,10 @@ export function PortalSignIn({
       >
         {activating ? (
           <>
-            <label className="field">
-              <span>New password</span>
+            <Field
+              label="New password"
+              hint="12 to 256 characters. Anything except your username."
+            >
               <input
                 type="password"
                 value={password}
@@ -82,10 +85,7 @@ export function PortalSignIn({
                 maxLength={256}
                 required
               />
-              <small>
-                12 to 256 characters. Anything except your username.
-              </small>
-            </label>
+            </Field>
             <label className="field">
               <span>Confirm password</span>
               <input
