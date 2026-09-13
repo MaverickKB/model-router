@@ -800,18 +800,22 @@ class Store:
                 )
         return token, expires
 
+    def _usable_activation(self, token: str) -> str | None:
+        """The account behind an unexpired link of an unsuspended account; caller holds the lock."""
+        row = self.db.execute(
+            "SELECT a.account_id FROM account_activations a JOIN accounts ON accounts.id = a.account_id"
+            " WHERE a.digest=? AND a.expires > ? AND accounts.status != 'suspended'",
+            (token_digest(token), time.time()),
+        ).fetchone()
+        return row[0] if row else None
+
     def activate_account(self, token: str, verifier: str) -> str | None:
         """Consume a link and set the password in one transaction; None when unusable."""
         with self.lock:
             with self.db:
-                row = self.db.execute(
-                    "SELECT a.account_id FROM account_activations a JOIN accounts ON accounts.id = a.account_id"
-                    " WHERE a.digest=? AND a.expires > ? AND accounts.status != 'suspended'",
-                    (token_digest(token), time.time()),
-                ).fetchone()
-                if not row:
+                account_id = self._usable_activation(token)
+                if account_id is None:
                     return None
-                account_id = row[0]
                 now = time.time()
                 self.db.execute(
                     "INSERT OR REPLACE INTO account_credentials VALUES (?, ?, ?)",
@@ -829,6 +833,11 @@ class Store:
                 )
             self._load_account_caches()
             return account_id
+
+    def activation_account(self, token: str) -> str | None:
+        """The account a link would activate, without consuming the link."""
+        with self.lock:
+            return self._usable_activation(token)
 
     def activation_for(self, account_id: str) -> dict | None:
         with self.lock:

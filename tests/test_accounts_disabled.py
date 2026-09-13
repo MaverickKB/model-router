@@ -161,11 +161,52 @@ async def admin_endpoints_stay_available(ctx: Disabled):
     assert state.json()["account_levels_in_use"] == {ctx.account["level_id"]: 1}
 
 
+async def portal_is_locked_and_reveals_only_the_switches(ctx: Disabled):
+    portal = ctx.app.state.portal
+    async with ctx.http("127.0.0.1", Origin="http://router.test") as http:
+        status = await http.get("/api/v1/portal/status")
+        locked = [
+            await http.post(
+                "/api/v1/portal/activate",
+                json={"token": "mra_x", "password": "correct horse battery"},
+            ),
+            await http.post(
+                "/api/v1/portal/login",
+                json={"username": "alice", "password": "correct horse battery"},
+            ),
+            await http.get("/api/v1/portal/me"),
+            await http.post("/api/v1/portal/logout"),
+            await http.put(
+                "/api/v1/portal/password",
+                json={"current": "correct horse battery", "new": "another password"},
+            ),
+            await http.post("/api/v1/portal/keys", json={"name": "phone"}),
+            await http.delete("/api/v1/portal/keys/nope"),
+        ]
+    assert status.status_code == 200
+    assert status.json() == {
+        "enabled": False,
+        "device_registration_enabled": False,
+        "signed_in": False,
+    }
+    for response in locked:
+        assert response.status_code == 403
+        assert (
+            response.json()["detail"] == "User accounts are not enabled on this router"
+        )
+    # Refused before any rate-limit budget is spent; records are untouched.
+    assert portal.login_limit.buckets == {} and portal.user_limit.buckets == {}
+    assert [row["name"] for row in ctx.store.account_keys(ctx.account["id"])] == [
+        "laptop"
+    ]
+
+
 SURFACES = [
     account_key_is_refused_before_lookup,
     registered_device_grants_nothing,
     limits_are_never_consulted,
     admin_endpoints_stay_available,
+    portal_is_locked_and_reveals_only_the_switches,
 ]
 
 
