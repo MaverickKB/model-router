@@ -45,4 +45,6 @@ def merged_configuration(config: Configuration, merge: MergeEngines) -> Configur
                 selector["engine_ids"] = relink(selector["engine_ids"])
     for client in result["clients"]:
         client["engine_ids"] = relink(client["engine_ids"])
+    for level in result["account_levels"]:
+        level["engine_ids"] = relink(level["engine_ids"])
     return Configuration.model_validate(result)

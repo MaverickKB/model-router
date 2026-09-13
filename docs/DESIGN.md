@@ -78,12 +78,12 @@ Select a source and a route to inspect access. Select a permission policy and a 
 
 | Source | Responsibility and decision |
 |---|---|
-| `gateway/schema.py` | Validates engines, routes, clients, discovery and access settings. The configuration has a schema version and revision. |
+| `gateway/schema.py` | Validates engines, routes, clients, discovery, access settings, account settings and account levels. The configuration has a schema version and revision. |
 | `gateway/contracts.py` | Defines engine/model views, candidate decisions and rejections at JSON boundaries. |
 | `gateway/engine_identity.py` | Validates explicit API merges and rewrites aliases and policy references without I/O. |
 | `gateway/topology.py` | Evaluates each observed connection independently and exposes saved-policy previews separately from real source paths. |
-| `gateway/store.py` | Owns SQLite transactions, cached policy reads, credential storage and metadata. Mutating request paths dispatch blocking storage work off the event loop. |
-| `gateway/migration.py` | Preserves installed keys, access choices, observer contracts and scan policy during schema upgrades. |
+| `gateway/store.py` | Owns SQLite transactions, cached policy reads, credential storage and metadata, including the account, account credential, account key, portal session, registered device and usage-window tables with their request-path caches. Refuses to remove a level that accounts still reference. Mutating request paths dispatch blocking storage work off the event loop. |
+| `gateway/migration.py` | Preserves installed keys, access choices, observer contracts and scan policy during schema upgrades. Schema 5 adds account settings (disabled) and an empty level list. |
 | `gateway/security/credentials.py` | Encrypts provider secrets and verifies operator/client keys. The encryption key lives outside the state directory. |
 | `gateway/callers.py` | Records bounded connection evidence before route authorization, including unassigned callers. |
 | `gateway/caller_records.py` | Defines stable observation identity and metadata merging. Authentication is current evidence, never a caller fingerprint or a permission grant. |

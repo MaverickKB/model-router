@@ -102,8 +102,29 @@ export interface Security {
   anonymous_client_id: string | null;
   session_hours: number;
 }
+export interface TokenBudget {
+  max_tokens: number;
+  window_seconds: number;
+}
+export interface AccountLevel {
+  id: string;
+  name: string;
+  description: string;
+  route_names: string[];
+  engine_ids: string[];
+  model_patterns: string[];
+  allow_cloud: boolean;
+  allow_direct_models: boolean;
+  token_budget: TokenBudget | null;
+  max_concurrency: number | null;
+}
+export interface AccountsSettings {
+  enabled: boolean;
+  device_registration_enabled: boolean;
+  session_hours: number;
+}
 export interface Config {
-  schema_version: 4;
+  schema_version: 5;
   upgraded_from_schema?: number | null;
   security: Security;
   revision: number;
@@ -111,6 +132,8 @@ export interface Config {
   routes: Route[];
   clients: Client[];
   discovery: Discovery;
+  accounts: AccountsSettings;
+  account_levels: AccountLevel[];
 }
 export interface Candidate {
   engine_id: string;

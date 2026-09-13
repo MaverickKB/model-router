@@ -50,7 +50,7 @@ Enabling sign-in keeps the current browser signed in. Generating a replacement o
 
 Settings identifies installations upgraded from the earlier schema and shows the saved access and discovery mode separately from unsaved edits. Inherited broad inspection and automatic registration stay enabled until you choose otherwise. With sign-in off, everyone using the trusted management boundary shares administrative authority. Scoped endpoint registration also remains open, independently of scheduled sweeps; automatic registration determines whether new endpoints become engines.
 
-Back up the database and its matching external encryption key. Restore that key before starting a restored database. [Credential backup and restore](docs/THREAT_MODEL.md#back-up-and-restore-credentials) explains the key location, consistent SQLite backups and the effect of losing the key.
+Back up the database and its matching external encryption key. Restore that key before starting a restored database. [Credential backup and restore](docs/THREAT_MODEL.md#back-up-and-restore-credentials) explains the key location, consistent SQLite backups and the effect of losing the key. Back up before upgrading: the schema moves forward on first start, and an older release does not read a newer database.
 
 ## Discovery belongs to the application
 

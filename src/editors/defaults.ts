@@ -1,4 +1,4 @@
-import type { Client, Engine, Route } from "../types";
+import type { AccountLevel, Client, Engine, Route } from "../types";
 
 function newId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -65,4 +65,16 @@ export const newClient = (): Client => ({
   allow_direct_models: false,
   allow_network_auth: false,
   source_networks: [],
+});
+export const newLevel = (): AccountLevel => ({
+  id: newId(),
+  name: "",
+  description: "",
+  route_names: ["auto"],
+  engine_ids: [],
+  model_patterns: ["*"],
+  allow_cloud: false,
+  allow_direct_models: false,
+  token_budget: null,
+  max_concurrency: null,
 });

@@ -30,5 +30,19 @@ def configuration(raw: dict) -> dict:
             route.setdefault("require_caller_key", legacy_required)
         value["upgraded_from_schema"] = value.get("upgraded_from_schema", version)
         value["schema_version"] = 4
+    if version < 5:
+        # User accounts arrive disabled with no levels, so an upgraded
+        # installation behaves exactly as before until an operator opts in.
+        value.setdefault(
+            "accounts",
+            {
+                "enabled": False,
+                "device_registration_enabled": False,
+                "session_hours": 168,
+            },
+        )
+        value.setdefault("account_levels", [])
+        value["upgraded_from_schema"] = value.get("upgraded_from_schema", version)
+        value["schema_version"] = 5
     value.pop("compatibility", None)
     return value
