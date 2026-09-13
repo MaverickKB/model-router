@@ -67,7 +67,11 @@ export function callerClientLabel(caller: ObservedCaller) {
 }
 
 export function callerDisplayName(caller: ObservedCaller) {
-  if (caller.identity_quality === "policy_key" && caller.name)
+  if (
+    (caller.identity_basis === "operator_test" ||
+      caller.identity_quality === "policy_key") &&
+    caller.name
+  )
     return caller.name;
   if (caller.reported_name) return caller.reported_name;
   return caller.source_address || "Source address unavailable";
@@ -151,8 +155,8 @@ export function CallerIdentity({
             </dd>
           </>
         )}
-        <dt>Named policy on last request</dt>
-        <dd>{policy?.name || "No named policy identified"}</dd>
+        <dt>Policy identified by the request</dt>
+        <dd>{policy?.name || "No named policy identified by the request"}</dd>
         <dt>Requests observed</dt>
         <dd>{caller.request_count ?? 1}</dd>
         <dt>First seen</dt>

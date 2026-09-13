@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CallerSourceDetails, groupCallerSources } from "../caller-sources";
-import { timeLabel } from "../components";
+import { sourceTimeLabel } from "../source-time";
 import { ArrowLeft, Plus, Users } from "lucide-react";
 import { ClientEditor, newClient } from "../editors";
 import type { Client, Config, EngineView, ObservedCaller } from "../types";
@@ -59,7 +59,7 @@ export function ClientsView({
             <Users size={17} />
             <span>
               <strong>{entry.address || "Source address unavailable"}</strong>
-              <small>Last seen {timeLabel(entry.lastSeen)}</small>
+              <small>Last seen {sourceTimeLabel(entry.lastSeen)}</small>
             </span>
           </button>
         ))}

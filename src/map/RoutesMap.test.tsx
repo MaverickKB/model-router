@@ -144,10 +144,10 @@ it("shows one source card for assigned and unassigned SDK observations, with met
     within(details).getByText("Software: Python requests 2.33.0"),
   ).toBeVisible();
   expect(
-    within(details).getByText("Latest policy: Writing account"),
+    within(details).getByText("Policy identified by request: Writing account"),
   ).toBeVisible();
   expect(
-    within(details).getByText("No named policy identified", {
+    within(details).getByText("No named policy identified by the request", {
       selector: "span",
     }),
   ).toBeVisible();

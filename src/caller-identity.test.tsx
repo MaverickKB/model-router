@@ -122,7 +122,9 @@ it("describes unknown credentials as identity evidence rather than a refused req
   ).toBeVisible();
   expect(screen.getByText(/Route settings determine access/)).toBeVisible();
   expect(screen.getByText("Last observed identity")).toBeVisible();
-  expect(screen.getByText("No named policy identified")).toBeVisible();
+  expect(
+    screen.getByText("No named policy identified by the request"),
+  ).toBeVisible();
   expect(
     screen.queryByText(/No configured permission policy accepted/),
   ).not.toBeInTheDocument();
@@ -150,4 +152,23 @@ it("uses declared names and identified key policies without inventing an identit
   expect(callerDisplayName({ ...caller, source_address: "" })).toBe(
     "Source address unavailable",
   );
+});
+
+it("preserves the router-owned console test identity ahead of client metadata", () => {
+  const consoleTest: ObservedCaller = {
+    ...caller,
+    name: "Console route test",
+    identity_basis: "operator_test",
+    identity_quality: "self_reported",
+    reported_name: "Browser metadata",
+  };
+  expect(callerDisplayName(consoleTest)).toBe("Console route test");
+  render(<CallerIdentity caller={consoleTest} />);
+  expect(
+    screen.getByRole("heading", { name: "Console route test" }),
+  ).toBeVisible();
+  expect(
+    screen.getByText(/created by a route test in the operator console/),
+  ).toBeVisible();
+  expect(screen.getByText("Browser metadata")).toBeVisible();
 });
