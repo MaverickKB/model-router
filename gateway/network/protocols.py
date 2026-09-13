@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -76,6 +76,31 @@ def advertised_models(rows: list, capabilities: list[str]) -> list[dict]:
     return models
 
 
+def server_prefixes(origin: str, spec: dict) -> list[str]:
+    """Return literal OpenAPI server paths that resolve to this service."""
+    origin_url = urlsplit(origin)
+    prefixes = []
+    servers = spec.get("servers")
+    if not isinstance(servers, list):
+        return [""]
+    for server in servers:
+        value = server.get("url") if isinstance(server, dict) else None
+        if not isinstance(value, str) or "{" in value or "}" in value:
+            continue
+        resolved = urlsplit(urljoin(origin.rstrip("/") + "/", value))
+        if (
+            resolved.scheme != origin_url.scheme
+            or resolved.netloc != origin_url.netloc
+            or resolved.username
+            or resolved.password
+            or resolved.query
+            or resolved.fragment
+        ):
+            continue
+        prefixes.append(resolved.path.rstrip("/"))
+    return list(dict.fromkeys([*prefixes, ""]))
+
+
 async def inspect_service(http: httpx.AsyncClient, origin: str) -> dict:
     result = {
         "origin": origin,
@@ -93,29 +118,49 @@ async def inspect_service(http: httpx.AsyncClient, origin: str) -> dict:
         )
     )
     catalog, ollama, spec = documents
-    spec = spec or {}
+    spec = spec if isinstance(spec, dict) else {}
     paths = spec.get("paths", {})
     paths = paths if isinstance(paths, dict) else {}
     capabilities = task_capabilities(paths)
     info = spec.get("info", {})
     title = str(info.get("title", "")) if isinstance(info, dict) else ""
+    catalog_base = "/v1" if catalog and isinstance(catalog.get("data"), list) else ""
+    initial_catalog_auth = (
+        "/v1" if catalog and catalog.get("authentication_required") else None
+    )
+    catalog_auth_base = None
     # API-declared catalog paths cover reverse proxies with nonstandard prefixes.
     if not catalog or not isinstance(catalog.get("data"), list):
-        for path in ["/models"] + [
-            p for p in paths if p.endswith("/models") and p != "/v1/models"
-        ]:
-            doc = await json_document(http, origin + path)
-            if doc and isinstance(doc.get("data"), list):
-                catalog = doc
-                result["base_url"] = origin + path.removesuffix("/models")
+        catalog_paths = [
+            path
+            for path in paths
+            if isinstance(path, str) and path.endswith("/models")
+        ] + ["/models"]
+        attempted_paths = {"/v1/models"}
+        for prefix in server_prefixes(origin, spec):
+            for path in catalog_paths:
+                request_path = prefix + path
+                if request_path in attempted_paths:
+                    continue
+                attempted_paths.add(request_path)
+                doc = await json_document(http, origin + request_path)
+                if doc and isinstance(doc.get("data"), list):
+                    catalog = doc
+                    catalog_base = request_path.removesuffix("/models")
+                    break
+                if doc and doc.get("authentication_required") and catalog_auth_base is None:
+                    catalog_auth_base = request_path.removesuffix("/models")
+            if catalog and isinstance(catalog.get("data"), list):
                 break
+        if catalog_auth_base is None:
+            catalog_auth_base = initial_catalog_auth
     if catalog and isinstance(catalog.get("data"), list):
         relay = is_gateway_catalog(catalog)
         catalog_capabilities = capabilities or ([] if relay else ["text", "streaming"])
         result.update(
             status="model_service",
             protocol="openai",
-            base_url=result["base_url"] or origin + "/v1",
+            base_url=origin + catalog_base,
             capabilities=catalog_capabilities,
         )
         result["models"] = advertised_models(catalog["data"], catalog_capabilities)
@@ -124,6 +169,14 @@ async def inspect_service(http: httpx.AsyncClient, origin: str) -> dict:
             result.update(
                 status="gateway", detail="Catalog is published by a routing service"
             )
+    elif catalog_auth_base is not None or any(
+        doc and doc.get("authentication_required") for doc in documents
+    ):
+        result.update(
+            status="authentication_required",
+            base_url=(origin + catalog_auth_base) if catalog_auth_base is not None else "",
+            detail="HTTP access requires credentials; model catalog unverified",
+        )
     elif capabilities:
         result.update(
             status="model_surface",
@@ -145,11 +198,6 @@ async def inspect_service(http: httpx.AsyncClient, origin: str) -> dict:
                     detail=f"Model identity published by {path}; serving operations declared by OpenAPI",
                 )
                 break
-    elif any(doc and doc.get("authentication_required") for doc in documents):
-        result.update(
-            status="authentication_required",
-            detail="HTTP access requires credentials; model catalog unverified",
-        )
     elif paths:
         result.update(
             status="http_service",
@@ -170,7 +218,12 @@ async def inspect_service(http: httpx.AsyncClient, origin: str) -> dict:
                 model.update({k: v for k, v in extra.items() if k != "id"})
             if result["models"] and all(m["id"] in by_id for m in result["models"]):
                 result["catalog_adapter"] = "ollama"
-        elif result["status"] != "gateway":
+            elif result["models"]:
+                result.update(
+                    catalog_conflict=True,
+                    detail="OpenAI and native catalogs disagree; automatic registration is withheld",
+                )
+        elif result["status"] not in {"gateway", "authentication_required"}:
             result.update(
                 status="model_service",
                 protocol="ollama",

@@ -321,10 +321,16 @@ export function NetworkView({
               {open && (
                 <div className="host-services">
                   {visibleServices.map((service) => (
-                    <div className="network-service" key={service.origin}>
+                    <div
+                      className="network-service"
+                      key={service.base_url || service.origin}
+                    >
                       <div className="service-heading">
                         <span>
                           <strong>{service.origin}</strong>
+                          {service.base_url && (
+                            <small>Observed API base: {service.base_url}</small>
+                          )}
                           <small>
                             {service.protocol || "Protocol unconfirmed"} ·{" "}
                             {service.status === "gateway"
@@ -334,6 +340,7 @@ export function NetworkView({
                           <small>Checked {timeLabel(service.checked_at)}</small>
                         </span>
                         {[
+                          "model_service",
                           "authentication_required",
                           "inspection_required",
                         ].includes(service.status) && (

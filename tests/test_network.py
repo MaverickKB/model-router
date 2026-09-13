@@ -12,7 +12,7 @@ from gateway.app import create_app
 from gateway.network.collector import Collector
 from gateway.network.protocols import inspect_service
 from gateway.network.report import read_report
-from gateway.schema import Client, Configuration, Discovery
+from gateway.schema import Client, Configuration, Discovery, Engine
 
 
 @pytest.mark.asyncio
@@ -65,6 +65,82 @@ async def test_program_discovers_an_arbitrary_fixture_port_and_follows_model_rep
 async def _close_app(app):
     async with app.router.lifespan_context(app):
         pass
+
+
+@pytest.mark.asyncio
+async def test_discovery_preserves_openapi_catalog_prefix():
+    calls = []
+
+    async def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/openapi.json":
+            return httpx.Response(
+                200,
+                json={
+                    "servers": [{"url": "/api/v1"}],
+                    "paths": {"/models": {"get": {}}},
+                },
+            )
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "prefix-model"}]})
+        return httpx.Response(404)
+
+    origin = "http://prefix.test:49192"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await inspect_service(http, origin)
+    assert result["base_url"] == origin + "/api/v1"
+    assert "/api/v1/models" in calls
+
+
+@pytest.mark.asyncio
+async def test_discovery_preserves_protected_openapi_catalog_prefix():
+    async def handler(request):
+        if request.url.path == "/openapi.json":
+            return httpx.Response(
+                200,
+                json={
+                    "servers": [{"url": "/api/v1"}],
+                    "paths": {"/models": {"get": {}}},
+                },
+            )
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(401)
+        return httpx.Response(404)
+
+    origin = "http://protected.test:49194"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await inspect_service(http, origin)
+    assert result["status"] == "authentication_required"
+    assert result["base_url"] == origin + "/api/v1"
+
+
+@pytest.mark.asyncio
+async def test_discovery_and_connection_preserve_root_catalog_base():
+    async def handler(request):
+        if request.url.path == "/models":
+            return httpx.Response(200, json={"data": [{"id": "root-model"}]})
+        return httpx.Response(404)
+
+    origin = "http://root.test:49193"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await inspect_service(http, origin)
+    assert result["base_url"] == origin
+    assert Engine(name="Root catalog", base_url=result["base_url"]).base_url == origin
+
+
+@pytest.mark.asyncio
+async def test_discovery_marks_conflicting_catalogs_for_manual_connection():
+    async def handler(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "openai-model"}]})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"model": "native-model"}]})
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await inspect_service(http, "http://conflict.test:49195")
+    assert result["protocol"] == "openai"
+    assert result["catalog_conflict"]
 
 
 @pytest.mark.asyncio

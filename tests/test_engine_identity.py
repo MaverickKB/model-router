@@ -376,6 +376,50 @@ async def test_network_discovery_keeps_ip_transport_and_records_reported_hostnam
     assert len(app.state.store.config().engines) == 1
 
 
+@pytest.mark.asyncio
+async def test_network_discovery_does_not_auto_register_native_or_conflicting_catalogs(
+    tmp_path,
+):
+    app = create_app(str(tmp_path), background=False)
+    app.state.store.save(
+        Configuration(
+            discovery=Discovery(
+                enabled=True,
+                auto_register=True,
+                targets=["192.0.2.10"],
+            )
+        )
+    )
+    (app.state.store.discovery_directory / "network.json").write_text(
+        json.dumps(
+            {
+                "hosts": [
+                    {
+                        "address": "192.0.2.10",
+                        "services": [
+                            {
+                                "status": "model_service",
+                                "protocol": "ollama",
+                                "base_url": "http://192.0.2.10:51234/v1",
+                                "models": [{"id": "native-only"}],
+                            },
+                            {
+                                "status": "model_service",
+                                "protocol": "openai",
+                                "catalog_conflict": True,
+                                "base_url": "http://192.0.2.10:51235/v1",
+                                "models": [{"id": "conflicting"}],
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+    await app.state.discovery.consume_network()
+    assert not app.state.store.config().engines
+
+
 def test_duplicate_suggestions_require_endpoint_evidence():
     def view(name, base_url, model_id="generic-chat", display_name=None):
         return {

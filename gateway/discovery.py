@@ -397,7 +397,12 @@ class DiscoveryService:
                 return
         for host in report.get("hosts", []):
             for service in host.get("services", []):
-                if service.get("status") == "model_service" and service.get("models"):
+                if (
+                    service.get("status") == "model_service"
+                    and service.get("protocol") == "openai"
+                    and not service.get("catalog_conflict")
+                    and service.get("models")
+                ):
                     await self.discover_url(
                         service["base_url"],
                         "network",
