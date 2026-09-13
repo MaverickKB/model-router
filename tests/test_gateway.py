@@ -117,7 +117,9 @@ async def send(http, model="auto", **extra):
 
 
 @pytest.mark.asyncio
-async def test_built_favicons_are_served_from_the_application_root(tmp_path, monkeypatch):
+async def test_built_favicons_are_served_from_the_application_root(
+    tmp_path, monkeypatch
+):
     assets = tmp_path / "dist"
     (assets / "assets").mkdir(parents=True)
     (assets / "index.html").write_text("<html></html>")
@@ -370,9 +372,119 @@ async def test_capability_selection(setup):
     config = app.state.store.config()
     config.clients[0].allow_cloud = False
     app.state.store.save(config)
-    assert (
-        await send(http, tools=[{"type": "function", "function": {"name": "ping"}}])
-    ).status_code == 503
+    failed = await send(
+        http, tools=[{"type": "function", "function": {"name": "ping"}}]
+    )
+    assert failed.status_code == 400
+    assert failed.json()["error"]["code"] == "unsupported_capability"
+    assert "tools" in failed.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", ["denied", "offline", "busy", "available"])
+async def test_capability_error_preserves_temporary_failures_and_fallback(
+    setup, fallback
+):
+    app, http, fleet, local, cloud, *_ = setup
+    app.state.discovery.observation(local.id).models[0]["capabilities"] = [
+        "text",
+        "streaming",
+    ]
+    config = app.state.store.config()
+    config.clients[0].allow_cloud = fallback != "denied"
+    app.state.store.save(config)
+    if fallback == "offline":
+        app.state.discovery.observation(cloud.id).status = "offline"
+        app.state.discovery.observation(cloud.id).models = []
+    elif fallback == "busy":
+        app.state.discovery.observation(cloud.id).inflight = cloud.max_inflight
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "echo", "parameters": {"type": "object"}},
+        }
+    ]
+    result = await send(http, tools=tools)
+    if fallback == "available":
+        assert result.status_code == 200
+        assert fleet.calls[-1][1]["tools"] == tools
+    else:
+        assert not fleet.calls
+        assert result.status_code == (400 if fallback == "denied" else 503)
+        if fallback == "denied":
+            assert result.json()["error"]["type"] == "invalid_request_error"
+            assert result.json()["error"]["code"] == "unsupported_capability"
+        for private_value in (
+            local.id,
+            cloud.id,
+            local.name,
+            cloud.name,
+            "first-model",
+            "remote-model",
+        ):
+            assert private_value not in result.text
+
+
+@pytest.mark.asyncio
+async def test_plain_catalog_respects_saved_capabilities_for_agent_requests(tmp_path):
+    calls = []
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
+
+    async def endpoint(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "current-model"}]})
+        calls.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            stream=Stream(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    app = create_app(
+        str(tmp_path), background=False, transport=httpx.MockTransport(endpoint)
+    )
+    engine = Engine(
+        name="Configured API",
+        base_url="http://provider.test/v1",
+        capabilities=["text", "streaming", "vision"],
+    )
+    app.state.store.save(Configuration(engines=[engine], routes=[Route(name="work")]))
+    await app.state.discovery.refresh()
+    payload = {
+        "model": "work",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "echo", "parameters": {"type": "object"}},
+            }
+        ],
+    }
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://router.test",
+            headers={"Authorization": "Bearer placeholder"},
+        ) as http,
+    ):
+        denied = await http.post("/v1/chat/completions", json=payload)
+        assert denied.status_code == 400
+        assert not calls
+        config = app.state.store.config()
+        config.engines[0].capabilities.append("tools")
+        app.state.store.save(config)
+        await app.state.discovery.refresh()
+        accepted = await http.post("/v1/chat/completions", json=payload)
+        assert accepted.status_code == 200
+        assert "[DONE]" in accepted.text
+    assert len(calls) == 1
+    assert calls[0] == {**payload, "model": "current-model"}
 
 
 @pytest.mark.asyncio

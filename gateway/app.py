@@ -40,7 +40,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=32),
     )
     discovery = DiscoveryService(store, http)
-    proxy = Proxy(store, discovery, http)
+    proxy = Proxy(store, discovery, http, identity)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -81,12 +81,15 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         """Observe connection evidence before returning any caller error."""
         try:
             client = await identity.identify(request)
-        except HTTPException:
-            # Invalid or revoked credentials are not granted a routing policy,
-            # but the direct connection still belongs in the observed caller
-            # inventory so an operator can explain the failed request.
+        except HTTPException as exc:
+            # Rejected authentication still leaves direct connection evidence
+            # so the operator can inspect the failed request.
             request.state.identity_basis = "unassigned"
             request.state.caller_key_present = False
+            request.state.authentication_error = {
+                "status": exc.status_code,
+                "detail": str(exc.detail),
+            }
             await callers.observe(store, request, None)
             raise
         configured = {policy.id for policy in store.config().clients}
@@ -203,7 +206,10 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
                     )
         old = store.config()
         setup_required = store.setup_required
-        saved = await asyncio.to_thread(store.save, config)
+        try:
+            saved = await asyncio.to_thread(store.save, config)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         changed = [e for e in saved.engines if e not in old.engines]
         await asyncio.gather(*(discovery.refresh_engine(e) for e in changed))
         if setup_required or old.security != saved.security:

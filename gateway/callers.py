@@ -1,13 +1,11 @@
 """Observe actual connections without treating labels or headers as authority."""
 
 import asyncio
-import hashlib
-import json
-import re
 import time
 
 from fastapi import Request
 
+from .caller_records import caller_id, client_profile
 from .schema import Client
 from .store import Store
 
@@ -28,19 +26,6 @@ _IDENTITY_HEADERS = {
     "x-stainless-os": "stainless_os",
     "x-stainless-arch": "stainless_arch",
 }
-_CLIENT_TOKEN = re.compile(
-    r"(?P<name>[A-Za-z][A-Za-z0-9._-]*)/(?P<version>[A-Za-z0-9._+-]+)"
-)
-_CLIENT_NAMES = {
-    "python-requests": "Python requests",
-    "python-urllib": "Python urllib",
-    "openai-python": "OpenAI Python",
-    "node-fetch": "Node fetch",
-    "go-http-client": "Go HTTP client",
-    "httpx": "HTTPX",
-    "curl": "curl",
-    "axios": "Axios",
-}
 
 
 def identity_hints(request: Request) -> dict[str, str]:
@@ -50,29 +35,6 @@ def identity_hints(request: Request) -> dict[str, str]:
         for header, key in _IDENTITY_HEADERS.items()
         if readable(request.headers.get(header, ""))
     }
-
-
-def client_profile(software: str, hints: dict[str, str]) -> tuple[str, str, str]:
-    """Return a human-readable library, version, and runtime without trusting it."""
-    values = [
-        hints.get("openai_client_user_agent", ""),
-        software,
-    ]
-    for value in values:
-        for match in _CLIENT_TOKEN.finditer(value):
-            raw_name = match.group("name")
-            raw_version = match.group("version")
-            if (
-                raw_name.lower() in {"openai", "asyncopenai"}
-                and raw_version.lower() == "python"
-            ):
-                return "OpenAI Python", "", "Python"
-            family = _CLIENT_NAMES.get(raw_name.lower())
-            if family is None:
-                continue
-            runtime = "Python" if family.startswith("Python ") else ""
-            return family, raw_version, runtime
-    return "", "", ""
 
 
 def identity_quality(basis: str, reported_name: str, hints: dict[str, str]) -> str:
@@ -114,15 +76,7 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
         name = policy.name
     else:
         name = reported_name or "Unidentified caller"
-    # Never use a supplied label, User-Agent or forwarding header for access.
-    # Separate machines using the same shared key still have distinct sources.
-    identifier = hashlib.sha256(
-        json.dumps(
-            [policy.id if policy else None, source, basis, reported_name, software]
-        ).encode()
-    ).hexdigest()[:24]
     caller = {
-        "id": identifier,
         "policy_id": policy.id if policy else None,
         "name": name,
         "source_address": source,
@@ -144,6 +98,13 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
         "last_method": request.method,
         "last_path": request.url.path,
     }
+    authentication_error = getattr(request.state, "authentication_error", None)
+    if authentication_error:
+        caller["authentication_error"] = {
+            "status": authentication_error["status"],
+            "detail": readable(authentication_error["detail"], 300),
+        }
+    caller["id"] = caller_id(caller)
     await asyncio.to_thread(store.observe_caller, caller)
     request.state.caller = caller
     return caller

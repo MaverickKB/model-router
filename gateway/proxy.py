@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.responses import Response
 
 from .discovery import DiscoveryService, Observation
+from .identity import Identity
 from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
@@ -82,9 +83,14 @@ class InflightRequest:
 
 class Proxy:
     def __init__(
-        self, store: Store, discovery: DiscoveryService, http: httpx.AsyncClient
+        self,
+        store: Store,
+        discovery: DiscoveryService,
+        http: httpx.AsyncClient,
+        identity: Identity,
     ):
         self.store, self.discovery, self.http = store, discovery, http
+        self.identity = identity
 
     async def dispatch(self, request: Request, payload: dict, client: Client):
         if (
@@ -97,6 +103,7 @@ class Proxy:
             raise HTTPException(400, "messages must be an array")
         config = self.store.config()
         caller_key_present = getattr(request.state, "caller_key_present", True)
+        operator_test = getattr(request.state, "identity_basis", "") == "operator_test"
         decision = decide(
             config,
             self.discovery.views(),
@@ -130,37 +137,57 @@ class Proxy:
             )
             await asyncio.to_thread(self.store.event, event)
 
-        if not decision["candidates"]:
+        async def refuse(decision):
             status = decision.get("status", 503)
-            await finish("denied" if status == 403 else "unavailable", status)
+            await finish("denied" if 400 <= status < 500 else "unavailable", status)
             return JSONResponse(
                 {
                     "error": {
                         "message": decision.get(
                             "error", "No allowed, available model matches this request"
                         ),
-                        "type": "route_unavailable",
+                        "type": decision.get("error_type", "route_unavailable"),
+                        **(
+                            {"code": decision["error_code"]}
+                            if "error_code" in decision
+                            else {}
+                        ),
                     },
                     "request_id": event["id"],
                 },
                 status_code=status,
             )
 
+        if not decision["candidates"]:
+            return await refuse(decision)
+
         attempted = set()
         while True:
             # Re-evaluate the complete policy after each failed attempt.
+            try:
+                if operator_test:
+                    await self.identity.require_operator(request)
+                    current_client = next(
+                        (c for c in self.store.config().clients if c.id == client.id),
+                        None,
+                    )
+                    if current_client is None:
+                        raise HTTPException(403, "Test permission policy was removed")
+                else:
+                    current_client = await self.identity.identify(request)
+            except HTTPException as exc:
+                event["decision"] = {
+                    "candidates": [],
+                    "rejections": [],
+                    "status": exc.status_code,
+                    "error": exc.detail,
+                }
+                await finish("denied", exc.status_code)
+                raise
             current_config = self.store.config()
-            current_client = next(
-                (c for c in current_config.clients if c.id == client.id), None
+            caller_key_present = (
+                True if operator_test else request.state.caller_key_present
             )
-            if current_client is None:
-                if caller_key_present:
-                    await finish("denied", 403)
-                    raise HTTPException(403, "Client was removed")
-                # The unkeyed identity is intentionally transient. Keep it
-                # across a retry while route gates and engine state are read
-                # from the current saved configuration.
-                current_client = client
             fresh = decide(
                 current_config,
                 self.discovery.views(),
@@ -168,6 +195,14 @@ class Proxy:
                 payload,
                 caller_key_present=caller_key_present,
             )
+            event.update(
+                client_id=current_client.id,
+                client=current_client.name,
+                decision=fresh,
+                revision=current_config.revision,
+            )
+            if not fresh["candidates"] and fresh.get("status"):
+                return await refuse(fresh)
             candidate = next(
                 (
                     c
@@ -262,7 +297,9 @@ class Proxy:
                     "x-router-request": event["id"],
                 }
                 if payload.get("stream") and upstream.is_success:
-                    iterator = upstream.aiter_raw()
+                    # Content-Encoding is not forwarded. Relay decoded bytes,
+                    # including when an upstream compresses its event stream.
+                    iterator = upstream.aiter_bytes()
                     first = await anext(iterator, None)
                     if first is None:
                         obs.circuit_until = (

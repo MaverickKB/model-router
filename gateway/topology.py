@@ -1,8 +1,9 @@
 """Build the policy-first picture used by the route map."""
 
 from .contracts import EngineView
+from .request_policy import resolve_unkeyed_policy
 from .routing import decide, matches, route_requires_caller_key, selector_reason
-from .schema import Client, Configuration
+from .schema import Configuration
 
 
 def route_map(
@@ -26,6 +27,13 @@ def route_map(
 
     caller_routes, route_engines = [], []
     for client in config.clients:
+        observations = observed_by_policy[client.id]
+        # An unobserved policy shows what its key permits. Once connections
+        # exist, source/default selection alone cannot imply a presented key.
+        caller_key_present = not observations or any(
+            caller.get("identity_basis") in {"api_key", "operator_test"}
+            for caller in observations
+        )
         for route in config.routes:
             if not matches(route.name, client.route_names):
                 continue
@@ -35,6 +43,7 @@ def route_map(
                 client,
                 {"model": route.name},
                 consider_capacity=False,
+                caller_key_present=caller_key_present,
             )
             ready_engines = (
                 list(dict.fromkeys(c["engine_id"] for c in decision["candidates"]))
@@ -64,13 +73,9 @@ def route_map(
     # An observed connection without a permission policy is still a real
     # caller. Show the route gate it would encounter without inventing a
     # persistent policy or granting it direct model access.
-    unkeyed = Client(
-        name="Observed unkeyed connection",
-        kind="shared",
-        route_names=[route.name for route in config.routes],
-        allow_cloud=True,
-    )
     for caller in unassigned:
+        unkeyed, _ = resolve_unkeyed_policy(config, caller.get("source_address"))
+        authentication_error = caller.get("authentication_error")
         for route in config.routes:
             decision = decide(
                 config,
@@ -80,8 +85,10 @@ def route_map(
                 consider_capacity=False,
                 caller_key_present=False,
             )
-            ready_engines = list(
-                dict.fromkeys(c["engine_id"] for c in decision["candidates"])
+            ready_engines = (
+                []
+                if authentication_error
+                else list(dict.fromkeys(c["engine_id"] for c in decision["candidates"]))
             )
             caller_routes.append(
                 {
@@ -90,7 +97,9 @@ def route_map(
                     "route_id": route.id,
                     "ready_engines": ready_engines,
                     "reason": (
-                        "A caller key is required for this route"
+                        "Last request rejected: " + authentication_error["detail"]
+                        if authentication_error
+                        else "A caller key is required for this route"
                         if route_requires_caller_key(route)
                         else decision.get("error")
                         or (

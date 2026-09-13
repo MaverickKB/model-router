@@ -87,6 +87,8 @@ class Decision(TypedDict, total=False):
     client: str
     error: str
     status: int
+    error_type: str
+    error_code: str
     required_capabilities: list[str]
     defaults: dict
     revision: int
