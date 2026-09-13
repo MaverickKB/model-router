@@ -273,6 +273,19 @@ class Discovery(Record):
         return value
 
 
+class Updates(Record):
+    check_enabled: bool = True
+    repository: str = "MaverickKB/model-router"
+
+    @field_validator("repository")
+    @classmethod
+    def github_repository(cls, value: str) -> str:
+        parts = value.strip().split("/")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError("Repository must be owner/name")
+        return f"{parts[0]}/{parts[1]}"
+
+
 class Security(Record):
     operator_auth_enabled: bool = False
     # Kept for pre-v4 config migration. New authorization decisions are made
@@ -306,6 +319,7 @@ class Configuration(Record):
     discovery: Discovery = Field(default_factory=Discovery)
     accounts: AccountsSettings = Field(default_factory=AccountsSettings)
     account_levels: list[AccountLevel] = Field(default_factory=list)
+    updates: Updates = Field(default_factory=Updates)
 
     def validate_endpoint_changes(self, previous: Configuration) -> None:
         previous_engines = {engine.id: engine for engine in previous.engines}

@@ -123,6 +123,20 @@ export interface AccountsSettings {
   device_registration_enabled: boolean;
   session_hours: number;
 }
+export interface UpdatesSettings {
+  check_enabled: boolean;
+  repository: string;
+}
+export interface ReleaseStatus {
+  current: string;
+  check_enabled: boolean;
+  repository: string;
+  available: boolean;
+  latest: string | null;
+  notes: string;
+  html_url: string;
+  error: string;
+}
 export interface Config {
   schema_version: 5;
   upgraded_from_schema?: number | null;
@@ -134,6 +148,7 @@ export interface Config {
   discovery: Discovery;
   accounts: AccountsSettings;
   account_levels: AccountLevel[];
+  updates: UpdatesSettings;
 }
 export interface Candidate {
   engine_id: string;

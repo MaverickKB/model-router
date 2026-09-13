@@ -38,6 +38,10 @@ export function fixtureConfig(): Config {
       session_hours: 168,
     },
     account_levels: [],
+    updates: {
+      check_enabled: true,
+      repository: "MaverickKB/model-router",
+    },
   };
 }
 export function fixtureAccount(
