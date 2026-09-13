@@ -4,7 +4,13 @@ import type { CallerRoute, Job, ObservedCaller, RouteMap } from "../types";
 import { activeJobsForSource, sourceRouteAccess } from "./source-topology";
 
 const source: CallerSource = {
+  key: "addr:192.0.2.10",
   address: "192.0.2.10",
+  addresses: ["192.0.2.10"],
+  displayName: "192.0.2.10",
+  labelSource: "address",
+  hostname: "",
+  identityQuality: "address",
   lastSeen: 2,
   callers: ["keyed", "unkeyed"].map(
     (id) => ({ id, source_address: "192.0.2.10" }) as ObservedCaller,

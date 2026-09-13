@@ -16,7 +16,11 @@ def readable(value: str, limit: int = 180) -> str:
 
 _IDENTITY_HEADERS = {
     "x-router-caller": "router_caller",
+    "x-router-device-id": "router_device_id",
+    "x-router-hostname": "router_hostname",
+    "x-client-device-id": "client_device_id",
     "x-client-name": "client_name",
+    "x-client-hostname": "client_hostname",
     "x-client-version": "client_version",
     "x-openai-client-user-agent": "openai_client_user_agent",
     "x-stainless-lang": "stainless_lang",
@@ -53,6 +57,7 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
     basis = getattr(request.state, "identity_basis", "operator_test")
     software = readable(request.headers.get("User-Agent", ""))
     hints = identity_hints(request)
+    source_evidence = store.source_identity(source, hints)
     reported_name = readable(
         hints.get("router_caller") or hints.get("client_name", ""), 100
     )
@@ -81,6 +86,7 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
         "name": name,
         "source_address": source,
         "source_port": source_port,
+        **source_evidence,
         "software": software,
         "reported_name": reported_name,
         "reported_name_source": reported_name_source,

@@ -14,6 +14,7 @@ export function ClientsView({
   onDelete,
   clients,
   callers = [],
+  onRenameSource,
 }: {
   config: Config;
   engines: EngineView[];
@@ -23,10 +24,11 @@ export function ClientsView({
   onDelete: () => Promise<void>;
   clients: Client[];
   callers?: ObservedCaller[];
+  onRenameSource?: (sourceKey: string, name: string) => Promise<void>;
 }) {
-  const [selectedAddress, selectAddress] = useState<string | null>(null);
+  const [selectedSource, selectSource] = useState<string | null>(null);
   const sources = groupCallerSources(callers);
-  const source = sources.find((entry) => entry.address === selectedAddress);
+  const source = sources.find((entry) => entry.key === selectedSource);
   return (
     <div
       className={
@@ -38,28 +40,39 @@ export function ClientsView({
           Caller sources <span>{sources.length}</span>
         </h2>
         <p>
-          Direct source addresses observed in the last seven days. Select a
-          source to inspect its request metadata and permissions.
+          Caller endpoints observed in the last seven days. Select a source to
+          inspect its request metadata and permissions.
         </p>
         {sources.map((entry) => (
           <button
-            key={entry.address}
+            key={entry.key}
             className={
-              selectedAddress === entry.address && !activeClient
-                ? "selected"
-                : ""
+              selectedSource === entry.key && !activeClient ? "selected" : ""
             }
-            aria-pressed={selectedAddress === entry.address && !activeClient}
-            aria-label={`Inspect source ${entry.address || "address unavailable"}`}
+            aria-pressed={selectedSource === entry.key && !activeClient}
+            aria-label={`Inspect source ${
+              entry.displayName || "address unavailable"
+            }`}
             onClick={() => {
-              selectAddress(entry.address);
+              selectSource(entry.key);
               onSelect(null);
             }}
           >
             <Users size={17} />
             <span>
-              <strong>{entry.address || "Source address unavailable"}</strong>
-              <small>Last seen {sourceTimeLabel(entry.lastSeen)}</small>
+              <strong>
+                {entry.displayName || "Source address unavailable"}
+              </strong>
+              <small>
+                {entry.labelSource === "operator"
+                  ? "Named source"
+                  : entry.labelSource === "reported_hostname"
+                    ? "Reported hostname"
+                    : entry.labelSource === "discovered_hostname"
+                      ? "Discovered hostname"
+                    : "Address-bound"}{" "}
+                · Last seen {sourceTimeLabel(entry.lastSeen)}
+              </small>
             </span>
           </button>
         ))}
@@ -76,7 +89,7 @@ export function ClientsView({
             key={c.id}
             className={activeClient?.id === c.id ? "selected" : ""}
             onClick={() => {
-              selectAddress(null);
+              selectSource(null);
               onSelect(c);
             }}
           >
@@ -112,7 +125,7 @@ export function ClientsView({
         />
       ) : source ? (
         <div className="source-inspector">
-          <button className="subtle" onClick={() => selectAddress(null)}>
+          <button className="subtle" onClick={() => selectSource(null)}>
             <ArrowLeft size={16} />
             Back to caller sources
           </button>
@@ -120,6 +133,11 @@ export function ClientsView({
             source={source}
             policies={config.clients}
             onEditPolicy={onSelect}
+            onRename={
+              onRenameSource
+                ? (entry, name) => onRenameSource(entry.key, name)
+                : undefined
+            }
           />
         </div>
       ) : (

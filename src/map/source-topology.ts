@@ -73,7 +73,9 @@ export function activeJobsForSource(
           (job) =>
             ["running", "routing", "waiting"].includes(job.status) &&
             Boolean(job.caller) &&
-            job.caller!.source_address === source.address &&
+            (job.caller!.source_key
+              ? job.caller!.source_key === source.key
+              : job.caller!.source_address === source.address) &&
             (job.decision.route || job.requested) === routeName,
         )
         .map((job) => [job.id, job]),

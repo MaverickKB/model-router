@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
-import { api, post } from "./api";
+import { api, post, put } from "./api";
 import { timeLabel } from "./components";
 import { EngineEditor, newClient, newEngine, newRoute } from "./editors";
 import {
@@ -59,6 +59,19 @@ export function App() {
       await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  async function renameCallerSource(sourceKey: string, name: string) {
+    try {
+      await put(
+        `/api/v1/caller-sources/${encodeURIComponent(sourceKey)}/name`,
+        { name },
+      );
+      setError("");
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      throw e;
     }
   }
   async function save(config: Config) {
@@ -564,6 +577,7 @@ export function App() {
               save={save}
               clients={state.clients}
               callers={state.observed_callers}
+              onRenameSource={renameCallerSource}
               onDelete={() =>
                 action(async () => {
                   if (!activeClient) return;

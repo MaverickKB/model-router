@@ -12,8 +12,11 @@ import time
 from pathlib import Path
 
 from .caller_records import caller_id, merge_observations
+from .caller_sources import ensure_source_identity, normalized_address
+from .caller_sources import source_identity as caller_source_identity
 from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
+from .network.caller_evidence import DiscoveryCallerEvidence
 from .network.report import write_json
 from .schema import Configuration
 from .security.credentials import CredentialCipher, digest, verify
@@ -45,6 +48,9 @@ class Store:
         fresh_install = not path.exists()
         self.cipher = CredentialCipher(root)
         self.lock = threading.RLock()
+        self._caller_source_evidence = DiscoveryCallerEvidence(
+            self.discovery_directory
+        )
         self.db = sqlite3.connect(path, check_same_thread=False)
         os.chmod(path, 0o600)
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -58,6 +64,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS operator_identity (id INTEGER PRIMARY KEY, verifier TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS installation (id INTEGER PRIMARY KEY CHECK (id=1), setup_complete INTEGER NOT NULL CHECK (setup_complete IN (0,1)));
             CREATE TABLE IF NOT EXISTS callers (id TEXT PRIMARY KEY, seen REAL NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS caller_source_names (source_key TEXT PRIMARY KEY, name TEXT NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts REAL NOT NULL, body TEXT NOT NULL);
         """)
         self.db.execute(
@@ -372,12 +379,20 @@ class Store:
 
     def events(self, limit=100) -> list[dict]:
         with self.lock:
-            return [
-                json.loads(row[0])
-                for row in self.db.execute(
-                    "SELECT body FROM events ORDER BY ts DESC LIMIT ?", (limit,)
-                )
-            ]
+            labels = self.caller_source_names()
+            hostnames = self.discovered_source_hostnames()
+            events = []
+            for row in self.db.execute(
+                "SELECT body FROM events ORDER BY ts DESC LIMIT ?", (limit,)
+            ):
+                event = json.loads(row[0])
+                caller = event.get("caller")
+                if isinstance(caller, dict):
+                    event["caller"] = self._apply_caller_source_name(
+                        ensure_source_identity(caller), labels, hostnames
+                    )
+                events.append(event)
+            return events
 
     def _migrate_callers(self):
         """Consolidate old auth-dependent IDs without rewriting request events."""
@@ -392,6 +407,7 @@ class Store:
             changed = False
             for old_id, body in rows:
                 caller = json.loads(body)
+                caller = ensure_source_identity(caller)
                 identifier = caller_id(caller)
                 changed |= old_id != identifier or caller.get("id") != identifier
                 caller["id"] = identifier
@@ -412,6 +428,7 @@ class Store:
     def observe_caller(self, caller: dict):
         with self.lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
+            caller = ensure_source_identity(caller)
             previous_row = self.db.execute(
                 "SELECT body FROM callers WHERE id=?", (caller["id"],)
             ).fetchone()
@@ -420,12 +437,21 @@ class Store:
             else:
                 stored = dict(caller)
                 source_port = caller.get("source_port")
+                source_address = caller.get("source_address")
                 stored["recent_source_ports"] = (
                     [source_port] if source_port is not None else []
                 )
+                stored["recent_source_addresses"] = (
+                    [source_address] if source_address else []
+                )
             # Events describe this request even if a later observation has
             # already arrived. Only aggregate history is shared back with it.
-            for field in ("first_seen", "request_count", "recent_source_ports"):
+            for field in (
+                "first_seen",
+                "request_count",
+                "recent_source_ports",
+                "recent_source_addresses",
+            ):
                 caller[field] = stored[field]
             self.db.execute(
                 "INSERT OR REPLACE INTO callers VALUES (?, ?, ?)",
@@ -438,12 +464,89 @@ class Store:
                 "DELETE FROM callers WHERE id NOT IN (SELECT id FROM callers ORDER BY seen DESC LIMIT 1000)"
             )
 
+    def set_caller_source_name(self, source_key: str, name: str) -> dict:
+        value = " ".join(name.split())[:100]
+        with self.lock, self.db:
+            records = [
+                ensure_source_identity(json.loads(row[0]))
+                for row in self.db.execute("SELECT body FROM callers")
+            ]
+            if not any(record["source_key"] == source_key for record in records):
+                raise ValueError("Caller source no longer exists")
+            if value:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO caller_source_names VALUES (?, ?, ?)",
+                    (source_key, value, time.time()),
+                )
+            else:
+                self.db.execute(
+                    "DELETE FROM caller_source_names WHERE source_key=?", (source_key,)
+                )
+            labels = self.caller_source_names()
+            hostnames = self.discovered_source_hostnames()
+            return next(
+                self._apply_caller_source_name(record, labels, hostnames)
+                for record in records
+                if record["source_key"] == source_key
+            )
+
+    def caller_source_names(self) -> dict[str, str]:
+        with self.lock:
+            return {
+                source_key: name
+                for source_key, name in self.db.execute(
+                    "SELECT source_key, name FROM caller_source_names"
+                )
+            }
+
+    def source_identity(self, source_address: str, hints: dict[str, str]) -> dict[str, str]:
+        """Build caller identity from request evidence and a saved discovery snapshot."""
+        evidence = self.discovered_source_evidence().get(
+            normalized_address(source_address), {}
+        )
+        return caller_source_identity(
+            source_address,
+            hints,
+            hardware_address=evidence.get("hardware_address", ""),
+        )
+
+    def discovered_source_evidence(self) -> dict[str, dict[str, str]]:
+        return self._caller_source_evidence.sources(
+            self._config.discovery.network_interval_seconds
+        )
+
+    def discovered_source_hostnames(self) -> dict[str, str]:
+        return {
+            address: evidence["hostname"]
+            for address, evidence in self.discovered_source_evidence().items()
+            if evidence["hostname"] and evidence["hostname"] != address.casefold()
+        }
+
     def callers(self) -> list[dict]:
         with self.lock:
-            return [
-                json.loads(row[0])
-                for row in self.db.execute(
-                    "SELECT body FROM callers WHERE seen >= ? ORDER BY seen DESC LIMIT 1000",
-                    (time.time() - 7 * 86400,),
-                )
-            ]
+            labels = self.caller_source_names()
+            hostnames = self.discovered_source_hostnames()
+            records = []
+            for row in self.db.execute(
+                "SELECT body FROM callers WHERE seen >= ? ORDER BY seen DESC LIMIT 1000",
+                (time.time() - 7 * 86400,),
+            ):
+                caller = ensure_source_identity(json.loads(row[0]))
+                records.append(self._apply_caller_source_name(caller, labels, hostnames))
+            return records
+
+    def _apply_caller_source_name(
+        self, caller: dict, labels: dict[str, str], hostnames: dict[str, str]
+    ) -> dict:
+        caller = dict(caller)
+        label = labels.get(caller["source_key"])
+        if label:
+            caller["source_label"] = label
+            caller["source_label_source"] = "operator"
+            return caller
+        hostname = hostnames.get(normalized_address(str(caller.get("source_address", ""))))
+        if hostname and caller.get("source_label_source") == "address":
+            caller["source_label"] = hostname
+            caller["source_label_source"] = "discovered_hostname"
+            caller["source_hostname"] = hostname
+        return caller

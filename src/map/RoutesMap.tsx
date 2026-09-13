@@ -97,10 +97,10 @@ export function RoutesMap({
     ).values(),
   ];
   const sources = groupCallerSources(callers);
-  const sourceId = (address: string) => `source:${address}`;
+  const sourceId = (source: { key: string }) => `source:${source.key}`;
   const selectedSource =
     selected?.kind === "source"
-      ? sources.find((source) => sourceId(source.address) === selected.id)
+      ? sources.find((source) => sourceId(source) === selected.id)
       : undefined;
   const selectedPolicy =
     selected?.kind === "policy"
@@ -160,19 +160,19 @@ export function RoutesMap({
       );
       if (!access.edges.length) return;
       edges.push({
-        id: `${sourceId(source.address)}-${route.id}`,
+        id: `${sourceId(source)}-${route.id}`,
         from: y(sourceIndex),
         to: y(routeIndex),
         x: 280,
         xx: 360,
         state: access.state,
         backup: false,
-        title: `${source.address || "Source address unavailable"} → ${route.name}: ${accessLabel(access.state)} · ${access.allowed} of ${access.total} client records have an eligible destination`,
+        title: `${source.displayName || "Source address unavailable"} → ${route.name}: ${accessLabel(access.state)} · ${access.allowed} of ${access.total} client records have an eligible destination`,
         jobs: activeJobsForSource(source, route.name, active),
         dim:
           !!selected &&
           (selected.kind === "source"
-            ? selected.id !== sourceId(source.address) ||
+            ? selected.id !== sourceId(source) ||
               (!!inspectedRoute && inspectedRoute !== route.id)
             : selected.kind === "route"
               ? selected.id !== route.id
@@ -359,8 +359,8 @@ export function RoutesMap({
             </h3>
             {sources.map((source) =>
               node(
-                { kind: "source", id: sourceId(source.address) },
-                source.address || "Source address unavailable",
+                { kind: "source", id: sourceId(source) },
+                source.displayName || "Source address unavailable",
                 `Last seen ${sourceTimeLabel(source.lastSeen)}`,
                 <Monitor size={18} />,
               ),

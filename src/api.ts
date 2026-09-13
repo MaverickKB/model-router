@@ -30,3 +30,6 @@ export async function api<T>(
 }
 export const post = <T>(path: string, body: unknown = {}) =>
   api<T>(path, { method: "POST", body: JSON.stringify(body) });
+
+export const put = <T>(path: string, body: unknown = {}) =>
+  api<T>(path, { method: "PUT", body: JSON.stringify(body) });

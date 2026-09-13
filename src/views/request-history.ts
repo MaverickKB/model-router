@@ -5,6 +5,8 @@ export type RequestHistoryFilter = "All" | "Active" | "Errors";
 
 export interface RequestSourceGroup {
   id: string;
+  sourceKey: string | null;
+  displayName: string | null;
   address: string | null;
   jobs: Job[];
   total: number;
@@ -43,6 +45,7 @@ function searchText(job: Job): string {
   // belong in search. Policy names are searchable, never grouping identities.
   return [
     caller ? callerSummary(caller) : "",
+    caller?.source_label,
     caller?.source_address,
     caller?.software,
     caller?.client_family,
@@ -83,16 +86,17 @@ export function groupRequestHistory(
     // The live request list precedes persisted history and owns duplicate IDs.
     if (seen.has(job.id)) continue;
     seen.add(job.id);
-    const address = job.caller?.source_address?.trim() || null;
-    const jobs = history.get(address) || [];
+    const sourceKey =
+      job.caller?.source_key?.trim() || job.caller?.source_address?.trim() || null;
+    const jobs = history.get(sourceKey) || [];
     jobs.push(job);
-    history.set(address, jobs);
+    history.set(sourceKey, jobs);
   }
 
   const query = search.trim().toLowerCase();
   const groups: RequestSourceGroup[] = [];
   let matched = 0;
-  for (const [address, historyJobs] of history) {
+  for (const [sourceKey, historyJobs] of history) {
     historyJobs.sort((a, b) => b.ts - a.ts || byId(a, b));
     const counts = {
       active: 0,
@@ -116,9 +120,14 @@ export function groupRequestHistory(
     );
     if (!jobs.length) continue;
     const latestError = historyJobs.find(isError);
+    const latestCaller = historyJobs[0].caller;
+    const address = latestCaller?.source_address?.trim() || null;
+    const displayName = latestCaller?.source_label?.trim() || address;
     matched += jobs.length;
     groups.push({
-      id: address === null ? "missing-source" : `source:${address}`,
+      id: sourceKey === null ? "missing-source" : `source:${sourceKey}`,
+      sourceKey,
+      displayName,
       address,
       jobs,
       total: historyJobs.length,
@@ -131,13 +140,13 @@ export function groupRequestHistory(
   }
   // Keep expanded sources in place when polling adds newer requests elsewhere.
   groups.sort((a, b) =>
-    a.address === b.address
+    a.displayName === b.displayName
       ? 0
-      : a.address === null
+      : a.displayName === null
         ? 1
-        : b.address === null
+        : b.displayName === null
           ? -1
-          : byId(a, b),
+          : a.displayName.localeCompare(b.displayName),
   );
 
   return {

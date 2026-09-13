@@ -142,6 +142,15 @@ export interface ObservedCaller {
   id: string;
   policy_id: string | null;
   name: string;
+  source_key?: string;
+  source_label?: string;
+  source_label_source?:
+    | "operator"
+    | "reported_hostname"
+    | "discovered_hostname"
+    | "address";
+  source_hostname?: string;
+  source_identity_quality?: "network_hardware" | "reported_device" | "address";
   source_address: string;
   source_port?: number | null;
   software: string;
@@ -167,6 +176,7 @@ export interface ObservedCaller {
   last_method?: string;
   last_path: string;
   recent_source_ports?: number[];
+  recent_source_addresses?: string[];
 }
 export interface Job {
   caller?: ObservedCaller | null;

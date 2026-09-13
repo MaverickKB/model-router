@@ -200,7 +200,7 @@ it("attributes an active request once to each hop and never to a permission poli
   props.jobs = [job, { ...job }];
   const { container } = render(<RoutesMap {...props} />);
   const sourceEdge = container.querySelector(
-    `[data-edge-id="source:192.0.2.40-${route.id}"]`,
+    `[data-edge-id="source:addr:192.0.2.40-${route.id}"]`,
   )!;
   const engineEdge = container.querySelector(
     `[data-edge-id="${route.id}-${engine.id}-primary"]`,
@@ -235,7 +235,7 @@ it("shows partial route access in amber and source-to-route selection only inspe
   const original = JSON.parse(JSON.stringify(props.config));
   const { container } = render(<RoutesMap {...props} />);
   const edge = container.querySelector(
-    `[data-edge-id="source:192.0.2.40-${route.id}"]`,
+    `[data-edge-id="source:addr:192.0.2.40-${route.id}"]`,
   )!;
   expect(edge).toHaveClass("mixed");
   expect(edge).not.toHaveClass("ready");
@@ -292,7 +292,7 @@ it("keeps engine-specific access partial even when every source client can use t
   });
   const { container } = render(<RoutesMap {...props} />);
   expect(
-    container.querySelector(`[data-edge-id="source:192.0.2.40-${route.id}"]`),
+    container.querySelector(`[data-edge-id="source:addr:192.0.2.40-${route.id}"]`),
   ).toHaveClass("ready");
   await userEvent
     .setup()

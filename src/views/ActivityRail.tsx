@@ -93,7 +93,7 @@ export function ActivityRail({
             ? !collapsedMatches.has(group.id)
             : expandedSources.has(group.id);
           const listId = `${listPrefix}-${group.id}`;
-          const source = group.address || "Source not recorded";
+          const source = group.displayName || "Source not recorded";
           return (
             <section
               className="request-source"
@@ -108,6 +108,9 @@ export function ActivityRail({
               >
                 <span className="request-source-heading">
                   <strong>{source}</strong>
+                  {group.address && group.address !== source && (
+                    <small className="request-source-address">{group.address}</small>
+                  )}
                   {expanded ? (
                     <ChevronDown size={15} />
                   ) : (
