@@ -9,6 +9,7 @@
 - Operator endpoints for accounts (`/api/v1/accounts`): create with a one-time activation link, rename, reassign level, suspend and re-enable, delete with cascade, revoke a user key, and read per-account usage; `/api/v1/state` reports accounts per level.
 - Self-service portal API (`/api/v1/portal`): activation links set the password and sign in, username/password sign-in with separate `router_portal` sessions, `me` with level, route readiness, usage, keys and observed connections, user-created API keys shown once, and password change that signs out other browsers; `/portal` serves the console build for the portal page.
 - Optional device pre-registration (dev mode, off by default, inert unless accounts are on): a registered direct source address is identified as its account with the key present, receives exactly the level's access and limits, outranks an administrator source policy for that host with a warning naming the policy, and falls through to ordinary policy when disabled, suspended or switched off; portal `/api/v1/portal/devices` and `me.devices.registered`, operator `/api/v1/devices` list, disable and delete.
+- Self-service portal page at `/portal` (same build as the console): activation from the link, sign-in, overview with route readiness and usage meter, one-time API key display with a paste-ready snippet, observed devices with registration shown only while pre-registration is on, password change and sign-out; never requests operator state.
 
 ## 0.3.0
 
