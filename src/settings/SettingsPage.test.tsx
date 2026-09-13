@@ -87,7 +87,7 @@ describe("Saved settings and inherited choices", () => {
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Operator sign-in" }));
     const access = screen.getByRole("region", { name: "Saved access state" });
-    expect(access).toHaveTextContent("Operator sign-in required");
+    expect(access).toHaveTextContent("Open administration");
     expect(
       screen.getByText("Changes below are not active until saved."),
     ).toBeVisible();
@@ -95,13 +95,13 @@ describe("Saved settings and inherited choices", () => {
     await user.click(
       screen.getByRole("button", { name: "Save access settings" }),
     );
-    await within(access).findByText("Open administration");
+    await within(access).findByText("Operator sign-in required");
     await user.click(screen.getByRole("tab", { name: "Discovery" }));
     const discovery = screen.getByRole("region", {
       name: "Saved discovery state",
     });
     expect(discovery).toHaveTextContent(
-      "Callers can submit model endpoints without signing in",
+      "Operator authentication is required.",
     );
     expect(discovery).toHaveTextContent("Automatic registration is off");
     await user.click(

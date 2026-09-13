@@ -6,7 +6,15 @@ import httpx
 import pytest
 
 from gateway.app import create_app
-from gateway.schema import Client, Configuration, Discovery, Engine, Route, Selector
+from gateway.schema import (
+    Client,
+    Configuration,
+    Discovery,
+    Engine,
+    Route,
+    Security,
+    Selector,
+)
 from gateway.store import Store
 
 
@@ -70,8 +78,10 @@ async def setup(tmp_path):
             Route(name="auto", fallback=Selector(kind="cloud", model_patterns=["*"]))
         ],
         discovery=Discovery(mdns=False),
+        security=Security(operator_auth_enabled=True),
     )
     store.save(config)
+    app.state.identity.install_bootstrap_key()
     key = store.issue_key(client.id)
     store.set_secret(cloud.id, "demo-provider-key")
     await discovery.refresh()

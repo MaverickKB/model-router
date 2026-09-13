@@ -1,5 +1,9 @@
 # Changes
 
+## Unreleased
+
+- Fresh installs leave operator sign-in off. An operator key is created only when the owner enables sign-in or sets `MODEL_ROUTER_ADMIN_TOKEN`.
+
 ## 0.3.0
 
 - Observed caller connections, source addresses and identification evidence, separate from permission policies; console tests keep their own identity.

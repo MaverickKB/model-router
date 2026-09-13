@@ -15,7 +15,7 @@ npm run build
 uv run uvicorn gateway.app:create_app --factory --host 127.0.0.1 --port 8690 --no-proxy-headers --no-access-log
 ```
 
-Open `http://localhost:8690`. A fresh installation opens a clearly marked first-use setup session when the connection comes from a local or private source, so the owner can configure the router before signing in. The first saved configuration or valid bootstrap-key login finishes setup and applies the saved access policy. If operator sign-in remains enabled, the bootstrap key is in `state/operator-bootstrap.key`; enter it when the setup source is not available. Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
+Open `http://localhost:8690`. A fresh installation does not require an operator key. Trusted local/private sources can manage the console until the owner turns **Operator sign-in** on in Settings. That switch is off by default; enabling it is how you protect access. If sign-in is on and no key exists yet, the first save or **Generate replacement operator key** creates one (`state/operator-bootstrap.key` only when that path is used). Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
 
 1. Connect a serving engine by its OpenAI-compatible base URL. Under **Engine capabilities and limits**, declare the features it supports when its catalog does not report them. Tool-using agents need **tools**; streaming agents also need **streaming**. A plain model catalog does not establish either feature. Provider credentials stay on the server. New cloud connections require explicit model selection.
 2. Configure `auto` or add a purpose route. The Routes map shows one node per observed source address, connected to routes and engines. Select a source to inspect its software and access decisions. Open Permission policies to configure access, including before callers connect; select a policy and a route to review a link. Select a route and an engine to review a destination link. Use Details for model patterns, tags, ordering, and optional defaults.
@@ -40,7 +40,7 @@ A merge preserves the surviving engine's model policy and limits. It requires bo
 
 ## Access is optional
 
-**Settings > Access** controls operator sign-in and the optional default policy for unkeyed callers. Caller-key requirements belong to each route, so local and cloud routes can be mixed in one installation without a global access switch.
+**Settings > Access** controls operator sign-in and the optional default policy for unkeyed callers. Fresh installs start with sign-in off. The owner turns it on when they want to protect management access. Caller-key requirements belong to each route, so local and cloud routes can be mixed in one installation without a global access switch.
 
 When operator sign-in is off, configured trusted source networks can manage the console through its canonical URL or loopback tunnel. Same-origin checks still protect browser writes. `MODEL_ROUTER_PUBLIC_URL` declares the canonical external URL. Keep sign-in enabled when exposing an administrative listener beyond trusted operators.
 

@@ -7,7 +7,7 @@ export function fixtureConfig(): Config {
     routes: [],
     clients: [],
     security: {
-      operator_auth_enabled: true,
+      operator_auth_enabled: false,
       client_auth_enabled: true,
       anonymous_client_id: null,
       operator_networks: ["127.0.0.1/32", "::1/128"],
