@@ -48,7 +48,7 @@ it("normalizes a legacy generic transport label without hiding its evidence", ()
     client_version: undefined,
     identity_quality: undefined,
   };
-  expect(callerDisplayName(legacy)).toBe("Unidentified caller");
+  expect(callerDisplayName(legacy)).toBe("192.0.2.30");
   expect(callerSummary(legacy)).toContain("Python requests 2.33.0");
 });
 
@@ -62,7 +62,7 @@ it("normalizes every backend-known generic transport in legacy rows", () => {
       client_version: undefined,
       identity_quality: undefined,
     };
-    expect(callerDisplayName(legacy)).toBe("Unidentified caller");
+    expect(callerDisplayName(legacy)).toBe("192.0.2.30");
   }
 });
 
@@ -75,29 +75,27 @@ it("leaves browser-like user agents as transport evidence", () => {
     client_version: undefined,
     identity_quality: undefined,
   };
-  expect(callerDisplayName(legacy)).toBe("Mozilla/5.0");
+  expect(callerDisplayName(legacy)).toBe("192.0.2.30");
   expect(callerSummary(legacy)).toContain("Mozilla/5.0");
 });
 
 it("does not present an unrecognized legacy name/version token as a caller", () => {
   const legacy = {
     ...caller,
-    name: "hermes-cli/0.21.0",
-    software: "hermes-cli/0.21.0",
+    name: "notebook-cli/0.21.0",
+    software: "notebook-cli/0.21.0",
     client_family: undefined,
     client_version: undefined,
     identity_quality: undefined,
   };
-  expect(callerDisplayName(legacy)).toBe("Unidentified caller");
-  expect(callerSummary(legacy)).toContain("hermes-cli/0.21.0");
+  expect(callerDisplayName(legacy)).toBe("192.0.2.30");
+  expect(callerSummary(legacy)).toContain("notebook-cli/0.21.0");
 });
 
 it("shows evidence needed to identify an otherwise generic transport", () => {
   render(<CallerIdentity caller={caller} />);
 
-  expect(
-    screen.getByRole("heading", { name: "Unidentified caller" }),
-  ).toBeVisible();
+  expect(screen.getByRole("heading", { name: "192.0.2.30" })).toBeVisible();
   expect(screen.getByText(/No caller key was supplied/)).toBeVisible();
   expect(
     screen.getByText("Client runtime metadata · shared_access"),
@@ -124,7 +122,9 @@ it("describes unknown credentials as identity evidence rather than a refused req
   ).toBeVisible();
   expect(screen.getByText(/Route settings determine access/)).toBeVisible();
   expect(screen.getByText("Last observed identity")).toBeVisible();
-  expect(screen.getByText("No named policy identified")).toBeVisible();
+  expect(
+    screen.getByText("No named policy identified by the request"),
+  ).toBeVisible();
   expect(
     screen.queryByText(/No configured permission policy accepted/),
   ).not.toBeInTheDocument();
@@ -133,4 +133,42 @@ it("describes unknown credentials as identity evidence rather than a refused req
       /Application labels and client metadata are self-reported/,
     ),
   ).toBeVisible();
+});
+
+it("uses declared names and identified key policies without inventing an identity", () => {
+  expect(callerDisplayName({ ...caller, name: "Stale label" })).toBe(
+    "192.0.2.30",
+  );
+  expect(
+    callerDisplayName({ ...caller, reported_name: "Writing assistant" }),
+  ).toBe("Writing assistant");
+  expect(
+    callerDisplayName({
+      ...caller,
+      name: "Household",
+      identity_quality: "policy_key",
+    }),
+  ).toBe("Household");
+  expect(callerDisplayName({ ...caller, source_address: "" })).toBe(
+    "Source address unavailable",
+  );
+});
+
+it("preserves the router-owned console test identity ahead of client metadata", () => {
+  const consoleTest: ObservedCaller = {
+    ...caller,
+    name: "Console route test",
+    identity_basis: "operator_test",
+    identity_quality: "self_reported",
+    reported_name: "Browser metadata",
+  };
+  expect(callerDisplayName(consoleTest)).toBe("Console route test");
+  render(<CallerIdentity caller={consoleTest} />);
+  expect(
+    screen.getByRole("heading", { name: "Console route test" }),
+  ).toBeVisible();
+  expect(
+    screen.getByText(/created by a route test in the operator console/),
+  ).toBeVisible();
+  expect(screen.getByText("Browser metadata")).toBeVisible();
 });

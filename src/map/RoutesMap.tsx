@@ -1,13 +1,21 @@
-import { Cloud, Cpu, Pencil, Route as RouteIcon, Users, X } from "lucide-react";
-import { useState } from "react";
+import {
+  Cloud,
+  Cpu,
+  Monitor,
+  Pencil,
+  Route as RouteIcon,
+  Users,
+  X,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Dialog } from "../components";
+import { sourceTimeLabel } from "../source-time";
 import {
   callerClientLabel,
   callerDisplayName,
-  callerSummary,
-  CallerIdentity,
   PermissionPolicyIdentity,
 } from "../caller-identity";
+import { CallerSourceDetails, groupCallerSources } from "../caller-sources";
 import { engineHost } from "../engine-addresses";
 import type {
   Client,
@@ -20,16 +28,18 @@ import type {
   RouteMap,
 } from "../types";
 import { linkPolicy, type MapLink } from "./links";
+import { activeJobsForSource, sourceRouteAccess } from "./source-topology";
 import "./map.css";
 
-type Selection = { kind: "caller" | "route" | "engine"; id: string };
-
-function observationTitle(caller: ObservedCaller) {
-  const name = callerDisplayName(caller);
-  return !name || name === "Unidentified caller"
-    ? callerClientLabel(caller)
-    : name;
-}
+type Selection = { kind: "source" | "policy" | "route" | "engine"; id: string };
+type AccessState = "ready" | "mixed" | "blocked" | "unknown";
+const accessLabel = (state: AccessState) =>
+  ({
+    ready: "Available",
+    mixed: "Mixed access",
+    blocked: "Unavailable",
+    unknown: "Access not yet known",
+  })[state];
 
 type Props = {
   config: Config;
@@ -57,62 +67,60 @@ export function RoutesMap({
   inspectJob,
 }: Props) {
   const [selected, select] = useState<Selection | null>(null);
+  const [inspectedRoute, inspectRoute] = useState<string | null>(null);
   const [pending, setPending] = useState<{
     config: Config;
     link: MapLink;
   } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const active = jobs.filter((job) =>
-    ["running", "routing", "waiting"].includes(job.status),
-  );
-  const policies = config.clients;
+  const graphRef = useRef<HTMLDivElement>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const inspectedSourceId = selected?.kind === "source" ? selected.id : null;
+  // Live polling refreshes evidence without moving the operator's focus.
+  useEffect(() => {
+    if (!inspectedSourceId) return;
+    inspectorRef.current?.focus({ preventScroll: true });
+    inspectorRef.current?.scrollIntoView?.({ block: "start" });
+  }, [inspectedSourceId, inspectedRoute]);
+  const backToMap = () => {
+    select(null);
+    inspectRoute(null);
+    graphRef.current?.focus({ preventScroll: true });
+    graphRef.current?.scrollIntoView?.({ block: "start" });
+  };
+  const active = [
+    ...new Map(
+      jobs
+        .filter((job) => ["running", "routing", "waiting"].includes(job.status))
+        .map((job) => [job.id, job]),
+    ).values(),
+  ];
+  const sources = groupCallerSources(callers);
+  const sourceId = (address: string) => `source:${address}`;
+  const selectedSource =
+    selected?.kind === "source"
+      ? sources.find((source) => sourceId(source.address) === selected.id)
+      : undefined;
+  const selectedPolicy =
+    selected?.kind === "policy"
+      ? config.clients.find((policy) => policy.id === selected.id)
+      : undefined;
   const observationsFor = (policyId: string) =>
     callers.filter((caller) => caller.policy_id === policyId);
-  const unassigned =
-    topology?.unassigned_callers ||
-    callers.filter((caller) => !caller.policy_id);
-  const sourceGroups = new Map<string, ObservedCaller[]>();
-  for (const caller of unassigned) {
-    const group = sourceGroups.get(caller.source_address) || [];
-    group.push(caller);
-    sourceGroups.set(caller.source_address, group);
-  }
   const y = (index: number) => 50 + index * 104 + 42;
-  const sourceHeadingHeight = 44;
-  const callerPositions = new Map(
-    policies.map((policy, index) => [policy.id, y(index)]),
-  );
-  let callerBottom = 50 + policies.length * 104;
-  for (const observations of sourceGroups.values()) {
-    callerBottom += sourceHeadingHeight;
-    for (const caller of observations) {
-      callerPositions.set(caller.id, callerBottom + 42);
-      callerBottom += 104;
-    }
-  }
-  const height = Math.max(
-    callerBottom,
-    50 + Math.max(config.routes.length, engines.length, 2) * 104,
-  );
-  const selectedObservation =
-    selected?.kind === "caller"
-      ? unassigned.find((caller) => caller.id === selected.id)
-      : undefined;
+  const height =
+    50 +
+    Math.max(sources.length, config.routes.length, engines.length, 1) * 104;
   const pick = (next: Selection) => {
-    if (
-      selected?.kind === "caller" &&
-      next.kind === "route" &&
-      policies.some((policy) => policy.id === selected.id)
-    ) {
+    setError("");
+    if (selectedPolicy && next.kind === "route") {
       setPending({
         config,
-        link: {
-          kind: "caller",
-          callerId: selected.id,
-          routeId: next.id,
-        },
+        link: { kind: "caller", callerId: selectedPolicy.id, routeId: next.id },
       });
+    } else if (selected?.kind === "source" && next.kind === "route") {
+      inspectRoute(next.id);
     } else if (selected?.kind === "route" && next.kind === "engine") {
       setPending({
         config,
@@ -123,11 +131,12 @@ export function RoutesMap({
           tier: "primary",
         },
       });
-    } else
+    } else {
       select(
         selected?.id === next.id && selected.kind === next.kind ? null : next,
       );
-    setError("");
+      inspectRoute(null);
+    }
   };
   const edges: {
     id: string;
@@ -135,70 +144,83 @@ export function RoutesMap({
     to: number;
     x: number;
     xx: number;
-    ready: boolean;
+    state: AccessState;
     backup: boolean;
     title: string;
     jobs: Job[];
     dim: boolean;
   }[] = [];
-  for (const edge of topology?.caller_routes || []) {
-    const from = callerPositions.get(edge.caller_id);
-    const b = config.routes.findIndex((route) => route.id === edge.route_id);
-    if (from === undefined || b < 0) continue;
-    const policyEdge = policies.some((policy) => policy.id === edge.caller_id);
-    edges.push({
-      id: `${edge.caller_id}-${edge.route_id}`,
-      from,
-      to: y(b),
-      x: 280,
-      xx: 360,
-      ready: !!edge.ready_engines.length,
-      backup: false,
-      title: edge.reason,
-      jobs: active.filter(
-        (job) =>
-          (policyEdge
-            ? (job.caller?.policy_id || job.client_id) === edge.caller_id
-            : job.caller?.id === edge.caller_id) &&
-          (job.decision.route || job.requested) === config.routes[b].name,
-      ),
-      dim:
-        !!selected &&
-        (selected.kind === "caller"
-          ? selected.id !== edge.caller_id
-          : selected.kind === "route"
-            ? selected.id !== edge.route_id
-            : !edge.ready_engines.includes(selected.id)),
-    });
-  }
+  sources.forEach((source, sourceIndex) =>
+    config.routes.forEach((route, routeIndex) => {
+      const access = sourceRouteAccess(
+        source,
+        route.id,
+        topology,
+        selected?.kind === "engine" ? selected.id : undefined,
+      );
+      if (!access.edges.length) return;
+      edges.push({
+        id: `${sourceId(source.address)}-${route.id}`,
+        from: y(sourceIndex),
+        to: y(routeIndex),
+        x: 280,
+        xx: 360,
+        state: access.state,
+        backup: false,
+        title: `${source.address || "Source address unavailable"} → ${route.name}: ${accessLabel(access.state)} · ${access.allowed} of ${access.total} client records have an eligible destination`,
+        jobs: activeJobsForSource(source, route.name, active),
+        dim:
+          !!selected &&
+          (selected.kind === "source"
+            ? selected.id !== sourceId(source.address) ||
+              (!!inspectedRoute && inspectedRoute !== route.id)
+            : selected.kind === "route"
+              ? selected.id !== route.id
+              : selected.kind === "engine"
+                ? !access.allowed
+                : false),
+      });
+    }),
+  );
   for (const edge of topology?.route_engines || []) {
-    const a = config.routes.findIndex((route) => route.id === edge.route_id);
-    const b = engines.findIndex((engine) => engine.id === edge.engine_id);
-    if (a < 0 || b < 0) continue;
-    const callerPath =
-      selected?.kind === "caller"
-        ? topology?.caller_routes.find(
-            (value) =>
-              value.caller_id === selected.id &&
-              value.route_id === edge.route_id,
-          )
-        : undefined;
+    const routeIndex = config.routes.findIndex(
+      (route) => route.id === edge.route_id,
+    );
+    const engineIndex = engines.findIndex(
+      (engine) => engine.id === edge.engine_id,
+    );
+    if (routeIndex < 0 || engineIndex < 0) continue;
+    const access = selectedSource
+      ? sourceRouteAccess(
+          selectedSource,
+          edge.route_id,
+          topology,
+          edge.engine_id,
+          edge.tier,
+        )
+      : undefined;
+    const routeJobs = selectedSource
+      ? activeJobsForSource(
+          selectedSource,
+          config.routes[routeIndex].name,
+          active,
+        )
+      : active;
+    const state = edge.ready ? access?.state || "ready" : "blocked";
     edges.push({
       id: `${edge.route_id}-${edge.engine_id}-${edge.tier}`,
-      from: y(a),
-      to: y(b),
+      from: y(routeIndex),
+      to: y(engineIndex),
       x: 640,
       xx: 720,
-      ready:
-        edge.ready &&
-        (selected?.kind !== "caller" ||
-          !!callerPath?.ready_engines.includes(edge.engine_id)),
+      state,
       backup: edge.tier === "fallback",
-      title: `${edge.tier === "fallback" ? "Backup" : "Primary"}${edge.dynamic ? " · Automatic selection" : " · Pinned engine"} · ${edge.models.length ? edge.models.join(", ") : "Waiting for matching models"}`,
-      jobs: active.filter(
+      title: `${edge.tier === "fallback" ? "Backup" : "Primary"} · ${access ? accessLabel(state) + " · " : ""}${edge.models.length ? edge.models.join(", ") : "Waiting for matching models"}`,
+      jobs: routeJobs.filter(
         (job) =>
           job.engine_id === edge.engine_id &&
-          (job.decision.route || job.requested) === config.routes[a].name &&
+          (job.decision.route || job.requested) ===
+            config.routes[routeIndex].name &&
           job.tier === edge.tier,
       ),
       dim:
@@ -207,7 +229,10 @@ export function RoutesMap({
           ? selected.id !== edge.engine_id
           : selected.kind === "route"
             ? selected.id !== edge.route_id
-            : !callerPath),
+            : selected.kind === "source"
+              ? !access?.edges.length ||
+                (!!inspectedRoute && inspectedRoute !== edge.route_id)
+              : false),
     });
   }
   const node = (
@@ -220,13 +245,13 @@ export function RoutesMap({
   ) => (
     <div
       key={value.id}
-      className={`map-node ${selected?.id === value.id ? "selected" : ""} ${disabled ? "disabled" : ""}`}
+      className={`map-node ${selected?.id === value.id && selected.kind === value.kind ? "selected" : ""} ${disabled ? "disabled" : ""}`}
     >
       <button
         className="map-node-select"
         onClick={() => pick(value)}
-        aria-pressed={selected?.id === value.id}
-        aria-label={`Select ${value.kind === "caller" ? (edit ? "permission policy" : "observed caller") : value.kind} ${name}`}
+        aria-pressed={selected?.id === value.id && selected.kind === value.kind}
+        aria-label={`Select ${value.kind === "policy" ? "permission policy" : value.kind} ${name}`}
         title={`${name} · ${detail}`}
       >
         {icon}
@@ -238,7 +263,7 @@ export function RoutesMap({
       {edit && (
         <button
           className="icon-button"
-          aria-label={`Edit ${value.kind} ${name}`}
+          aria-label={`Edit ${value.kind === "policy" ? "caller" : value.kind} ${name}`}
           onClick={edit}
         >
           <Pencil size={13} />
@@ -254,24 +279,20 @@ export function RoutesMap({
   const pendingEngineId =
     pending?.link.kind === "engine" ? pending.link.engineId : null;
   return (
-    <section
-      className="routes-map"
-      aria-label="Permission policy route engine map"
-    >
+    <section className="routes-map" aria-label="Source route engine map">
       <div className="map-intro">
         <div>
-          <h2>Follow the route</h2>
-          <p>
-            Follow observed callers and saved permission policies into each
-            route, then into the engines that can serve it. Select a saved
-            policy, then a route to link them. Observations without a named
-            policy are grouped by direct source address; each keeps its own
-            route access. An address can represent several applications or
-            devices.
-          </p>
+          <h2>Live routes</h2>
+          <p>Select a source to inspect its clients and route access.</p>
         </div>
         {selected && (
-          <button className="text-button" onClick={() => select(null)}>
+          <button
+            className="text-button"
+            onClick={() => {
+              select(null);
+              inspectRoute(null);
+            }}
+          >
             <X size={14} />
             Clear selection
           </button>
@@ -280,7 +301,11 @@ export function RoutesMap({
       <div className="map-legend">
         <span>
           <i />
-          Eligible text path
+          Available
+        </span>
+        <span className="mixed">
+          <i />
+          Mixed access
         </span>
         <span className="backup">
           <i />
@@ -288,16 +313,19 @@ export function RoutesMap({
         </span>
         <span className="waiting">
           <i />
-          Waiting or restricted
+          Unavailable or unknown
         </span>
       </div>
-      {!topology && (
-        <p role="status">
-          The candidate has not supplied a current routing map.
-        </p>
-      )}
+      {!topology && <p role="status">Waiting for the current routing map.</p>}
       <div className="map-scroll">
-        <div className="route-map-board" style={{ height }}>
+        <div
+          className="route-map-board"
+          style={{ height }}
+          ref={graphRef}
+          tabIndex={-1}
+          role="group"
+          aria-label="Route map"
+        >
           <svg
             viewBox={`0 0 1000 ${height}`}
             preserveAspectRatio="none"
@@ -307,7 +335,7 @@ export function RoutesMap({
               <g
                 key={edge.id}
                 data-edge-id={edge.id}
-                className={`map-edge ${edge.ready ? "ready" : "waiting"} ${edge.backup ? "backup" : ""} ${edge.jobs.length ? "active" : ""} ${edge.dim ? "dim" : ""}`}
+                className={`map-edge ${edge.state} ${edge.backup ? "backup" : ""} ${edge.jobs.length ? "active" : ""} ${edge.dim ? "dim" : ""}`}
               >
                 <title>{edge.title}</title>
                 <path
@@ -325,47 +353,21 @@ export function RoutesMap({
               </g>
             ))}
           </svg>
-          <div className="map-column">
-            <h3>Callers and permission policies</h3>
-            {policies.map((policy) =>
+          <div className="map-column" aria-label="Observed sources">
+            <h3>
+              Sources <small>{sources.length}</small>
+            </h3>
+            {sources.map((source) =>
               node(
-                { kind: "caller", id: policy.id },
-                policy.name,
-                `${policy.kind ? `Kind: ${policy.kind}` : "Kind not set"} · ${observationsFor(policy.id).length} observation${observationsFor(policy.id).length === 1 ? "" : "s"}`,
-                <Users size={18} />,
-                () => editCaller(policy),
-                !policy.enabled,
+                { kind: "source", id: sourceId(source.address) },
+                source.address || "Source address unavailable",
+                `Last seen ${sourceTimeLabel(source.lastSeen)}`,
+                <Monitor size={18} />,
               ),
             )}
-            {[...sourceGroups].map(([address, observations]) => (
-              <div
-                key={address}
-                className="map-source-group"
-                role="group"
-                aria-label={`Observed source ${address || "unknown"}`}
-              >
-                <h4 style={{ height: sourceHeadingHeight }}>
-                  <span title={address}>
-                    {address || "Source address unavailable"}
-                  </span>{" "}
-                  <small>
-                    {observations.length}{" "}
-                    {observations.length === 1 ? "observation" : "observations"}
-                  </small>
-                </h4>
-                {observations.map((caller) =>
-                  node(
-                    { kind: "caller", id: caller.id },
-                    observationTitle(caller),
-                    callerSummary(caller),
-                    <Users size={18} />,
-                  ),
-                )}
-              </div>
-            ))}
-            {!policies.length && !sourceGroups.size && (
+            {!sources.length && (
               <p className="map-empty">
-                No callers observed and no permission policies configured yet.
+                Sources appear here when they make a request.
               </p>
             )}
           </div>
@@ -375,11 +377,18 @@ export function RoutesMap({
               node(
                 { kind: "route", id: route.id },
                 route.name,
-                `${route.purpose || "Routing policy"} · ${route.require_caller_key ? "Caller key required" : "Caller key optional"}`,
+                route.require_caller_key
+                  ? "Caller key required"
+                  : "Caller key optional",
                 <RouteIcon size={18} />,
                 () => editRoute(route),
                 !route.enabled,
               ),
+            )}
+            {!config.routes.length && (
+              <p className="map-empty">
+                Add a route to connect callers to engines.
+              </p>
             )}
           </div>
           <div className="map-column">
@@ -405,45 +414,156 @@ export function RoutesMap({
         </div>
       </div>
       <p className="hint">
-        Paths follow saved policy and current catalogs. Request-specific tools,
-        images and capacity can narrow selection. Dashed paths remain
-        configured; they have no eligible text destination now.
+        Paths show current text availability. Tools, images and capacity are
+        checked per request.
       </p>
-      {selected?.kind === "caller" &&
-        config.clients.some((policy) => policy.id === selected.id) && (
-          <PermissionPolicyIdentity
-            policy={config.clients.find((policy) => policy.id === selected.id)!}
-            callers={observationsFor(selected.id)}
-          />
-        )}
-      {selectedObservation && <CallerIdentity caller={selectedObservation} />}
-      {selected?.kind === "caller" && (
-        <div className="map-reasons">
-          {topology?.caller_routes
-            .filter((edge) => edge.caller_id === selected.id)
-            .map((edge) => (
-              <p key={edge.route_id}>
-                <strong>
-                  {config.routes.find((r) => r.id === edge.route_id)?.name}
-                </strong>{" "}
-                {edge.reason}
-              </p>
-            ))}
-        </div>
-      )}
       {!!active.length && (
-        <div className="map-jobs">
+        <div className="map-jobs" aria-label="Active requests">
           {active.map((job) => (
             <button key={job.id} onClick={() => inspectJob(job)}>
               {job.caller
                 ? callerDisplayName(job.caller)
-                : "Caller not recorded"}{" "}
+                : "Source not recorded"}{" "}
               → {job.decision.route || job.requested} →{" "}
               {job.engine || "Selecting"}
             </button>
           ))}
         </div>
       )}
+      {selectedSource && (
+        <section
+          className="map-source-details"
+          ref={inspectorRef}
+          tabIndex={-1}
+          aria-label={`Routing details for ${selectedSource.address || "unknown source"}`}
+        >
+          <button className="text-button map-back" onClick={backToMap}>
+            Back to map
+          </button>
+          <div className="map-access-details">
+            <h3>Route access</h3>
+            {config.routes
+              .filter((route) => !inspectedRoute || route.id === inspectedRoute)
+              .map((route) => {
+                const access = sourceRouteAccess(
+                  selectedSource,
+                  route.id,
+                  topology,
+                );
+                return (
+                  <div
+                    className={`map-access-row ${access.state}`}
+                    key={route.id}
+                  >
+                    <h4>
+                      {route.name}
+                      <span>{accessLabel(access.state)}</span>
+                    </h4>
+                    <p>
+                      {access.allowed} of {access.total} client records have an
+                      eligible destination.
+                    </p>
+                    <ul className="map-access-contexts">
+                      {selectedSource.callers.map((caller) => {
+                        const edge = access.edges.find(
+                          (entry) => entry.caller_id === caller.id,
+                        );
+                        const label =
+                          caller.reported_name || callerClientLabel(caller);
+                        const state = edge
+                          ? edge.ready_engines.length
+                            ? "ready"
+                            : "blocked"
+                          : "unknown";
+                        const policy = config.clients.find(
+                          (entry) => entry.id === edge?.policy_id,
+                        );
+                        return (
+                          <li
+                            key={caller.id}
+                            className={`map-access-context ${state}`}
+                            aria-label={`Route decision for ${label}`}
+                          >
+                            <h5>
+                              {label}
+                              <span>{accessLabel(state)}</span>
+                            </h5>
+                            <p>
+                              {edge?.reason ||
+                                "Current route access has not been reported for this client."}
+                            </p>
+                            <small>
+                              Permission policy:{" "}
+                              {edge
+                                ? policy?.name ||
+                                  (edge.policy_id
+                                    ? "Policy no longer configured"
+                                    : "No named policy identified")
+                                : "Not yet reported"}
+                            </small>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+          </div>
+          <CallerSourceDetails
+            source={selectedSource}
+            policies={config.clients}
+            onEditPolicy={editCaller}
+          />
+        </section>
+      )}
+      <details className="map-policy-tray">
+        <summary>
+          Permission policies <span>{config.clients.length}</span>
+        </summary>
+        <p className="hint">
+          Select a policy, then a route to configure access for every client
+          using that policy.
+        </p>
+        <div className="map-policy-list">
+          {config.clients.map((policy) =>
+            node(
+              { kind: "policy", id: policy.id },
+              policy.name,
+              `${policy.kind || "Permission policy"} · ${observationsFor(policy.id).length} client records`,
+              <Users size={18} />,
+              () => editCaller(policy),
+              !policy.enabled,
+            ),
+          )}
+        </div>
+        {!config.clients.length && (
+          <p className="map-empty">No permission policies configured.</p>
+        )}
+        {selectedPolicy && (
+          <>
+            <PermissionPolicyIdentity
+              policy={selectedPolicy}
+              callers={observationsFor(selectedPolicy.id)}
+            />
+            <div className="map-reasons">
+              {topology?.policy_routes
+                ?.filter((edge) => edge.policy_id === selectedPolicy.id)
+                .map((edge) => (
+                  <p key={edge.route_id}>
+                    <strong>
+                      {
+                        config.routes.find(
+                          (route) => route.id === edge.route_id,
+                        )?.name
+                      }
+                    </strong>
+                    {edge.reason}
+                  </p>
+                ))}
+            </div>
+          </>
+        )}
+      </details>
       {pending && (
         <Dialog title="Link policy" onClose={() => setPending(null)}>
           <form
