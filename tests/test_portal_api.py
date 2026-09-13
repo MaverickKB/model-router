@@ -74,10 +74,7 @@ class Harness:
 
     @asynccontextmanager
     async def operator(self):
-        token = (self.store.directory / "operator-bootstrap.key").read_text().strip()
         async with self.browser() as http:
-            login = await http.post("/api/v1/login", json={"token": token})
-            assert login.status_code == 200
             yield http
 
     def caller(self, key, address="192.0.2.50"):
@@ -346,7 +343,12 @@ async def test_portal_writes_require_same_origin(tmp_path):
 async def test_operator_cookie_never_authorizes_portal_and_vice_versa(tmp_path):
     harness = await build(tmp_path)
     body = {"username": "bob", "level_id": harness.level.id}
-    async with harness.activated() as (_, session):
+    account, token = await harness.add_account("alice")
+    async with harness.browser(address="192.0.2.50") as session:
+        activated = await session.post(
+            ACTIVATE, json={"token": token, "password": PASSWORD}
+        )
+        assert activated.status_code == 200, activated.text
         assert (await session.get("/api/v1/state")).status_code == 401
         assert (await session.get("/api/v1/accounts")).status_code == 401
         assert (await session.post("/api/v1/accounts", json=body)).status_code == 401
