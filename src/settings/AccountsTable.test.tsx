@@ -153,7 +153,8 @@ describe("Accounts table", () => {
           },
     );
     const user = userEvent.setup();
-    render(<DevicesTable config={config} accounts={[]} />);
+    const reload = vi.fn(async () => {});
+    render(<DevicesTable config={config} accounts={[]} reload={reload} />);
     expect(
       await screen.findByText(
         /Takes precedence over LAN policy \(192\.0\.2\.0\/24\)/,
@@ -173,5 +174,6 @@ describe("Accounts table", () => {
       method: "PUT",
       body: { enabled: false },
     });
+    expect(reload).toHaveBeenCalledOnce();
   });
 });

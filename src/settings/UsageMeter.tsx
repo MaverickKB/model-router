@@ -1,10 +1,5 @@
+import { clock } from "../components";
 import type { AccountUsage } from "../types";
-
-const clock = (ts: number) =>
-  new Date(ts * 1000).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
 
 // Current-window token usage against the level's budget; counts only.
 export function UsageMeter({ usage }: { usage: AccountUsage | null }) {

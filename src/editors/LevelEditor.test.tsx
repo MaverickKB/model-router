@@ -68,6 +68,27 @@ describe("Level editor", () => {
     expect(saved.max_concurrency).toBe(2);
   });
 
+  it("clicking Limit again keeps the configured concurrency", async () => {
+    const config = fixtureConfig();
+    config.account_levels = [level({ max_concurrency: 10 })];
+    const save = vi.fn(async (value: Config) => value);
+    const user = userEvent.setup();
+    render(
+      <LevelEditor
+        initial={config.account_levels[0]}
+        config={config}
+        save={save}
+        inUse={0}
+        onClose={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Limit" }));
+    expect(screen.getByLabelText("Concurrent requests")).toHaveValue(10);
+    await user.click(screen.getByRole("button", { name: "Save level" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save.mock.calls[0][0].account_levels[0].max_concurrency).toBe(10);
+  });
+
   it("remove level with accounts opens the move dialog and calls PUT per account then saves without the level", async () => {
     const config = fixtureConfig();
     const other = level({ id: "level-2", name: "Other" });

@@ -1,3 +1,4 @@
+import { plural } from "../components";
 import type { AccountSummary, Config } from "../types";
 
 function scopeLabel(config: Config) {
@@ -157,8 +158,6 @@ export function SavedAccounts({
   const settings = config.accounts;
   const levels = config.account_levels.length;
   const pending = accounts.filter((a) => a.status === "pending").length;
-  const plural = (n: number, word: string) =>
-    `${n} ${word}${n === 1 ? "" : "s"}`;
   return (
     <section className="settings-summary" aria-label="Saved accounts state">
       <p className="settings-eyebrow">Saved settings · In effect now</p>

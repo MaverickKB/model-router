@@ -1,7 +1,7 @@
 import { KeyRound, Link2, MonitorSmartphone, Save, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, post } from "../api";
-import { Dialog, Field, Select, Switch } from "../components";
+import { Dialog, Field, Select, Switch, when } from "../components";
 import type {
   AccountDetail as Detail,
   AccountSummary,
@@ -11,13 +11,6 @@ import type {
 import { ActivationDialog } from "./ActivationDialog";
 import { concurrencyLabel, UsageMeter } from "./UsageMeter";
 
-export const when = (ts: number | null | undefined) =>
-  ts
-    ? new Date(ts * 1000).toLocaleString([], {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : "Never";
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 // One account's management surface. Every action is a request to the accounts

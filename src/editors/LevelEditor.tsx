@@ -291,7 +291,10 @@ export function LevelEditor({
               </Choice>
               <Choice
                 checked={draft.max_concurrency !== null}
-                onClick={() => set({ ...draft, max_concurrency: 2 })}
+                onClick={() => {
+                  if (draft.max_concurrency === null)
+                    set({ ...draft, max_concurrency: 2 });
+                }}
               >
                 Limit
               </Choice>

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { when } from "../components";
 import type { AccountSummary, Config, RegisteredDevice } from "../types";
-import { when } from "./AccountDetail";
 
 // Registered devices across every account. Rows stay manageable while either
 // switch is off: they are inert then, not gone.
 export function DevicesTable({
   config,
   accounts,
+  reload,
 }: {
   config: Config;
   accounts: AccountSummary[];
+  reload: () => Promise<void>;
 }) {
   const [devices, setDevices] = useState<RegisteredDevice[]>([]);
   const [error, setError] = useState("");
@@ -38,6 +40,8 @@ export function DevicesTable({
     try {
       await api(`/api/v1/devices/${device.id}`, init);
       await load();
+      // Account rows carry device counts.
+      await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

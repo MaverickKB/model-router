@@ -1,5 +1,6 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { plural } from "../components";
 import type { AccountSummary, Config } from "../types";
 import { AccountDetail } from "./AccountDetail";
 import { CreateAccountDialog } from "./CreateAccountDialog";
@@ -28,8 +29,6 @@ export function AccountsTable({
   const selected = accounts.find((a) => a.id === selectedId);
   const levelName = (id: string) =>
     config.account_levels.find((l) => l.id === id)?.name || "Level removed";
-  const plural = (n: number, word: string) =>
-    `${n} ${word}${n === 1 ? "" : "s"}`;
   return (
     <section aria-labelledby="accounts-list-heading">
       <div className="section-row">

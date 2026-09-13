@@ -150,6 +150,22 @@ export function timeLabel(ts: number) {
       })
     : "Waiting for discovery";
 }
+export function when(ts: number | null | undefined) {
+  return ts
+    ? new Date(ts * 1000).toLocaleString([], {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : "Never";
+}
+export function clock(ts: number) {
+  return new Date(ts * 1000).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+export const plural = (n: number, word: string) =>
+  `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export function ListInput({
   values,

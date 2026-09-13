@@ -205,7 +205,7 @@ export function AccountsSettings({
         reload={reload}
         error={accountsError}
       />
-      <DevicesTable config={config} accounts={accounts} />
+      <DevicesTable config={config} accounts={accounts} reload={reload} />
       {level && (
         <LevelEditor
           key={level.id}
