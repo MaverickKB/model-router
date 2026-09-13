@@ -27,7 +27,7 @@ ORIGIN = "http://localhost"
 REGISTERED = "192.0.2.20"
 NEIGHBOUR = "192.0.2.21"
 BUDGET = TokenBudget(max_tokens=3000, window_seconds=3600)
-OUTSIDE = "Route is outside the client's allowlist"
+REMOVED = "Account access was removed"
 
 
 class Fleet:
@@ -363,13 +363,15 @@ async def test_device_disable_applies_before_next_attempt(tmp_path):
     setup.fleet.on_call = disable
     async with setup.app.router.lifespan_context(setup.app), setup.caller() as http:
         response = await complete(http, "private")
-    # The proxy re-identifies the host before every attempt, so the disabled
-    # row falls through to the source policy exactly as a fresh request would.
+    # Re-identification would fall through to the source policy, which is not
+    # the admitted account: the request is refused, never continued as the
+    # LAN policy on Alice's admission.
     assert response.status_code == 403
-    assert response.json()["error"]["message"] == OUTSIDE
+    assert response.json()["detail"] == REMOVED
     assert len(setup.fleet.calls) == 1
     event = setup.store.events()[0]
     assert event["status"] == "denied" and event["http_status"] == 403
+    assert event["client_id"] == setup.account["id"]
     assert setup.app.state.proxy.limits.active(setup.account["id"]) == 0
 
     switched = await build(tmp_path / "switch")
@@ -385,9 +387,61 @@ async def test_device_disable_applies_before_next_attempt(tmp_path):
         switched.caller() as http,
     ):
         response = await complete(http, "private")
-    assert response.status_code == 403
-    assert response.json()["error"]["message"] == OUTSIDE
+    assert response.status_code == 403 and response.json()["detail"] == REMOVED
     assert len(switched.fleet.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_device_enable_between_attempts_never_upgrades_the_request(tmp_path):
+    """A request admitted without an account cannot become one mid-request."""
+    setup = await build(tmp_path, devices=False, budget=BUDGET)
+    setup.seed_used(BUDGET.max_tokens)
+    setup.fleet.statuses = [503]
+
+    def turn_on(call_number):
+        if call_number == 1:
+            setup.switches(enabled=True, devices=True)
+
+    setup.fleet.on_call = turn_on
+    async with setup.app.router.lifespan_context(setup.app), setup.caller() as http:
+        response = await complete(http, "free")
+    # The host entered under the LAN policy with no admission. Its budget is
+    # exhausted, so continuing as Alice would bypass the limit a fresh device
+    # request is refused by.
+    assert response.status_code == 403
+    assert response.json()["detail"] == REMOVED
+    assert len(setup.fleet.calls) == 1
+    event = setup.store.events()[0]
+    assert event["status"] == "denied" and event["client_id"] == setup.lan.id
+    assert "usage" not in event and "account_id" not in event
+    window = setup.store.usage_windows(setup.account["id"])[0]
+    # Only the seed row: nothing was charged to Alice for this request.
+    assert window["requests"] == 1 and window["prompt_tokens"] == BUDGET.max_tokens
+    async with setup.caller() as http:
+        fresh = await complete(http, "free")
+    assert fresh.status_code == 429
+
+    # The same binding refuses one account drifting into another: Alice's
+    # device is removed and Bob registers the address during the first attempt.
+    drift = await build(tmp_path / "drift")
+    bob = drift.add_account("bob", "Bob")
+    drift.fleet.statuses = [503]
+
+    def reassign(call_number):
+        if call_number == 1:
+            assert drift.store.remove_device(drift.device["id"])
+            drift.store.register_device(bob["id"], REGISTERED, "bench")
+
+    drift.fleet.on_call = reassign
+    async with drift.app.router.lifespan_context(drift.app), drift.caller() as http:
+        response = await complete(http, "private")
+    assert response.status_code == 403 and response.json()["detail"] == REMOVED
+    assert len(drift.fleet.calls) == 1
+    event = drift.store.events()[0]
+    assert event["status"] == "denied" and event["client_id"] == drift.account["id"]
+    assert drift.app.state.proxy.limits.active(drift.account["id"]) == 0
+    assert drift.app.state.proxy.limits.active(bob["id"]) == 0
+    assert drift.store.usage_windows(bob["id"]) == []
 
 
 @pytest.mark.asyncio

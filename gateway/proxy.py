@@ -264,6 +264,13 @@ class Proxy:
                             )
                     else:
                         current_client = await self.identity.identify(request)
+                        # The principal is bound at admission. A request whose
+                        # account changed since (a device row or switch toggled,
+                        # an address re-registered, or a host that became a
+                        # device mid-request) is refused rather than continued
+                        # under an admission it never passed or no longer owns.
+                        if getattr(request.state, "account_id", None) != account_id:
+                            raise HTTPException(403, "Account access was removed")
                 except HTTPException as exc:
                     event["decision"] = {
                         "candidates": [],

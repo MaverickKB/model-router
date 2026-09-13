@@ -152,6 +152,13 @@ class Identity:
 
     async def identify(self, request: Request) -> Client:
         request.state.authentication_error = None
+        # The proxy re-identifies before every attempt. Account state must
+        # describe this identification only, so a path that establishes no
+        # account never inherits the previous attempt's account.
+        request.state.account_id = None
+        request.state.key_id = None
+        request.state.device_id = None
+        request.state.principal_label = None
         auth = request.headers.get("Authorization", "")
         unusable_auth = bool(auth)
         if auth and auth[:7].casefold() == "bearer ":
