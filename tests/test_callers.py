@@ -28,7 +28,8 @@ async def test_observed_sources_are_distinct_from_shared_permission_policy(tmp_p
     )
     assert app.state.store.callers() == []
     empty_map = route_map(app.state.store.config(), [], [])
-    assert empty_map["caller_routes"][0]["caller_id"] == policy.id
+    assert empty_map["caller_routes"] == []
+    assert empty_map["policy_routes"][0]["policy_id"] == policy.id
     assert empty_map["policies"][0]["observed_callers"] == []
     for address in ["192.0.2.10", "192.0.2.11"]:
         async with httpx.AsyncClient(
@@ -54,10 +55,9 @@ async def test_observed_sources_are_distinct_from_shared_permission_policy(tmp_p
         for c in callers
     )
     assert "spoofed" not in json.dumps(callers)
-    assert all(
-        e["caller_id"] == policy.id
-        for e in route_map(app.state.store.config(), [], callers)["caller_routes"]
-    )
+    edges = route_map(app.state.store.config(), [], callers)["caller_routes"]
+    assert {edge["caller_id"] for edge in edges} == {caller["id"] for caller in callers}
+    assert all(edge["policy_id"] == policy.id for edge in edges)
 
 
 @pytest.mark.asyncio
