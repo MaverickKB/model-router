@@ -134,10 +134,7 @@ export function NetworkView({
         (filter === "Responding" && h.status === "up") ||
         (filter === "Model services" &&
           h.services.some(
-            (s) =>
-              s.status === "model_service" ||
-              s.status === "model_surface" ||
-              s.status === "gateway",
+            (s) => s.status === "model_service" && s.models.length > 0,
           ))),
   );
   return (
@@ -267,10 +264,7 @@ export function NetworkView({
           const visibleServices =
             filter === "Model services"
               ? host.services.filter(
-                  (s) =>
-                    ["model_service", "model_surface", "gateway"].includes(
-                      s.status,
-                    ) || s.catalog_tracked,
+                  (s) => s.status === "model_service" && s.models.length > 0,
                 )
               : host.services;
           return (

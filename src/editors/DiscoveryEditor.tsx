@@ -110,7 +110,7 @@ export function DiscoveryEditor({
       {!draft.inspect_all_open_ports && (
         <Field
           label="Ports approved for HTTP inspection"
-          hint="Other open ports remain visible as unverified services. You can connect a known model endpoint directly."
+          hint="These ports are always included in the TCP scan, then HTTP-inspected. Defaults cover common serving ports such as Ollama 11434 and vLLM 8888, even when the range above is 8000-8100."
         >
           <ListInput
             values={draft.http_ports}
