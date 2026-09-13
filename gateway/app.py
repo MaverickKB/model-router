@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import callers
 from .accounts.api import admin_router, portal_router
+from .accounts.devices import warnings as device_warnings
 from .accounts.portal import PortalIdentity
 from .accounts.principal import derive_principal, level_for
 from .discovery import DiscoveryService
@@ -159,7 +160,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
                     for engine in engines
                     for model in engine["models"]
                 )
-            ],
+            ]
+            + device_warnings(config, store.devices(), store.accounts()),
             "server_time": time.time(),
             "environment_label": os.environ.get("MODEL_ROUTER_LABEL", ""),
             "operator_url": os.environ.get("MODEL_ROUTER_PUBLIC_URL") or None,

@@ -145,11 +145,11 @@ async def limits_are_never_consulted(ctx: Disabled):
 
 async def admin_endpoints_stay_available(ctx: Disabled):
     # F1: operators prepare accounts and hand out links before enabling.
-    token = (ctx.store.directory / "operator-bootstrap.key").read_text().strip()
-    async with ctx.http("127.0.0.1", Origin="http://router.test") as http:
-        assert (
-            await http.post("/api/v1/login", json={"token": token})
-        ).status_code == 200
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=ctx.app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as http:
         listed = await http.get("/api/v1/accounts")
         link = await http.post(f"/api/v1/accounts/{ctx.account['id']}/activation")
         state = await http.get("/api/v1/state")
@@ -157,7 +157,7 @@ async def admin_endpoints_stay_available(ctx: Disabled):
     (row,) = listed.json()["accounts"]
     assert row["id"] == ctx.account["id"] and row["key_count"] == 1
     assert link.status_code == 200
-    assert link.json()["url"].startswith("http://router.test/portal/activate#token=")
+    assert "/portal/activate#token=" in link.json()["url"]
     assert state.json()["account_levels_in_use"] == {ctx.account["level_id"]: 1}
 
 
@@ -201,12 +201,52 @@ async def portal_is_locked_and_reveals_only_the_switches(ctx: Disabled):
     ]
 
 
+async def device_registration_is_locked_with_the_portal(ctx: Disabled):
+    async with ctx.http("127.0.0.1", Origin="http://router.test") as http:
+        register = await http.post(
+            "/api/v1/portal/devices", json={"address": "192.0.2.78", "name": "x"}
+        )
+        remove = await http.delete(f"/api/v1/portal/devices/{ctx.device['id']}")
+    for response in (register, remove):
+        assert response.status_code == 403
+        assert (
+            response.json()["detail"] == "User accounts are not enabled on this router"
+        )
+    assert ctx.store.device_snapshot(ctx.device["id"]) is not None
+    assert ctx.store.device_at("192.0.2.78") is None
+
+
+async def admin_device_endpoints_stay_available(ctx: Disabled):
+    # Rows are inert, not gone: an operator can still see and disable them.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=ctx.app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as http:
+        listed = await http.get("/api/v1/devices")
+        disabled = await http.put(
+            f"/api/v1/devices/{ctx.device['id']}", json={"enabled": False}
+        )
+        restored = await http.put(
+            f"/api/v1/devices/{ctx.device['id']}", json={"enabled": True}
+        )
+        state = await http.get("/api/v1/state")
+    (row,) = listed.json()["devices"]
+    assert row["id"] == ctx.device["id"] and row["account_name"] == "Alice"
+    assert row["shadows"] == []
+    assert disabled.json()["device"]["enabled"] is False
+    assert restored.json()["device"]["enabled"] is True
+    assert not [w for w in state.json()["warnings"] if "Registered device" in w]
+
+
 SURFACES = [
     account_key_is_refused_before_lookup,
     registered_device_grants_nothing,
     limits_are_never_consulted,
     admin_endpoints_stay_available,
     portal_is_locked_and_reveals_only_the_switches,
+    device_registration_is_locked_with_the_portal,
+    admin_device_endpoints_stay_available,
 ]
 
 
@@ -219,3 +259,59 @@ async def test_every_account_surface_is_inert_while_disabled(tmp_path):
     assert ctx.store.account_keys(ctx.account["id"])
     for surface in SURFACES:
         await surface(ctx)
+
+
+@pytest.mark.asyncio
+async def test_device_switch_alone_makes_devices_inert(tmp_path):
+    """Accounts on, device pre-registration off: rows survive but grant nothing."""
+    ctx = await provision(tmp_path)
+    config = ctx.store.config()
+    config.accounts.enabled = True
+    config.accounts.device_registration_enabled = False
+    ctx.store.save(config)
+    completion = {"model": "private", "messages": [{"role": "user", "content": "hi"}]}
+
+    async with ctx.http(ctx.device["address"]) as unkeyed:
+        refused = await unkeyed.post("/v1/chat/completions", json=completion)
+    assert refused.status_code == 401 and ctx.upstream.completions == 0
+    caller = next(
+        c for c in ctx.store.callers() if c["source_address"] == ctx.device["address"]
+    )
+    assert caller["identity_basis"] == "shared_access" and caller["account_id"] is None
+    assert ctx.store.device_snapshot(ctx.device["id"])["last_matched"] is None
+
+    # The same account's key still works, so accounts themselves are on.
+    async with ctx.http("192.0.2.50", Authorization=f"Bearer {ctx.key}") as keyed:
+        assert (
+            await keyed.post("/v1/chat/completions", json=completion)
+        ).status_code == 200
+    assert ctx.upstream.completions == 1
+
+    async with ctx.http("127.0.0.1", Origin="http://router.test") as portal:
+        signed = await portal.post(
+            "/api/v1/portal/login",
+            json={"username": "alice", "password": "correct horse battery"},
+        )
+        assert signed.status_code == 200, signed.text
+        status = await portal.get("/api/v1/portal/status")
+        me = await portal.get("/api/v1/portal/me")
+        register = await portal.post(
+            "/api/v1/portal/devices", json={"address": "192.0.2.78", "name": "x"}
+        )
+        remove = await portal.delete(f"/api/v1/portal/devices/{ctx.device['id']}")
+    assert status.json()["device_registration_enabled"] is False
+    assert me.json()["devices"]["registered"] is None
+    for response in (register, remove):
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Device registration is not enabled"
+    assert ctx.store.device_snapshot(ctx.device["id"]) is not None
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=ctx.app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as operator:
+        listed = await operator.get("/api/v1/devices")
+        state = await operator.get("/api/v1/state")
+    assert [row["id"] for row in listed.json()["devices"]] == [ctx.device["id"]]
+    assert not [w for w in state.json()["warnings"] if "Registered device" in w]

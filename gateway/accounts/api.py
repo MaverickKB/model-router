@@ -14,6 +14,7 @@ from pydantic import Field, field_validator
 from ..routing import decide, matches
 from ..schema import AccountLevel, Configuration, Record
 from ..store import Store
+from .devices import canonical_address, shadowing
 from .limits import AccountLimits
 from .principal import derive_principal, level_for
 
@@ -63,6 +64,20 @@ class CreateKey(Record):
     @classmethod
     def strip(cls, value):
         return value.strip() if isinstance(value, str) else value
+
+
+class RegisterDevice(Record):
+    address: str = Field(max_length=64)
+    name: str = Field(min_length=1, max_length=60)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class DeviceEnabled(Record):
+    enabled: bool
 
 
 def require_username(username: str) -> str:
@@ -302,6 +317,41 @@ def admin_router(store: Store, identity, discovery, proxy, portal=None) -> APIRo
             raise HTTPException(404, "Key does not exist")
         return {"ok": True}
 
+    # Device rows stay manageable while either switch is off (F1): they are
+    # inert then, not gone.
+    @router.get("/devices")
+    async def list_devices(request: Request):
+        await identity.require_operator(request)
+        config = store.config()
+        names = {account["id"]: account["name"] for account in store.accounts()}
+        return {
+            "devices": [
+                {
+                    **device,
+                    "account_name": names.get(device["account_id"], ""),
+                    "shadows": shadowing(config, device["address"]),
+                }
+                for device in store.devices()
+            ]
+        }
+
+    @router.put("/devices/{device_id}")
+    async def set_device_enabled(device_id: str, body: DeviceEnabled, request: Request):
+        await identity.require_operator(request, True)
+        device = await asyncio.to_thread(
+            store.set_device_enabled, device_id, body.enabled
+        )
+        if device is None:
+            raise HTTPException(404, "Device does not exist")
+        return {"device": device}
+
+    @router.delete("/devices/{device_id}")
+    async def remove_device(device_id: str, request: Request):
+        await identity.require_operator(request, True)
+        if not await asyncio.to_thread(store.remove_device, device_id):
+            raise HTTPException(404, "Device does not exist")
+        return {"ok": True}
+
     return router
 
 
@@ -349,6 +399,16 @@ def portal_router(store: Store, identity, portal, discovery, proxy) -> APIRouter
             return keys, observed_devices(account, store.callers(), keys)
 
         keys, observed = await asyncio.to_thread(load)
+        # Registration is a list only while the dev-mode switch is on; the
+        # page hides the whole registration surface on null.
+        registered = (
+            [
+                {**device, "shadowed": bool(shadowing(config, device["address"]))}
+                for device in store.devices_for(account["id"])
+            ]
+            if config.accounts.device_registration_enabled
+            else None
+        )
         return {
             "account": {
                 field: account[field]
@@ -369,8 +429,7 @@ def portal_router(store: Store, identity, portal, discovery, proxy) -> APIRouter
             if level
             else None,
             "keys": keys,
-            # "registered" becomes a list once device registration exists.
-            "devices": {"observed": observed, "registered": None},
+            "devices": {"observed": observed, "registered": registered},
             "source_address": request.client.host if request.client else "",
             "base_url": public_url(request) + "/v1",
         }
@@ -395,6 +454,37 @@ def portal_router(store: Store, identity, portal, discovery, proxy) -> APIRouter
         account = await portal.require_account(request, True)
         if not await asyncio.to_thread(store.revoke_account_key, account["id"], key_id):
             raise HTTPException(404, "Key does not exist")
+        return {"ok": True}
+
+    def require_registration() -> None:
+        # Checked after the session so the answer differs only for signed-in users.
+        if not store.config().accounts.device_registration_enabled:
+            raise HTTPException(404, "Device registration is not enabled")
+
+    @router.post("/devices", status_code=201)
+    async def register_device(body: RegisterDevice, request: Request):
+        account = await portal.require_account(request, True)
+        require_registration()
+        try:
+            address = canonical_address(body.address)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        try:
+            device = await asyncio.to_thread(
+                store.register_device, account["id"], address, body.name
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        config = store.config()
+        return {"device": {**device, "shadowed": bool(shadowing(config, address))}}
+
+    @router.delete("/devices/{device_id}")
+    async def remove_device(device_id: str, request: Request):
+        account = await portal.require_account(request, True)
+        require_registration()
+        # Scoped to the session's account: another account's device is "not found".
+        if not await asyncio.to_thread(store.remove_device, device_id, account["id"]):
+            raise HTTPException(404, "Device does not exist")
         return {"ok": True}
 
     return router

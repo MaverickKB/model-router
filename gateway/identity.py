@@ -54,6 +54,7 @@ class Identity:
         self.login_limit = RateLimit(capacity=10, period=60)
         self.operator_token_digest: bytes | None = None
         self.registration_limit = RateLimit(capacity=10, period=60)
+        self._device_touched: dict[str, float] = {}
         supplied = os.environ.get("MODEL_ROUTER_ADMIN_TOKEN")
         self.admin_verifier = store.operator_verifier()
         if supplied:
@@ -151,6 +152,13 @@ class Identity:
 
     async def identify(self, request: Request) -> Client:
         request.state.authentication_error = None
+        # The proxy re-identifies before every attempt. Account state must
+        # describe this identification only, so a path that establishes no
+        # account never inherits the previous attempt's account.
+        request.state.account_id = None
+        request.state.key_id = None
+        request.state.device_id = None
+        request.state.principal_label = None
         auth = request.headers.get("Authorization", "")
         unusable_auth = bool(auth)
         if auth and auth[:7].casefold() == "bearer ":
@@ -189,8 +197,17 @@ class Identity:
                 request.state.identity_basis = "api_key"
                 request.state.caller_key_present = True
                 return client
+        config = self.store.config()
+        try:
+            address = ipaddress.ip_address(request.client.host)
+        except (ValueError, AttributeError):
+            address = None
+        if address is not None:
+            principal = await self._identify_device(request, config, address)
+            if principal is not None:
+                return principal
         client, basis = resolve_unkeyed_policy(
-            self.store.config(), request.client.host if request.client else None
+            config, request.client.host if request.client else None
         )
         request.state.identity_basis = "unassigned" if unusable_auth else basis
         request.state.caller_key_present = False
@@ -224,6 +241,42 @@ class Identity:
         request.state.key_id = match["key_id"]
         request.state.device_id = None
         request.state.principal_label = f"{account['name']} · {match['key_name']}"
+        return derive_principal(account, level)
+
+    async def _identify_device(self, request: Request, config, address) -> Client | None:
+        """A pre-registered source address, only while both switches are on.
+
+        Only the direct TCP peer participates; forwarding headers are never
+        read. Any failed check falls through to the source and default policies
+        rather than refusing, so a stale row never locks a host out. An
+        unusable bearer header is deliberately ignored here: the clients this
+        mode exists for send a placeholder key, and an ``mru_`` key has already
+        been resolved or refused before this step runs.
+        """
+        settings = config.accounts
+        if not (settings.enabled and settings.device_registration_enabled):
+            return None
+        host = str(getattr(address, "ipv4_mapped", None) or address)
+        device = self.store.device_at(host)
+        if device is None or not device["enabled"]:
+            return None
+        account = self.store.account_snapshot(device["account_id"])
+        if account is None or account["status"] != "active":
+            return None
+        level = level_for(config, account["level_id"])
+        if level is None:
+            return None
+        touched = self._device_touched.get(device["id"])
+        now = time.monotonic()
+        if touched is None or now - touched > 60:
+            self._device_touched[device["id"]] = now
+            await asyncio.to_thread(self.store.touch_device, device["id"])
+        request.state.identity_basis = "registered_device"
+        request.state.caller_key_present = True
+        request.state.account_id = account["id"]
+        request.state.key_id = None
+        request.state.device_id = device["id"]
+        request.state.principal_label = f"{account['name']} · {device['name']}"
         return derive_principal(account, level)
 
     async def login(self, request: Request):
