@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import secrets
 import time
 from collections import OrderedDict
@@ -14,7 +13,7 @@ from fastapi.responses import JSONResponse
 from ..identity import Identity, cookie_secure, origin_allowed
 from ..security.credentials import digest, verify
 from ..security.limits import RateLimit
-from ..store import Store
+from ..store import Store, token_digest
 
 COOKIE = "router_portal"
 MAX_SESSIONS = 1024
@@ -25,10 +24,6 @@ SIGN_IN = "Sign in to the portal"
 # Unknown and pending usernames verify against this hash, so a wrong password
 # and a missing account cost the same work and produce the same answer.
 DUMMY_VERIFIER = digest(secrets.token_urlsafe(32))
-
-
-def session_digest(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def check_password(password: str, username: str) -> None:
@@ -70,7 +65,7 @@ class PortalIdentity:
         now = time.time()
         for key in [k for k, (_, expires) in self.sessions.items() if expires <= now]:
             self.sessions.pop(key, None)
-        key = session_digest(request.cookies.get(COOKIE, ""))
+        key = token_digest(request.cookies.get(COOKIE, ""))
         session = self.sessions.get(key)
         if session is None:
             raise HTTPException(401, SIGN_IN)
@@ -139,7 +134,7 @@ class PortalIdentity:
 
     async def logout(self, request: Request) -> JSONResponse:
         await self.require_account(request, True)
-        await self._revoke(session_digest(request.cookies.get(COOKIE, "")))
+        await self._revoke(token_digest(request.cookies.get(COOKIE, "")))
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE)
         return response
@@ -147,6 +142,10 @@ class PortalIdentity:
     async def change_password(self, request: Request, body) -> JSONResponse:
         account = await self.require_account(request, True)
         check_password(body.new, account["username"])
+        # Checking the current password is a sign-in, so it spends the same budgets.
+        source = request.client.host if request.client else "unknown"
+        self.login_limit.take(source)
+        self.user_limit.take("user:" + account["username"])
         verifier = await asyncio.to_thread(self.store.account_verifier, account["id"])
         async with self.identity.verification_slots:
             valid = await asyncio.to_thread(
@@ -154,6 +153,7 @@ class PortalIdentity:
             )
         if not valid:
             raise HTTPException(401, "Current password is incorrect")
+        self.login_limit.reset(source)
         replacement = await asyncio.to_thread(digest, body.new)
         await asyncio.to_thread(
             self.store.set_account_verifier, account["id"], replacement
@@ -166,7 +166,7 @@ class PortalIdentity:
     async def new_session(
         self, request: Request, account_id: str, body: dict, remember=True
     ) -> JSONResponse:
-        await self._revoke(session_digest(request.cookies.get(COOKIE, "")))
+        await self._revoke(token_digest(request.cookies.get(COOKIE, "")))
         owned = [k for k, (owner, _) in self.sessions.items() if owner == account_id]
         for key in owned[: max(0, len(owned) - MAX_ACCOUNT_SESSIONS + 1)]:
             await self._revoke(key)
@@ -174,7 +174,7 @@ class PortalIdentity:
             evicted, _ = self.sessions.popitem(last=False)
             await asyncio.to_thread(self.store.revoke_portal_session, evicted)
         token = secrets.token_urlsafe(32)
-        key = session_digest(token)
+        key = token_digest(token)
         lifetime = (
             self.store.config().accounts.session_hours * 3600 if remember else 3600
         )

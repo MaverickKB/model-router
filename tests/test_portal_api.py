@@ -403,6 +403,53 @@ async def test_password_change_revokes_other_sessions_only_and_keeps_keys(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_reset_link_signs_out_every_session_until_it_is_consumed(tmp_path):
+    harness = await build(tmp_path)
+    async with harness.activated() as (account, first):
+        async with harness.signed_in(address="192.0.2.20") as second:
+            assert (await second.get(ME)).status_code == 200
+            async with harness.operator() as operator:
+                issued = await operator.post(
+                    f"/api/v1/accounts/{account['id']}/activation"
+                )
+            assert issued.status_code == 200
+            assert harness.store.portal_sessions() == {}
+            assert harness.app.state.portal.sessions == {}
+            assert (await first.get(ME)).status_code == 401
+            assert (await second.get(ME)).status_code == 401
+            assert (await first.post(KEYS, json={"name": "laptop"})).status_code == 401
+        # The current password signs in again until the link is consumed.
+        async with harness.browser() as http:
+            again = await http.post(
+                LOGIN, json={"username": "alice", "password": PASSWORD}
+            )
+        assert again.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_password_change_current_check_is_rate_limited(tmp_path):
+    harness = await build(tmp_path)
+    async with harness.activated() as (account, browser):
+        verifier = harness.store.account_verifier(account["id"])
+        async with harness.browser("192.0.2.30", cookies=browser.cookies) as http:
+            attempts = [
+                await http.put(
+                    PASSWORD_PATH, json={"current": "wrong", "new": NEW_PASSWORD}
+                )
+                for _ in range(11)
+            ]
+        assert [r.status_code for r in attempts] == [401] * 10 + [429]
+        assert attempts[-1].headers["retry-after"] == "60"
+        # The username budget is spent too, so a fresh source is refused as well.
+        async with harness.browser("192.0.2.31", cookies=browser.cookies) as http:
+            refused = await http.put(
+                PASSWORD_PATH, json={"current": PASSWORD, "new": NEW_PASSWORD}
+            )
+        assert refused.status_code == 429 and "set-cookie" not in refused.headers
+        assert harness.store.account_verifier(account["id"]) == verifier
+
+
+@pytest.mark.asyncio
 async def test_user_created_key_is_shown_once_and_works_on_v1(tmp_path):
     harness = await build(tmp_path)
     async with harness.activated() as (_, session):

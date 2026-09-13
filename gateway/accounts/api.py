@@ -282,6 +282,9 @@ def admin_router(store: Store, identity, discovery, proxy, portal=None) -> APIRo
             )
         except ValueError as exc:
             raise store_error(exc)
+        # The store dropped the rows; the resolver's map must forget them too.
+        if portal is not None:
+            portal.drop_account(account_id)
         return activation_link(request, token, expires)
 
     @router.delete("/accounts/{account_id}")
