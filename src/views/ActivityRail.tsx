@@ -1,15 +1,12 @@
-import { ChevronRight, Clock3, Route as RouteIcon, Search } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, ChevronRight, Clock3, Search } from "lucide-react";
+import { useId, useState } from "react";
 import type { Job } from "../types";
-import { callerDisplayName, callerSummary } from "../caller-identity";
+import { callerClientLabel, callerDisplayName } from "../caller-identity";
+import { sourceTimeLabel } from "../source-time";
+import { failureReason, groupRequestHistory } from "./request-history";
+import "./activity-history.css";
 
-function failureReason(job: Job) {
-  if (job.decision.error) return job.decision.error;
-  if (!["failed", "denied", "unavailable"].includes(job.status) || job.model)
-    return "";
-  const reasons = [...new Set(job.decision.rejections.map((r) => r.reason))];
-  return reasons.join("; ");
-}
+type Filter = "All" | "Active" | "Errors";
 
 export function ActivityRail({
   events,
@@ -22,33 +19,52 @@ export function ActivityRail({
   onHover: (job: Job | null) => void;
   onSelect: (job: Job) => void;
 }) {
-  const [filter, setFilter] = useState("All"),
-    [search, setSearch] = useState("");
-  const jobs = events.filter(
-    (j) =>
-      (filter === "All" ||
-        (filter === "Errors"
-          ? ["failed", "denied", "unavailable"].includes(j.status)
-          : ["running", "routing", "waiting"].includes(j.status))) &&
-      `${j.client} ${j.caller ? callerSummary(j.caller) : ""} ${j.requested} ${j.model || ""} ${j.engine || ""} ${failureReason(j)}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
+  const [filter, setFilter] = useState<Filter>("All");
+  const [search, setSearch] = useState("");
+  const [expandedSources, setExpandedSources] = useState<Set<string>>(
+    new Set(),
   );
-
+  const [collapsedMatches, setCollapsedMatches] = useState<Set<string>>(
+    new Set(),
+  );
+  const listPrefix = useId();
+  const narrowed = filter !== "All" || Boolean(search.trim());
+  const history = groupRequestHistory(events, filter, search);
+  const toggle = (id: string) => {
+    const update = narrowed ? setCollapsedMatches : setExpandedSources;
+    update((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
   return (
-    <aside className="activity-rail">
+    <aside className="activity-rail" aria-label="Request history">
       <div className="rail-head">
-        <h2>
-          Requests<span>{events.length}</span>
-        </h2>
+        <h2>Request history</h2>
+        <p
+          className="history-count"
+          title="Counts cover the request history loaded in this view."
+        >
+          {history.total} recent {history.total === 1 ? "request" : "requests"}{" "}
+          · {history.sources} {history.sources === 1 ? "source" : "sources"}
+          {history.missingSource > 0 && (
+            <small>{history.missingSource} without a recorded source</small>
+          )}
+        </p>
         <div className="rail-filters">
-          {["All", "Active", "Errors"].map((f) => (
+          {(["All", "Active", "Errors"] as const).map((value) => (
             <button
-              key={f}
-              className={f === filter ? "active" : ""}
-              onClick={() => setFilter(f)}
+              key={value}
+              className={value === filter ? "active" : ""}
+              aria-pressed={value === filter}
+              onClick={() => {
+                setFilter(value);
+                setCollapsedMatches(new Set());
+              }}
             >
-              {f}
+              {value}
             </button>
           ))}
         </div>
@@ -58,54 +74,134 @@ export function ActivityRail({
             aria-label="Search requests"
             placeholder="Search requests"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setCollapsedMatches(new Set());
+            }}
           />
         </label>
+        {narrowed && (
+          <p className="history-matches" role="status">
+            {history.matched} matching{" "}
+            {history.matched === 1 ? "request" : "requests"}
+          </p>
+        )}
       </div>
-      <div className="jobs">
-        {jobs.map((j) => (
-          <button
-            key={j.id}
-            data-job-id={j.id}
-            className={"job-card " + (hover?.id === j.id ? "highlighted" : "")}
-            onMouseEnter={() => onHover(j)}
-            onFocus={() => onHover(j)}
-            onMouseLeave={() => onHover(null)}
-            onBlur={() => onHover(null)}
-            onClick={() => onSelect(j)}
-          >
-            <div className="job-top">
-              <span className={"status-dot " + j.status} />
-              <strong>
-                {j.caller ? callerDisplayName(j.caller) : "Caller not recorded"}
-              </strong>
-              <span>
-                {new Date(j.ts * 1000).toLocaleTimeString([], {
-                  hour: "numeric",
-                  minute: "2-digit",
-                })}
-              </span>
-            </div>
-            <div className="job-route">
-              <RouteIcon size={14} />
-              {j.requested}
-            </div>
-            {j.caller && <p>{callerSummary(j.caller)}</p>}
-            <p className={failureReason(j) ? "request-error" : undefined}>
-              {failureReason(j) || j.model || "No model selected"}
-            </p>
-            <div className="job-bottom">
-              <span>{j.status}</span>
-              <span>
-                {j.elapsed_ms != null
-                  ? `${(j.elapsed_ms / 1000).toFixed(1)}s`
-                  : ""}
-                <ChevronRight size={13} />
-              </span>
-            </div>
-          </button>
-        ))}
-        {!jobs.length && (
+      <div className="jobs request-history-groups">
+        {history.groups.map((group) => {
+          const expanded = narrowed
+            ? !collapsedMatches.has(group.id)
+            : expandedSources.has(group.id);
+          const listId = `${listPrefix}-${group.id}`;
+          const source = group.address || "Source not recorded";
+          return (
+            <section
+              className="request-source"
+              key={group.id}
+              aria-label={`Request history for ${source}`}
+            >
+              <button
+                className="request-source-toggle"
+                aria-expanded={expanded}
+                aria-controls={listId}
+                onClick={() => toggle(group.id)}
+              >
+                <span className="request-source-heading">
+                  <strong>{source}</strong>
+                  {expanded ? (
+                    <ChevronDown size={15} />
+                  ) : (
+                    <ChevronRight size={15} />
+                  )}
+                </span>
+                <span className="request-source-total">
+                  {narrowed
+                    ? `${group.jobs.length} matching of ${group.total}`
+                    : group.total}{" "}
+                  {group.total === 1 ? "request" : "requests"}
+                </span>
+                <span className="request-source-counts">
+                  <span className={group.counts.active ? "has-active" : ""}>
+                    {group.counts.active} active
+                  </span>
+                  <span className={group.counts.error ? "has-errors" : ""}>
+                    {group.counts.error}{" "}
+                    {group.counts.error === 1 ? "error" : "errors"}
+                  </span>
+                  <span>{group.counts.completed} completed</span>
+                  <span>{group.counts.cancelled} cancelled</span>
+                  {group.counts.other > 0 && (
+                    <span>{group.counts.other} other</span>
+                  )}
+                </span>
+                <span className="request-source-last">
+                  Last request {sourceTimeLabel(group.latestSeen)}
+                </span>
+              </button>
+              {group.latestFailure && (
+                <p className="request-source-error">
+                  <strong>Latest error</strong>
+                  {group.latestFailure}
+                </p>
+              )}
+              <div
+                className="request-source-history"
+                id={listId}
+                hidden={!expanded}
+              >
+                {expanded &&
+                  group.jobs.map((job) => {
+                    const reason = failureReason(job);
+                    const software = job.caller
+                      ? callerClientLabel(job.caller)
+                      : "Client metadata not recorded";
+                    const context =
+                      job.caller?.identity_basis === "operator_test"
+                        ? `${callerDisplayName(job.caller)} · Console test`
+                        : job.caller?.reported_name
+                          ? `${job.caller.reported_name} · ${software}`
+                          : software;
+                    return (
+                      <button
+                        key={job.id}
+                        data-job-id={job.id}
+                        className={`request-history-row ${hover?.id === job.id ? "highlighted" : ""}`}
+                        onMouseEnter={() => onHover(job)}
+                        onFocus={() => onHover(job)}
+                        onMouseLeave={() => onHover(null)}
+                        onBlur={() => onHover(null)}
+                        onClick={() => onSelect(job)}
+                      >
+                        <span className="request-row-heading">
+                          <strong>{job.decision.route || job.requested}</strong>
+                          <ChevronRight size={13} />
+                        </span>
+                        <span className="request-row-time">
+                          {sourceTimeLabel(job.ts)}
+                        </span>
+                        <span className="request-row-state">
+                          <span className={`status-dot ${job.status}`} />
+                          {job.status}
+                          {job.elapsed_ms != null && (
+                            <span>{(job.elapsed_ms / 1000).toFixed(1)}s</span>
+                          )}
+                        </span>
+                        <span className="request-row-context">{context}</span>
+                        {reason ? (
+                          <p className="request-row-error">{reason}</p>
+                        ) : (
+                          job.model && (
+                            <p className="request-row-model">{job.model}</p>
+                          )
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+            </section>
+          );
+        })}
+        {!history.groups.length && (
           <div className="rail-empty">
             <Clock3 size={23} />
             <p>
@@ -113,7 +209,7 @@ export function ActivityRail({
                 ? "No matching requests"
                 : "Your next request appears here."}
             </p>
-            <small>Follow each decision from caller to model.</small>
+            <small>Expand a source to inspect each request.</small>
           </div>
         )}
       </div>
