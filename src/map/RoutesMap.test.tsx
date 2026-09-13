@@ -612,7 +612,7 @@ it("renders an Accounts group for account callers without looking them up as cli
     within(screen.getByLabelText("Observed sources")).getAllByRole("button"),
   ).toHaveLength(1);
   expect(
-    container.querySelector(`[data-edge-id="source:192.0.2.40-${route.id}"]`),
+    container.querySelector(`[data-edge-id="source:addr:192.0.2.40-${route.id}"]`),
   ).toHaveClass("ready");
   const user = userEvent.setup();
   await user.click(screen.getByText("Accounts", { selector: "summary" }));
