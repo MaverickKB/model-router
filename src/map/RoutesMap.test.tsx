@@ -574,3 +574,56 @@ it("attributes each mixed-access decision to its software and effective policy, 
     within(pending).getByText("Permission policy: Not yet reported"),
   ).toBeVisible();
 });
+
+it("renders an Accounts group for account callers without looking them up as clients", async () => {
+  const caller = observation("dana-key", {
+    policy_id: "acct-1",
+    account_id: "acct-1",
+    key_id: "key-1",
+    name: "Dana · laptop",
+    identity_basis: "account_key",
+  });
+  const { props, route } = fixture([caller]);
+  props.config.clients = [];
+  props.config.account_levels = [
+    {
+      id: "level-1",
+      name: "Basic",
+      description: "",
+      route_names: ["writing"],
+      engine_ids: [],
+      model_patterns: ["*"],
+      allow_cloud: false,
+      allow_direct_models: false,
+      token_budget: null,
+      max_concurrency: null,
+    },
+  ];
+  props.topology.account_callers = [
+    {
+      account_id: "acct-1",
+      name: "Dana",
+      level_id: "level-1",
+      observed_callers: [caller],
+    },
+  ];
+  const { container } = render(<RoutesMap {...props} />);
+  expect(
+    within(screen.getByLabelText("Observed sources")).getAllByRole("button"),
+  ).toHaveLength(1);
+  expect(
+    container.querySelector(`[data-edge-id="source:addr:192.0.2.40-${route.id}"]`),
+  ).toHaveClass("ready");
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Accounts", { selector: "summary" }));
+  const account = screen.getByRole("button", { name: "Select account Dana" });
+  expect(account).toHaveTextContent("Account · 1 connection");
+  expect(
+    screen.queryByRole("button", { name: "Edit account Dana" }),
+  ).not.toBeInTheDocument();
+  await user.click(account);
+  expect(screen.getByText("Basic")).toBeVisible();
+  expect(screen.getByText("writing: Eligible text path")).toBeVisible();
+  expect(container).not.toHaveTextContent("Policy no longer configured");
+  expect(props.save).not.toHaveBeenCalled();
+});

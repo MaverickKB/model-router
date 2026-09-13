@@ -31,7 +31,10 @@ import { linkPolicy, type MapLink } from "./links";
 import { activeJobsForSource, sourceRouteAccess } from "./source-topology";
 import "./map.css";
 
-type Selection = { kind: "source" | "policy" | "route" | "engine"; id: string };
+type Selection = {
+  kind: "source" | "policy" | "route" | "engine" | "account";
+  id: string;
+};
 type AccessState = "ready" | "mixed" | "blocked" | "unknown";
 const accessLabel = (state: AccessState) =>
   ({
@@ -108,6 +111,16 @@ export function RoutesMap({
       : undefined;
   const observationsFor = (policyId: string) =>
     callers.filter((caller) => caller.policy_id === policyId);
+  // Account callers carry the account id as their policy id and are never
+  // looked up in config.clients; the router groups them for the map.
+  const accountGroups = topology?.account_callers || [];
+  const accountId = (id: string) => `account:${id}`;
+  const selectedAccount =
+    selected?.kind === "account"
+      ? accountGroups.find(
+          (group) => accountId(group.account_id) === selected.id,
+        )
+      : undefined;
   const y = (index: number) => 50 + index * 104 + 42;
   const height =
     50 +
@@ -570,6 +583,54 @@ export function RoutesMap({
           </>
         )}
       </details>
+      {accountGroups.length > 0 && (
+        <details className="map-policy-tray map-account-tray">
+          <summary>
+            Accounts <span>{accountGroups.length}</span>
+          </summary>
+          <p className="hint">
+            Connections identified by an account holder's own key or registered
+            device. Their access is the account's level (Settings › Accounts),
+            never a permission policy.
+          </p>
+          <div className="map-policy-list">
+            {accountGroups.map((group) =>
+              node(
+                { kind: "account", id: accountId(group.account_id) },
+                group.name,
+                `Account · ${group.observed_callers.length} ${group.observed_callers.length === 1 ? "connection" : "connections"}`,
+                <Users size={18} />,
+              ),
+            )}
+          </div>
+          {selectedAccount && (
+            <div className="map-reasons">
+              <p>
+                <strong>Level</strong>
+                {config.account_levels.find(
+                  (level) => level.id === selectedAccount.level_id,
+                )?.name || "Level unavailable"}
+              </p>
+              {selectedAccount.observed_callers.map((caller) => (
+                <p key={caller.id}>
+                  <strong>
+                    {caller.source_address || "Source address unavailable"} ·{" "}
+                    {callerClientLabel(caller)}
+                  </strong>
+                  {topology?.caller_routes
+                    .filter((edge) => edge.caller_id === caller.id)
+                    .map(
+                      (edge) =>
+                        `${config.routes.find((route) => route.id === edge.route_id)?.name || edge.route_id}: ${edge.reason}`,
+                    )
+                    .join(" · ") ||
+                    "Current route access has not been reported."}
+                </p>
+              ))}
+            </div>
+          )}
+        </details>
+      )}
       {pending && (
         <Dialog title="Link policy" onClose={() => setPending(null)}>
           <form

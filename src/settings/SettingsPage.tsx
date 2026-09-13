@@ -3,10 +3,16 @@ import { useState } from "react";
 import { DiscoveryEditor } from "../editors/DiscoveryEditor";
 import type { Config } from "../types";
 import { AccessSettings } from "./AccessSettings";
+import { AccountsSettings } from "./AccountsSettings";
+
+export const SECTIONS = ["Access", "Accounts", "Discovery"] as const;
+export type Section = (typeof SECTIONS)[number];
 
 export function SettingsPage({
   config,
   operatorUrl,
+  baseUrl,
+  levelsInUse,
   save,
   onSignOut,
   initialSection = "Access",
@@ -14,12 +20,14 @@ export function SettingsPage({
 }: {
   config: Config;
   operatorUrl: string | null;
+  baseUrl: string;
+  levelsInUse?: Record<string, number>;
   save: (config: Config) => Promise<Config>;
   onSignOut: () => void;
-  initialSection?: "Access" | "Discovery";
+  initialSection?: Section;
   focusDiscoveryTargets?: boolean;
 }) {
-  const [section, setSection] = useState(initialSection);
+  const [section, setSection] = useState<Section>(initialSection);
   return (
     <section className="settings-page">
       <div className="section-heading">
@@ -41,7 +49,7 @@ export function SettingsPage({
         role="tablist"
         aria-label="Settings section"
       >
-        {(["Access", "Discovery"] as const).map((value) => (
+        {SECTIONS.map((value) => (
           <button
             type="button"
             key={value}
@@ -54,7 +62,12 @@ export function SettingsPage({
             onKeyDown={(event) => {
               if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
                 event.preventDefault();
-                const next = section === "Access" ? "Discovery" : "Access";
+                const step = event.key === "ArrowRight" ? 1 : -1;
+                const next =
+                  SECTIONS[
+                    (SECTIONS.indexOf(section) + step + SECTIONS.length) %
+                      SECTIONS.length
+                  ];
                 setSection(next);
                 document.getElementById("settings-tab-" + next)?.focus();
               }
@@ -75,6 +88,19 @@ export function SettingsPage({
           operatorUrl={operatorUrl}
           save={save}
           onSignOut={onSignOut}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="settings-panel-Accounts"
+        aria-labelledby="settings-tab-Accounts"
+        hidden={section !== "Accounts"}
+      >
+        <AccountsSettings
+          config={config}
+          save={save}
+          baseUrl={baseUrl}
+          levelsInUse={levelsInUse}
         />
       </div>
       <div
