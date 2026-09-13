@@ -360,13 +360,11 @@ async def test_put_config_maps_value_error_to_422(tmp_path):
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://router.test",
-            headers={"Origin": "http://router.test"},
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+            base_url="http://localhost",
+            headers={"Origin": "http://localhost"},
         ) as browser,
     ):
-        token = (tmp_path / "operator-bootstrap.key").read_text().strip()
-        assert (await browser.post("/api/login", json={"token": token})).status_code == 200
         config = (await browser.get("/api/v1/state")).json()["config"]
         assert config["accounts"] == {
             "enabled": False,
