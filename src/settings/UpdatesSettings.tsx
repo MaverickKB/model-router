@@ -33,8 +33,8 @@ export function UpdatesSettings({
     <section aria-labelledby="updates-heading" className="access-settings">
       <h2 id="updates-heading">Updates</h2>
       <p>
-        Checking GitHub does not install anything. Applying a release is one
-        explicit click, then the router restarts.
+        Checking uses public GitHub releases. No GitHub account is required.
+        Applying a release is one explicit click, then the router restarts.
       </p>
       <div className="setting-row">
         <div>

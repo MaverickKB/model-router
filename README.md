@@ -1,21 +1,27 @@
 # Model Router
 
+**Public beta `0.3.0-beta.1`.** This is the first public source drop. It is useful, not a production promise. Expect sharp edges. Please file issues.
+
 An operator console and OpenAI-compatible chat gateway. Clients keep one endpoint and a stable route such as `auto` while serving models change. Operators configure engine selection, purpose routes, cloud backups, and each caller's permissions in the browser.
 
 The interface takes visual and workflow cues from NVIDIA PAIR. Attribution and the applicable third-party license are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The project is licensed under [Apache License 2.0](LICENSE).
 
-## Run a separate test drive
+## Install
 
 Requirements: Python 3.11+, uv, Node.js 22.12+ and npm.
 
 ```sh
+git clone https://github.com/MaverickKB/model-router.git
+cd model-router
 uv sync --frozen
 npm ci
 npm run build
-uv run uvicorn gateway.app:create_app --factory --host 127.0.0.1 --port 8690 --no-proxy-headers --no-access-log
+uv run uvicorn gateway.app:create_app --factory --host 0.0.0.0 --port 8680 --no-proxy-headers --no-access-log
 ```
 
-Open `http://localhost:8690`. A fresh installation does not require an operator key. Trusted local/private sources can manage the console until the owner turns **Operator sign-in** on in Settings. That switch is off by default; enabling it is how you protect access. If sign-in is on and no key exists yet, the first save or **Generate replacement operator key** creates one (`state/operator-bootstrap.key` only when that path is used). Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
+Open `http://<this-host>:8680` from the machine you actually use. Bind `127.0.0.1` instead of `0.0.0.0` only if you want loopback-only access.
+
+A fresh installation does not require an operator key. Trusted local/private sources can manage the console until the owner turns **Operator sign-in** on in Settings. That switch is off by default; enabling it is how you protect access. If sign-in is on and no key exists yet, the first save or **Generate replacement operator key** creates one (`state/operator-bootstrap.key` only when that path is used). Browser sessions persist across service restarts. Start with an independent state directory by setting `MODEL_ROUTER_STATE`.
 
 1. Connect a serving engine by its OpenAI-compatible base URL. Under **Engine capabilities and limits**, declare the features it supports when its catalog does not report them. Tool-using agents need **tools**; streaming agents also need **streaming**. A plain model catalog does not establish either feature. Provider credentials stay on the server. New cloud connections require explicit model selection.
 2. Configure `auto` or add a purpose route. The Routes map shows one node per observed source address, connected to routes and engines. Select a source to inspect its software and access decisions. Open Permission policies to configure access, including before callers connect; select a policy and a route to review a link. Select a route and an engine to review a destination link. Use Details for model patterns, tags, ordering, and optional defaults.
@@ -40,7 +46,7 @@ A merge preserves the surviving engine's model policy and limits. It requires bo
 
 ## Access is optional
 
-**Settings > Updates** can check the GitHub repository for a newer published release and show its notes. Nothing is installed until the operator clicks **Install update**. Turn the check off if this install should not contact GitHub.
+**Settings > Updates** reads public GitHub releases for this repository. No GitHub account or token is required. Checking never installs. **Install update** is one explicit click: it refuses a dirty tree, checks out the published tag, rebuilds, and restarts. Turn the check off if this install should not contact GitHub.
 
 **Settings > Access** controls operator sign-in and the optional default policy for unkeyed callers. Fresh installs start with sign-in off. The owner turns it on when they want to protect management access. Caller-key requirements belong to each route, so local and cloud routes can be mixed in one installation without a global access switch.
 

@@ -21,14 +21,18 @@ async def test_update_check_reports_a_newer_release_without_applying(tmp_path, m
 
     async def handler(request):
         calls.append(str(request.url))
-        if request.url.path.endswith("/releases/latest"):
+        if request.url.path.endswith("/releases"):
             return httpx.Response(
                 200,
-                json={
-                    "tag_name": "v0.3.1",
-                    "body": "Fix discovery prefixes.",
-                    "html_url": "https://github.com/example/model-router/releases/tag/v0.3.1",
-                },
+                json=[
+                    {
+                        "tag_name": "v0.3.1",
+                        "draft": False,
+                        "prerelease": True,
+                        "body": "Fix discovery prefixes.",
+                        "html_url": "https://github.com/example/model-router/releases/tag/v0.3.1",
+                    }
+                ],
             )
         return httpx.Response(404)
 
@@ -59,8 +63,10 @@ async def test_update_check_reports_a_newer_release_without_applying(tmp_path, m
 @pytest.mark.asyncio
 async def test_apply_refuses_when_the_tree_is_dirty(tmp_path, monkeypatch):
     async def handler(request):
-        if request.url.path.endswith("/releases/latest"):
-            return httpx.Response(200, json={"tag_name": "v0.3.1", "body": "notes"})
+        if request.url.path.endswith("/releases"):
+            return httpx.Response(
+                200, json=[{"tag_name": "v0.3.1", "draft": False, "body": "notes"}]
+            )
         return httpx.Response(404)
 
     monkeypatch.setattr("gateway.updates.installed_version", lambda: "0.3.0")

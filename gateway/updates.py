@@ -114,19 +114,32 @@ class Updates:
             "Accept": "application/vnd.github+json",
             "User-Agent": "model-router",
         }
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        # Public releases need no GitHub account. A token is only for private forks
+        # and must be set explicitly; never inherit a developer GH_TOKEN.
+        token = os.environ.get("MODEL_ROUTER_GITHUB_TOKEN")
         if token:
             headers["Authorization"] = f"Bearer {token}"
         response = await self.http.get(
-            f"https://api.github.com/repos/{repository}/releases/latest",
+            f"https://api.github.com/repos/{repository}/releases",
             headers=headers,
+            params={"per_page": 5},
             timeout=15,
         )
         response.raise_for_status()
         payload = response.json()
-        if not isinstance(payload, dict) or not payload.get("tag_name"):
-            raise ValueError("Release metadata was unreadable")
-        return payload
+        if not isinstance(payload, list):
+            raise ValueError("Release metadata was unreadable")  # noqa: TRY004
+        for item in payload:
+            if (
+                isinstance(item, dict)
+                and item.get("tag_name")
+                and not item.get("draft")
+            ):
+                return item
+        missing = httpx.Response(404, request=response.request)
+        raise httpx.HTTPStatusError(
+            "No published release", request=response.request, response=missing
+        )
 
     def _dirty(self) -> bool:
         try:
