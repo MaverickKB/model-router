@@ -426,7 +426,8 @@ code {
   background: #bc7770;
 }
 .status-dot.draining,
-.status-dot.stale {
+.status-dot.stale,
+.status-dot.configured {
   background: #d2b875;
 }
 .rail-footer {

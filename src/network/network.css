@@ -177,6 +177,54 @@
   line-height: 1.6;
   margin-top: 4px;
 }
+.discovery-evidence {
+  margin-top: 11px;
+  padding: 10px 12px;
+  border: 1px solid #e4b26a2b;
+  border-radius: 5px;
+  background: #e4b26a09;
+}
+.discovery-evidence p {
+  margin-top: 0;
+  color: #b7a98e;
+}
+.discovery-evidence dl {
+  display: grid;
+  gap: 8px;
+  margin: 9px 0 0;
+}
+.discovery-evidence dl > div {
+  display: grid;
+  grid-template-columns: 135px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.discovery-evidence dt {
+  color: #827762;
+}
+.discovery-evidence dd {
+  margin: 0;
+  color: #b8b0a1;
+  overflow-wrap: anywhere;
+}
+.discovery-evidence ul {
+  margin: 0;
+  padding-left: 16px;
+}
+.declared-model-inventory {
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid #e4b26a33;
+  border-radius: 6px;
+  background: #e4b26a08;
+}
+.declared-model-inventory .hint {
+  margin: 8px 0 0;
+}
+.declared-model-inventory .declared-model-inventory-problem {
+  color: #d4a964;
+}
 .network-model-preview {
   display: flex;
   gap: 7px;

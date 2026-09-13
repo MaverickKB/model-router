@@ -1,4 +1,15 @@
 export type Kind = "local" | "cloud";
+export type CompletionPath = "/chat/completions" | "/completions";
+
+/**
+ * A manual OpenAI-compatible API normally supports both completion request
+ * shapes. Discovery narrows this list only after it proves a specific
+ * operation.
+ */
+export const OPENAI_COMPLETION_PATHS: readonly CompletionPath[] = [
+  "/chat/completions",
+  "/completions",
+];
 export interface Model {
   enabled?: boolean;
   id: string;
@@ -26,6 +37,15 @@ export interface Engine {
   members: string[];
   capabilities: string[];
   model_settings: Record<string, ModelSettings>;
+  /** Exact OpenAI completion operations this serving API accepts. */
+  completion_paths: CompletionPath[];
+  /**
+   * A catalog-backed engine receives its model identities from its API. A
+   * declared inventory is an explicit operator choice for a completion API
+   * that publishes no catalog.
+   */
+  model_inventory_source: "catalog" | "declared";
+  declared_models: string[];
   model_patterns: string[];
   unsupported_parameters: string[];
   value_mappings: Record<string, Record<string, string>>;
@@ -103,7 +123,7 @@ export interface Security {
   session_hours: number;
 }
 export interface Config {
-  schema_version: 4;
+  schema_version: 5;
   upgraded_from_schema?: number | null;
   security: Security;
   revision: number;
@@ -145,10 +165,7 @@ export interface ObservedCaller {
   source_key?: string;
   source_label?: string;
   source_label_source?:
-    | "operator"
-    | "reported_hostname"
-    | "discovered_hostname"
-    | "address";
+    "operator" | "reported_hostname" | "discovered_hostname" | "address";
   source_hostname?: string;
   source_identity_quality?: "network_hardware" | "reported_device" | "address";
   source_address: string;
@@ -217,6 +234,7 @@ export interface State {
     pending: {
       capabilities: string[];
       catalog_protocol: Engine["catalog_protocol"];
+      completion_paths?: CompletionPath[];
       name: string;
       base_url: string;
       models: Model[];

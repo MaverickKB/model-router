@@ -19,6 +19,46 @@ class Fleet:
 
     async def handle(self, request):
         host = request.url.host
+        if request.url.path.endswith("/openapi.json"):
+            return httpx.Response(
+                200,
+                json={
+                    "servers": [{"url": "/v1"}],
+                    "paths": {
+                        "/chat/completions": {
+                            "post": {
+                                "requestBody": {
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "model": {"type": "string"},
+                                                    "messages": {"type": "array"},
+                                                },
+                                            }
+                                        }
+                                    }
+                                },
+                                "responses": {
+                                    "200": {
+                                        "content": {
+                                            "application/json": {
+                                                "schema": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "choices": {"type": "array"}
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            }
+                        }
+                    },
+                },
+            )
         if request.url.path.endswith("/models"):
             if host in self.catalog_failure:
                 return httpx.Response(503)
@@ -637,7 +677,7 @@ async def test_manual_discovery_keeps_verified_candidates_and_registration_is_id
     app.state.store.save(config)
     fleet.models["127.0.0.2"] = ["newly-found-model"]
     response = await http.post(
-        "/v1/gateway/register", json={"base_url": "http://127.0.0.2:8888"}
+        "/v1/gateway/register", json={"base_url": "http://127.0.0.2:8888/v1"}
     )
     assert response.status_code == 202
     pending = (await http.get("/api/state")).json()["discovery"]["pending"]
@@ -645,9 +685,9 @@ async def test_manual_discovery_keeps_verified_candidates_and_registration_is_id
     assert len(app.state.store.config().engines) == 2
     # A different, unverified endpoint cannot inherit another endpoint's pending status.
     failed = await http.post(
-        "/v1/gateway/register", json={"base_url": "http://127.0.0.3:8888"}
+        "/v1/gateway/register", json={"base_url": "http://127.0.0.3:8888/v1"}
     )
-    assert failed.status_code == 503
+    assert failed.status_code == 202
     config = app.state.store.config()
     added = Engine(name="Connected manually", base_url=pending[0]["base_url"])
     config.engines.append(added)
@@ -656,7 +696,11 @@ async def test_manual_discovery_keeps_verified_candidates_and_registration_is_id
         "/v1/gateway/register", json={"base_url": added.base_url}
     )
     assert registered.json()["engine_id"] == added.id
-    assert app.state.discovery.pending_views() == []
+    # The unrelated catalog-only endpoint remains a separate manual-review
+    # record. It cannot inherit the connected endpoint's engine identity.
+    assert [item["base_url"] for item in app.state.discovery.pending_views()] == [
+        "http://127.0.0.3:8888/v1"
+    ]
     invalid = await http.post(
         "/v1/gateway/register", json={"base_url": "http://127.0.0.2/v1?key=invalid"}
     )

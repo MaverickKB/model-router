@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -8,6 +9,16 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .adapters import CATALOG_ADAPTERS
+
+# These are route-relative OpenAI completion operations. An engine stores only
+# operations it may receive after its configured API base, never a full URL.
+# Keeping the contract separate from model capabilities prevents a server that
+# publishes only one operation from being sent a different caller shape.
+CompletionPath = Literal["/chat/completions", "/completions"]
+DEFAULT_COMPLETION_PATHS: tuple[CompletionPath, CompletionPath] = (
+    "/chat/completions",
+    "/completions",
+)
 
 
 class Record(BaseModel):
@@ -51,6 +62,18 @@ class Engine(NamedRecord):
     kind: Literal["local", "cloud"] = "local"
     protocol: Literal["openai"] = "openai"
     catalog_protocol: str = "openai"
+    # A catalog is live endpoint evidence. A declared inventory is the
+    # operator's explicit model list for an OpenAI-compatible endpoint that
+    # does not publish a readable catalog. The two sources stay distinct so a
+    # configured name is never represented as discovered metadata.
+    model_inventory_source: Literal["catalog", "declared"] = "catalog"
+    declared_models: list[str] = Field(default_factory=list)
+    # Manual engines and installations from before this contract retain both
+    # OpenAI completion operations. Network discovery supplies the exact
+    # subset it proved for an automatically registered engine.
+    completion_paths: list[CompletionPath] = Field(
+        default_factory=lambda: list(DEFAULT_COMPLETION_PATHS)
+    )
     # Discovery may suggest a host-derived label. Operators keep ownership of
     # manually edited names, so later scans cannot overwrite them.
     name_source: Literal["operator", "discovered"] = "operator"
@@ -85,6 +108,50 @@ class Engine(NamedRecord):
     def cloud_selection_is_explicit(self):
         if self.kind == "cloud" and "model_patterns" not in self.model_fields_set:
             self.model_patterns = []
+        return self
+
+    @field_validator("declared_models", mode="before")
+    @classmethod
+    def normalize_declared_model_ids(cls, value) -> list[str]:
+        if not isinstance(value, list):
+            # Pydantic turns ValueError into a field-level validation result.
+            # TypeError would escape its validation boundary and lose this
+            # operator-facing message at the API layer.
+            raise ValueError("Declared model IDs must be a list")  # noqa: TRY004
+        normalized = []
+        for model_id in value:
+            if not isinstance(model_id, str):
+                raise ValueError("Each declared model ID must be text")  # noqa: TRY004
+            model_id = model_id.strip()
+            if not model_id:
+                raise ValueError("Declared model IDs cannot be empty")
+            if len(model_id) > 1024:
+                raise ValueError("Declared model IDs must be at most 1024 characters")
+            if any(ord(char) < 32 or ord(char) == 127 for char in model_id):
+                raise ValueError("Declared model IDs cannot contain control characters")
+            if any(character in model_id for character in "*?[]"):
+                raise ValueError("Declared model IDs must be exact names, not patterns")
+            if model_id not in normalized:
+                normalized.append(model_id)
+        return normalized
+
+    @field_validator("completion_paths")
+    @classmethod
+    def distinct_completion_paths(cls, values: list[CompletionPath]) -> list[CompletionPath]:
+        if not values:
+            raise ValueError("Choose at least one supported completion operation")
+        return list(dict.fromkeys(values))
+
+    @model_validator(mode="after")
+    def declared_inventory_is_complete(self):
+        if self.model_inventory_source == "declared" and not self.declared_models:
+            raise ValueError(
+                "Choose at least one model ID for a declared model inventory"
+            )
+        if self.model_inventory_source == "catalog" and self.declared_models:
+            raise ValueError(
+                "Declared model IDs require a declared model inventory source"
+            )
         return self
 
     @field_validator("value_mappings")
@@ -122,9 +189,10 @@ class Engine(NamedRecord):
             raise ValueError(
                 "Use an http(s) endpoint without credentials, query, or fragment"
             )
+        # An origin-only URL is a real OpenAI-compatible base when the server
+        # documents POST /chat/completions at its root.  Preserve it instead of
+        # manufacturing /v1. Existing saved /v1 URLs remain unchanged.
         path = url.path.rstrip("/")
-        if not path:
-            path = "/v1"
         return f"{url.scheme}://{url.netloc}{path}"
 
     @classmethod
@@ -154,6 +222,34 @@ class Engine(NamedRecord):
     @property
     def endpoint_urls(self) -> list[str]:
         return [self.base_url, *self.aliases]
+
+
+def declared_inventory_signature(engine: Engine) -> str:
+    """Stable proof key for one operator-declared endpoint and model inventory."""
+    if engine.model_inventory_source != "declared":
+        raise ValueError("Only a declared model inventory has a success proof")
+    # Dict insertion order can vary between equivalent API payloads. The
+    # declared-model list deliberately keeps its order, while object fields
+    # are canonicalized so a restart can find the same proof.
+    return json.dumps(
+        engine.model_dump(
+            include={
+                "base_url",
+                "protocol",
+                "model_inventory_source",
+                "declared_models",
+                "completion_paths",
+                "capabilities",
+                "model_settings",
+                "model_patterns",
+                "unsupported_parameters",
+                "value_mappings",
+            },
+            mode="json",
+        ),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 class Selector(Record):
@@ -265,9 +361,9 @@ class Security(Record):
 
 
 class Configuration(Record):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     # Installation provenance for Settings copy; never changes access or routing.
-    upgraded_from_schema: int | None = Field(default=None, ge=0, lt=4)
+    upgraded_from_schema: int | None = Field(default=None, ge=0, lt=5)
     security: Security = Field(default_factory=Security)
     revision: int = 0
     engines: list[Engine] = Field(default_factory=list)

@@ -90,10 +90,10 @@ export function DiscoveryEditor({
         <div>
           <strong>Inspect all open ports as HTTP</strong>
           <p>
-            Send HTTP and HTTPS catalog requests to every open port. Enable only
-            for a scope whose services can safely receive HTTP requests.
-            Requests include metadata POSTs where supported and can have side
-            effects on printers and other non-HTTP services.
+            Send bounded HTTP and HTTPS GET requests to every open port. Enable
+            only for a scope whose services can safely receive HTTP requests.
+            Discovery reads published catalogs and API descriptions. Some
+            non-HTTP devices can still react badly to unexpected requests.
           </p>
         </div>
         <Switch

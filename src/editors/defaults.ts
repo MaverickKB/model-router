@@ -1,4 +1,9 @@
-import type { Client, Engine, Route } from "../types";
+import {
+  OPENAI_COMPLETION_PATHS,
+  type Client,
+  type Engine,
+  type Route,
+} from "../types";
 
 function newId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -33,6 +38,9 @@ export const newEngine = (): Engine => ({
   members: [],
   capabilities: ["text", "streaming"],
   model_settings: {},
+  completion_paths: [...OPENAI_COMPLETION_PATHS],
+  model_inventory_source: "catalog",
+  declared_models: [],
   model_patterns: ["*"],
   unsupported_parameters: [],
   value_mappings: {},

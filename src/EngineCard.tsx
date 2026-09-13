@@ -3,6 +3,33 @@ import { useState } from "react";
 import { Switch, timeLabel } from "./components";
 import type { Engine, EngineView } from "./types";
 import { engineHost, engineUrls } from "./engine-addresses";
+
+function inventoryStatusLabel(engine: EngineView): string {
+  if (engine.model_inventory_source !== "declared") {
+    return engine.status === "available" ? "Catalog available" : engine.status;
+  }
+  if (engine.status === "configured") {
+    return "Declared identities pending first request";
+  }
+  if (engine.status === "available") {
+    return "Declared identities verified by request";
+  }
+  return engine.status;
+}
+
+function modelInventoryLabel(engine: EngineView, enabled: boolean | undefined) {
+  if (enabled === false) return "Excluded";
+  return engine.model_inventory_source === "declared"
+    ? "Declared"
+    : "Discovered";
+}
+
+function inventoryCheckLabel(engine: EngineView): string {
+  return engine.model_inventory_source === "declared"
+    ? "Endpoint checked"
+    : "Catalog checked";
+}
+
 export function EngineCard({
   engine: e,
   onEdit,
@@ -54,7 +81,7 @@ export function EngineCard({
           </p>
           <span className="engine-status">
             <i className={"status-dot " + e.status} />
-            {e.status === "available" ? "Catalog available" : e.status}
+            {inventoryStatusLabel(e)}
             {e.models.length
               ? ` · ${e.models.length} model${e.models.length === 1 ? "" : "s"}`
               : ""}
@@ -122,9 +149,7 @@ export function EngineCard({
                       : ""}
                   </small>
                 </div>
-                <span className="tag">
-                  {m.enabled === false ? "Excluded" : "Discovered"}
-                </span>
+                <span className="tag">{modelInventoryLabel(e, m.enabled)}</span>
               </div>
             ))}
             {!e.models.length && (
@@ -136,7 +161,7 @@ export function EngineCard({
           </div>
           <div className="engine-foot">
             <span>
-              Catalog checked {timeLabel(e.checked_at)}
+              {inventoryCheckLabel(e)} {timeLabel(e.checked_at)}
               {e.last_success
                 ? ` · Last response ${timeLabel(e.last_success)}`
                 : ""}

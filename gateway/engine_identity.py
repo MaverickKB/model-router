@@ -33,6 +33,13 @@ def merged_configuration(config: Configuration, merge: MergeEngines) -> Configur
     ]
     kept = next(engine for engine in result["engines"] if engine["id"] == target.id)
     kept.update(base_url=preferred, aliases=[url for url in urls if url != preferred])
+    # The selected endpoint owns its completion operation contract. Merging
+    # aliases must not broaden a chat-only or legacy-only API into the other
+    # engine's unproven operation set.
+    preferred_engine = (
+        source if preferred in source.endpoint_urls else target
+    )
+    kept["completion_paths"] = list(preferred_engine.completion_paths)
 
     def relink(ids):
         return list(

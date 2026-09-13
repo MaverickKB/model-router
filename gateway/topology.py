@@ -4,7 +4,7 @@ import ipaddress
 
 from .contracts import EngineView
 from .request_policy import resolve_unkeyed_policy
-from .routing import decide, matches, selector_reason
+from .routing import decide, engine_is_routable, matches, selector_reason
 from .schema import Client, Configuration, Route
 
 
@@ -161,7 +161,7 @@ def route_map(
                         "models": models,
                         "ready": bool(models)
                         and route.enabled
-                        and engine["status"] == "available",
+                        and engine_is_routable(engine),
                     }
                 )
     return {

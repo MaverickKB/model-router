@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .caller_records import caller_id, merge_observations
@@ -18,12 +19,40 @@ from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
 from .network.caller_evidence import DiscoveryCallerEvidence
 from .network.report import write_json
-from .schema import Configuration
+from .schema import Configuration, declared_inventory_signature
 from .security.credentials import CredentialCipher, digest, verify
 
 
 class Conflict(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class DeclaredProofToken:
+    """The exact declared engine contract and credential used by one request."""
+
+    engine_id: str
+    inventory_signature: str
+    contract_epoch: int
+    credential_epoch: int
+
+
+@dataclass(frozen=True)
+class DeclaredProofReceipt:
+    """One accepted proof mutation and the exact revision it committed."""
+
+    token: DeclaredProofToken
+    revision: int
+    succeeded_at: float | None
+
+
+@dataclass(frozen=True)
+class EngineRequestSnapshot:
+    """Credential and configuration identity bound atomically before forwarding."""
+
+    credential: str
+    credential_epoch: int
+    declared_proof: DeclaredProofToken | None
 
 
 class Store:
@@ -66,6 +95,11 @@ class Store:
             CREATE TABLE IF NOT EXISTS callers (id TEXT PRIMARY KEY, seen REAL NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS caller_source_names (source_key TEXT PRIMARY KEY, name TEXT NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts REAL NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS declared_inventory_proofs (
+                engine_id TEXT PRIMARY KEY,
+                inventory_signature TEXT NOT NULL,
+                succeeded_at REAL NOT NULL
+            );
         """)
         self.db.execute(
             "INSERT OR IGNORE INTO installation VALUES (1, ?)",
@@ -83,7 +117,17 @@ class Store:
         self.db.execute(
             "UPDATE config SET body=? WHERE id=1", (self._config.model_dump_json(),)
         )
+        self._prune_declared_inventory_proofs(self._config)
         self.db.commit()
+        # Observations cache a proof only within this Store process. A monotonic
+        # revision lets them notice state changes without querying SQLite on
+        # every request-path state read.
+        self._declared_inventory_proof_revision = 0
+        # In-flight requests disappear at restart, so these epochs deliberately
+        # stay in memory. They protect a current process from an old provider
+        # credential or replaced declared contract writing over newer evidence.
+        self._declared_contract_epochs: dict[str, int] = {}
+        self._credential_epochs: dict[str, int] = {}
         self._setup_complete = bool(
             self.db.execute(
                 "SELECT setup_complete FROM installation WHERE id=1"
@@ -210,14 +254,22 @@ class Store:
             if config.revision != current.revision:
                 raise Conflict("Settings changed elsewhere. Refresh before saving.")
             config.validate_endpoint_changes(current)
+            current_declared = self._declared_inventory_signatures(current)
             config = config.model_copy(
                 update={
                     "revision": current.revision + 1,
                     "upgraded_from_schema": current.upgraded_from_schema,
                 }
             )
+            next_declared = self._declared_inventory_signatures(config)
+            changed_contracts = {
+                engine_id
+                for engine_id in set(current_declared) | set(next_declared)
+                if current_declared.get(engine_id) != next_declared.get(engine_id)
+            }
             next_secrets = dict(self._secrets)
             next_key_owners = set(self._key_owners)
+            changed_credentials = set()
             # Commit every identity change together. Publish cache changes only
             # after commit so a failed write cannot leave a half-merged engine.
             with self.db:
@@ -239,11 +291,21 @@ class Store:
                 self.db.execute(
                     "UPDATE config SET body=? WHERE id=1", (config.model_dump_json(),)
                 )
+                self._prune_declared_inventory_proofs(config)
                 if setup_required:
                     self.db.execute(
                         "UPDATE installation SET setup_complete=1 WHERE id=1"
                     )
                 for owner, value in (engine_secrets or {}).items():
+                    if next_secrets.get(owner, "") != value:
+                        # A credential change can change what the exact same
+                        # endpoint accepts. Do not carry a declared success
+                        # proof across it.
+                        self.db.execute(
+                            "DELETE FROM declared_inventory_proofs WHERE engine_id=?",
+                            (owner,),
+                        )
+                        changed_credentials.add(owner)
                     if value:
                         self.db.execute(
                             "INSERT OR REPLACE INTO secrets VALUES (?, ?)",
@@ -257,8 +319,164 @@ class Store:
             self._key_owners = next_key_owners
             self._setup_complete = True
             self._config = config.model_copy(deep=True)
+            self._declared_inventory_proof_revision += 1
+            for engine_id in changed_contracts:
+                self._declared_contract_epochs[engine_id] = (
+                    self._declared_contract_epochs.get(engine_id, 0) + 1
+                )
+            for engine_id in changed_credentials:
+                self._credential_epochs[engine_id] = (
+                    self._credential_epochs.get(engine_id, 0) + 1
+                )
             self.publish_discovery_policy()
             return config
+
+    @staticmethod
+    def _declared_inventory_signatures(config: Configuration) -> dict[str, str]:
+        return {
+            engine.id: declared_inventory_signature(engine)
+            for engine in config.engines
+            if engine.model_inventory_source == "declared"
+        }
+
+    def _prune_declared_inventory_proofs(self, config: Configuration) -> None:
+        valid = self._declared_inventory_signatures(config)
+        for engine_id, signature in self.db.execute(
+            "SELECT engine_id, inventory_signature FROM declared_inventory_proofs"
+        ).fetchall():
+            if valid.get(engine_id) != signature:
+                self.db.execute(
+                    "DELETE FROM declared_inventory_proofs WHERE engine_id=?",
+                    (engine_id,),
+                )
+
+    def declared_inventory_success(
+        self, engine_id: str, inventory_signature: str
+    ) -> float | None:
+        """Return only a proof for the exact declared inventory in use."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT succeeded_at FROM declared_inventory_proofs "
+                "WHERE engine_id=? AND inventory_signature=?",
+                (engine_id, inventory_signature),
+            ).fetchone()
+            return float(row[0]) if row else None
+
+    def declared_inventory_evidence(
+        self, engine_id: str, inventory_signature: str
+    ) -> tuple[int, float | None]:
+        """Read a declared proof and its cache revision under one store lock."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT succeeded_at FROM declared_inventory_proofs "
+                "WHERE engine_id=? AND inventory_signature=?",
+                (engine_id, inventory_signature),
+            ).fetchone()
+            return self._declared_inventory_proof_revision, (
+                float(row[0]) if row else None
+            )
+
+    def declared_inventory_token(self, engine) -> DeclaredProofToken | None:
+        """Capture the current declared contract epochs for a request or test."""
+        with self.lock:
+            current = next(
+                (candidate for candidate in self._config.engines if candidate.id == engine.id),
+                None,
+            )
+            if (
+                current is None
+                or current != engine
+                or current.model_inventory_source != "declared"
+            ):
+                return None
+            return DeclaredProofToken(
+                engine_id=current.id,
+                inventory_signature=declared_inventory_signature(current),
+                contract_epoch=self._declared_contract_epochs.get(current.id, 0),
+                credential_epoch=self._credential_epochs.get(current.id, 0),
+            )
+
+    def engine_request_snapshot(self, engine) -> EngineRequestSnapshot | None:
+        """Bind a live engine contract and its credential before forwarding.
+
+        A configuration replacement between routing and this call returns no
+        snapshot, forcing the proxy to re-evaluate rather than forwarding an
+        old request through a newer engine ID.
+        """
+        with self.lock:
+            current = next(
+                (candidate for candidate in self._config.engines if candidate.id == engine.id),
+                None,
+            )
+            if current is None or current != engine:
+                return None
+            declared_proof = self.declared_inventory_token(current)
+            if current.model_inventory_source == "declared" and declared_proof is None:
+                return None
+            return EngineRequestSnapshot(
+                credential=self._secrets.get(current.id, ""),
+                credential_epoch=self._credential_epochs.get(current.id, 0),
+                declared_proof=declared_proof,
+            )
+
+    def _matches_declared_token(self, token: DeclaredProofToken) -> bool:
+        engine = next(
+            (candidate for candidate in self._config.engines if candidate.id == token.engine_id),
+            None,
+        )
+        return bool(
+            engine is not None
+            and engine.model_inventory_source == "declared"
+            and declared_inventory_signature(engine) == token.inventory_signature
+            and self._declared_contract_epochs.get(token.engine_id, 0)
+            == token.contract_epoch
+            and self._credential_epochs.get(token.engine_id, 0) == token.credential_epoch
+        )
+
+    def record_declared_inventory_success(
+        self, token: DeclaredProofToken, succeeded_at: float
+    ) -> DeclaredProofReceipt | None:
+        """Persist success only for the exact contract and credential that answered."""
+        with self.lock:
+            if not self._matches_declared_token(token):
+                return None
+            self.db.execute(
+                "INSERT OR REPLACE INTO declared_inventory_proofs "
+                "(engine_id, inventory_signature, succeeded_at) VALUES (?, ?, ?)",
+                (token.engine_id, token.inventory_signature, succeeded_at),
+            )
+            self.db.commit()
+            self._declared_inventory_proof_revision += 1
+            return DeclaredProofReceipt(
+                token=token,
+                revision=self._declared_inventory_proof_revision,
+                succeeded_at=succeeded_at,
+            )
+
+    def clear_declared_inventory_success(
+        self, token: DeclaredProofToken
+    ) -> DeclaredProofReceipt | None:
+        """Clear proof only when the failing request still owns its contract."""
+        with self.lock:
+            if not self._matches_declared_token(token):
+                return None
+            self.db.execute(
+                "DELETE FROM declared_inventory_proofs "
+                "WHERE engine_id=? AND inventory_signature=?",
+                (token.engine_id, token.inventory_signature),
+            )
+            self.db.commit()
+            self._declared_inventory_proof_revision += 1
+            return DeclaredProofReceipt(
+                token=token,
+                revision=self._declared_inventory_proof_revision,
+                succeeded_at=None,
+            )
+
+    def declared_inventory_proof_revision(self) -> int:
+        """Return the in-process state revision used by declared observations."""
+        with self.lock:
+            return self._declared_inventory_proof_revision
 
     def merge_engines(self, request):
         with self.lock:
@@ -272,12 +490,14 @@ class Store:
             return self.save(config, engine_secrets={request.target_id: secret})
 
     def secret(self, engine_id: str) -> str:
-        return self._secrets.get(engine_id, "")
+        with self.lock:
+            return self._secrets.get(engine_id, "")
 
     def set_secret(self, engine_id: str, value: str):
         if engine_id == "operator":
             raise ValueError("Operator identity is separate from provider credentials")
         with self.lock:
+            changed = self._secrets.get(engine_id, "") != value
             if value:
                 self.db.execute(
                     "INSERT OR REPLACE INTO secrets VALUES (?, ?)",
@@ -287,7 +507,20 @@ class Store:
             else:
                 self.db.execute("DELETE FROM secrets WHERE id=?", (engine_id,))
                 self._secrets.pop(engine_id, None)
+            if changed:
+                # Credentials stay outside configuration and proof signatures.
+                # Clearing the state record is the only honest way to make the
+                # next health view require a response with the new credential.
+                self.db.execute(
+                    "DELETE FROM declared_inventory_proofs WHERE engine_id=?",
+                    (engine_id,),
+                )
             self.db.commit()
+            if changed:
+                self._declared_inventory_proof_revision += 1
+                self._credential_epochs[engine_id] = (
+                    self._credential_epochs.get(engine_id, 0) + 1
+                )
 
     def issue_key(self, client_id: str) -> str:
         key = "mr_" + secrets.token_urlsafe(32)

@@ -114,12 +114,11 @@ export function SavedDiscovery({ config }: { config: Config }) {
           <dt>HTTP inspection</dt>
           <dd>
             {policy.inspect_all_open_ports
-              ? "Every open port receives HTTP / HTTPS catalog requests, including metadata POSTs where supported."
+              ? "Every open port receives bounded HTTP / HTTPS GET requests for published catalogs and API descriptions."
               : policy.http_ports.length
-                ? `Only approved ports (${policy.http_ports.join(", ")}) receive HTTP / HTTPS catalog requests, including metadata POSTs where supported.`
+                ? `Only approved ports (${policy.http_ports.join(", ")}) receive bounded HTTP / HTTPS GET requests for published catalogs and API descriptions.`
                 : "No sweep ports receive HTTP requests. Open ports remain visible as unverified services."}{" "}
-            HTTP requests can have side effects on printers and other non-HTTP
-            services.
+            Non-HTTP devices can still react badly to unexpected requests.
           </dd>
         </div>
         <div>

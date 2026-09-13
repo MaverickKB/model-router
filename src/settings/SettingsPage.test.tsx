@@ -48,9 +48,21 @@ describe("Saved settings and inherited choices", () => {
     });
     expect(discovery).toHaveTextContent("Automatic sweeps on");
     expect(discovery).toHaveTextContent("Ports 1-65535");
-    expect(discovery).toHaveTextContent("Every open port receives HTTP");
-    expect(discovery).toHaveTextContent("metadata POSTs");
-    expect(discovery).toHaveTextContent("printers and other non-HTTP services");
+    expect(discovery).toHaveTextContent(
+      "Every open port receives bounded HTTP / HTTPS GET requests",
+    );
+    expect(discovery).toHaveTextContent(
+      "published catalogs and API descriptions",
+    );
+    expect(discovery).toHaveTextContent(
+      "Non-HTTP devices can still react badly",
+    );
+    expect(
+      screen.getByText(
+        /Send bounded HTTP and HTTPS GET requests to every open port/,
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/metadata POST/i)).not.toBeInTheDocument();
     expect(discovery).toHaveTextContent(
       "receive requests allowed by caller policies",
     );

@@ -8,6 +8,7 @@ Kind = Literal["local", "cloud"]
 Tier = Literal["primary", "fallback"]
 EngineStatus = Literal[
     "checking",
+    "configured",
     "available",
     "draining",
     "offline",
@@ -34,6 +35,9 @@ class EngineView(TypedDict):
     kind: Kind
     protocol: str
     catalog_protocol: str
+    model_inventory_source: Literal["catalog", "declared"]
+    declared_models: list[str]
+    completion_paths: list[Literal["/chat/completions", "/completions"]]
     enabled: bool
     draining: bool
     source: str
@@ -92,3 +96,4 @@ class Decision(TypedDict, total=False):
     required_capabilities: list[str]
     defaults: dict
     revision: int
+    completion_path: Literal["/chat/completions", "/completions"]

@@ -1,13 +1,50 @@
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
+from typing import Literal
 
 from .contracts import Candidate, Decision, EngineView, ModelView, Rejection
-from .schema import Client, Configuration, Route, Selector
+from .schema import (
+    DEFAULT_COMPLETION_PATHS,
+    Client,
+    Configuration,
+    Route,
+    Selector,
+)
+
+CompletionOperation = Literal["/chat/completions", "/completions"]
+
+
+def completion_operation(path: str) -> CompletionOperation | None:
+    """Map one router request path to its route-relative OpenAI operation."""
+    if path.endswith("/chat/completions"):
+        return "/chat/completions"
+    if path.endswith("/completions"):
+        return "/completions"
+    return None
+
+
+def supports_completion_operation(
+    engine: EngineView, operation: CompletionOperation | None
+) -> bool:
+    """Return whether this engine may receive the caller's exact operation.
+
+    The fallback preserves existing hand-configured records that predate the
+    explicit endpoint contract. Persisted configuration migration materializes
+    the same default, while this guard keeps read-only legacy views safe.
+    """
+    return operation is None or operation in engine.get(
+        "completion_paths", DEFAULT_COMPLETION_PATHS
+    )
 
 
 def matches(value: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(value, pattern) for pattern in patterns)
+
+
+def engine_is_routable(engine: EngineView) -> bool:
+    """Configured inventory is selectable, catalog availability is stricter health."""
+    return engine["status"] in {"available", "configured"}
 
 
 def route_requires_caller_key(route: Route) -> bool:
@@ -94,6 +131,7 @@ def decide(
     *,
     consider_capacity: bool = True,
     caller_key_present: bool = True,
+    completion_path: CompletionOperation | None = None,
 ) -> Decision:
     requested = str(payload.get("model", ""))
     route = next((r for r in config.routes if r.name == requested), None)
@@ -105,6 +143,7 @@ def decide(
     required = requirements(payload)
     permission_blocked = False
     missing_capabilities: set[str] = set()
+    unsupported_operation = False
     other_blocker = False
     if not client.enabled:
         return {
@@ -157,7 +196,7 @@ def decide(
         tiers = [("primary", Selector(kind="any"))]
     for tier, selector in tiers:
         for engine in engines:
-            if engine["status"] != "available":
+            if not engine_is_routable(engine):
                 # An unavailable permitted catalog may recover with a capable
                 # model. Do not classify that uncertainty as a request error.
                 if (
@@ -205,6 +244,14 @@ def decide(
                 ):
                     other_blocker = True
                     reason = "Engine concurrency limit reached"
+                if not reason and not supports_completion_operation(
+                    engine, completion_path
+                ):
+                    unsupported_operation = True
+                    reason = (
+                        "Engine does not support the requested completion operation: "
+                        + str(completion_path)
+                    )
                 if reason:
                     rejected.append(
                         {
@@ -274,6 +321,17 @@ def decide(
                 "error_type": "invalid_request_error",
                 "error_code": "unsupported_capability",
             }
+        elif unsupported_operation and not other_blocker and completion_path:
+            failure = {
+                "status": 400,
+                "error": (
+                    "No permitted engine supports the requested completion operation "
+                    + completion_path
+                    + ". Choose a route with an engine configured for that operation."
+                ),
+                "error_type": "invalid_request_error",
+                "error_code": "unsupported_operation",
+            }
     return {
         "route": route.name if route else requested,
         "client": client.name,
@@ -282,6 +340,7 @@ def decide(
         "rejections": rejected,
         "defaults": route.defaults if route else {},
         "revision": config.revision,
+        **({"completion_path": completion_path} if completion_path else {}),
         **failure,
     }
 

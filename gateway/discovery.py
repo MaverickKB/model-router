@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit, urlunsplit
@@ -13,10 +14,11 @@ from .adapters import CATALOG_ADAPTERS
 from .contracts import EngineStatus, EngineView, ModelView
 from .network.announcements import listen
 from .network.protocols import is_gateway_catalog, unavailable_reason
-from .network.report import read_json, read_report
+from .network.report import mutate_report, read_json, read_report
+from .network.transports import inspect_transports
 from .routing import matches
-from .schema import Engine
-from .store import Conflict, Store
+from .schema import Engine, declared_inventory_signature
+from .store import Conflict, DeclaredProofToken, Store
 
 
 @dataclass
@@ -32,6 +34,8 @@ class Observation:
     inflight: int = 0
     circuit_until: float = 0
     last_success: float | None = None
+    declared_inventory_signature: str | None = None
+    declared_inventory_proof_revision: int | None = None
     probe_generation: int = 0
 
 
@@ -78,7 +82,143 @@ class DiscoveryService:
         key = self.store.secret(engine.id)
         return {"Authorization": f"Bearer {key}"} if key else {}
 
+    @staticmethod
+    def _model_view(
+        engine: Engine, model_id: str, row: dict | None = None
+    ) -> ModelView:
+        """Build one routeable model record from catalog or declared evidence."""
+        override = engine.model_settings.get(model_id)
+        capabilities = list(engine.capabilities)
+        if row is not None:
+            stated = row.get("capabilities")
+            if isinstance(stated, dict):
+                capabilities = [k for k in capabilities if stated.get(k) is not False]
+                capabilities = list(
+                    dict.fromkeys(
+                        capabilities
+                        + [
+                            k
+                            for k, value in stated.items()
+                            if value is True
+                            and k in {"text", "tools", "vision", "streaming"}
+                        ]
+                    )
+                )
+            if isinstance(stated, list):
+                capabilities = [value for value in stated if isinstance(value, str)]
+            context = row.get("context_length") or row.get("max_model_len")
+        else:
+            context = None
+        if override:
+            capabilities = override.capabilities
+            if override.context_length:
+                context = override.context_length
+        result: ModelView = {
+            "id": model_id,
+            "capabilities": capabilities,
+            "context_length": context
+            if type(context) is int and context > 0
+            else None,
+            "enabled": (override.enabled if override else True)
+            and matches(model_id, engine.model_patterns)
+            and (row is None or not unavailable_reason(row)),
+        }
+        if row is not None and isinstance(row.get("loaded"), bool):
+            result["loaded"] = row["loaded"]
+        return result
+
+    def declared_model_views(self, engine: Engine) -> list[ModelView]:
+        return [
+            self._model_view(engine, model_id) for model_id in engine.declared_models
+        ]
+
+    def _refresh_declared_inventory(self, engine: Engine, obs: Observation) -> None:
+        signature = declared_inventory_signature(engine)
+        proof_revision, last_success = self.store.declared_inventory_evidence(
+            engine.id, signature
+        )
+        if (
+            obs.declared_inventory_signature != signature
+            or obs.declared_inventory_proof_revision != proof_revision
+        ):
+            # A new endpoint or inventory has not inherited the prior
+            # endpoint's completion evidence. A state revision also captures
+            # credential, failure, deletion, and in-process source changes.
+            obs.declared_inventory_signature = signature
+            obs.declared_inventory_proof_revision = proof_revision
+            obs.last_success = last_success
+            obs.checked_at = 0
+            obs.observed_at = 0
+            obs.latency_ms = None
+            obs.error = ""
+        obs.models = self.declared_model_views(engine)
+        obs.status = "available" if obs.last_success else "configured"
+
+    async def record_success(
+        self,
+        engine: Engine,
+        obs: Observation,
+        token: DeclaredProofToken | None = None,
+    ) -> bool:
+        """Record completed traffic without treating configured IDs as a catalog."""
+        succeeded_at = time.time()
+        if engine.model_inventory_source == "declared":
+            if token is None:
+                return False
+            try:
+                receipt = await asyncio.to_thread(
+                    self.store.record_declared_inventory_success,
+                    token,
+                    succeeded_at,
+                )
+            except (OSError, sqlite3.Error):
+                # The completion response remains valid for this caller, but
+                # unavailable durable state must not be presented as health.
+                return False
+            if receipt is None:
+                return False
+        obs.last_success = succeeded_at
+        obs.status = "available"
+        obs.error = ""
+        obs.circuit_until = 0
+        if engine.model_inventory_source == "declared":
+            obs.declared_inventory_signature = declared_inventory_signature(engine)
+            # Use the mutation's revision, not a later global value. If another
+            # request changed the proof after this callback committed, views()
+            # will reload durable truth instead of preserving a stale status.
+            obs.declared_inventory_proof_revision = receipt.revision
+        return True
+
+    async def record_failure(
+        self,
+        engine: Engine,
+        obs: Observation,
+        reason: str,
+        token: DeclaredProofToken | None = None,
+    ) -> bool:
+        """Record a disproven completion contract without hiding route fallback."""
+        if engine.model_inventory_source == "declared":
+            if token is None:
+                return False
+            try:
+                receipt = await asyncio.to_thread(
+                    self.store.clear_declared_inventory_success, token
+                )
+            except (OSError, sqlite3.Error):
+                return False
+            if receipt is None:
+                return False
+            obs.declared_inventory_signature = declared_inventory_signature(engine)
+            obs.declared_inventory_proof_revision = receipt.revision
+        obs.last_success = None
+        obs.status = "unavailable"
+        obs.error = reason
+        obs.circuit_until = time.time() + engine.failure_cooldown_seconds
+        return True
+
     async def probe(self, engine: Engine) -> list[ModelView]:
+        if engine.model_inventory_source == "declared":
+            return self.declared_model_views(engine)
         body = await CATALOG_ADAPTERS[engine.catalog_protocol].read(
             self.http, engine.base_url, self.headers(engine)
         )
@@ -101,47 +241,7 @@ class DiscoveryService:
                 or any(ord(char) < 32 or ord(char) == 127 for char in row["id"])
             ):
                 continue
-            model_id = row["id"]
-            override = engine.model_settings.get(model_id)
-            capabilities = list(engine.capabilities)
-            stated = row.get("capabilities")
-            if isinstance(stated, dict):
-                capabilities = [k for k in capabilities if stated.get(k) is not False]
-                capabilities = list(
-                    dict.fromkeys(
-                        capabilities
-                        + [
-                            k
-                            for k, value in stated.items()
-                            if value is True
-                            and k in {"text", "tools", "vision", "streaming"}
-                        ]
-                    )
-                )
-            if isinstance(stated, list):
-                capabilities = [value for value in stated if isinstance(value, str)]
-            if override:
-                capabilities = override.capabilities
-            context = row.get("context_length") or row.get("max_model_len")
-            if override and override.context_length:
-                context = override.context_length
-            models.append(
-                {
-                    "id": model_id,
-                    "capabilities": capabilities,
-                    "context_length": context
-                    if type(context) is int and context > 0
-                    else None,
-                    "enabled": (override.enabled if override else True)
-                    and matches(model_id, engine.model_patterns)
-                    and not unavailable_reason(row),
-                    **(
-                        {"loaded": row["loaded"]}
-                        if isinstance(row.get("loaded"), bool)
-                        else {}
-                    ),
-                }
-            )
+            models.append(self._model_view(engine, row["id"], row))
         if not models:
             raise ValueError("No enabled models are advertised by this endpoint")
         return models
@@ -159,6 +259,14 @@ class DiscoveryService:
                 )
                 == engine
             )
+
+        if engine.model_inventory_source == "declared":
+            if current_probe():
+                # Declared inventory is configuration, never a disguised
+                # catalog probe. A successful proxied request is the first
+                # evidence that this exact endpoint and model inventory works.
+                self._refresh_declared_inventory(engine, obs)
+            return
 
         started = time.monotonic()
         try:
@@ -203,10 +311,22 @@ class DiscoveryService:
             obs = self.observation(engine.id)
             status = obs.status
             models = obs.models
+            if engine.model_inventory_source == "declared":
+                self._refresh_declared_inventory(engine, obs)
+                status = obs.status
+                models = obs.models
             if not engine.enabled:
                 status = "disabled"
             elif not engine.model_patterns:
                 status = "unconfigured"
+            elif (
+                engine.model_inventory_source == "declared"
+                and obs.last_success
+                and now - obs.last_success > config.discovery.stale_seconds
+            ):
+                # The exact configured inventory remains routeable, but an
+                # old request is not current engine-health evidence.
+                status = "configured"
             elif (
                 obs.observed_at
                 and now - obs.observed_at > config.discovery.stale_seconds
@@ -284,6 +404,7 @@ class DiscoveryService:
         url: str,
         source="discovery",
         capabilities=None,
+        completion_paths=None,
         name=None,
         catalog_protocol="openai",
         hostname=None,
@@ -304,6 +425,11 @@ class DiscoveryService:
                 capabilities=capabilities
                 if capabilities is not None
                 else ["text", "streaming"],
+                **(
+                    {"completion_paths": completion_paths}
+                    if completion_paths is not None
+                    else {}
+                ),
             )
         except ValueError:
             return None
@@ -331,12 +457,31 @@ class DiscoveryService:
             ):
                 existing.name = reported_hostname
                 changed = True
+            if (
+                completion_paths is not None
+                and existing.source != "manual"
+                and existing.completion_paths != candidate.completion_paths
+            ):
+                # A network-owned engine follows current same-base protocol
+                # evidence. Manual engines retain their compatibility default
+                # or an operator-selected contract.
+                existing.completion_paths = candidate.completion_paths
+                changed = True
             if changed:
                 try:
                     await asyncio.to_thread(self.store.save, config)
                 except Conflict:
                     return None
             return existing.id
+        # Discovery and registration admission must carry exact operation
+        # evidence from the classifier. A direct catalog probe cannot safely
+        # restore the old assumption that every OpenAI-shaped service accepts
+        # both OpenAI completion operations. Explicit operator-created engines
+        # remain the only source allowed to use the compatibility default.
+        # Check this only after resolving an existing endpoint so a harmless
+        # rediscovery cannot erase or duplicate a previously saved engine.
+        if source != "manual" and completion_paths is None:
+            return None
         try:
             async with self.probe_limit:
                 models = await self.probe(candidate)
@@ -351,6 +496,7 @@ class DiscoveryService:
                 "base_url": candidate.base_url,
                 "models": models,
                 "capabilities": candidate.capabilities,
+                "completion_paths": candidate.completion_paths,
                 "catalog_protocol": candidate.catalog_protocol,
                 "seen_at": time.time(),
             }
@@ -369,6 +515,13 @@ class DiscoveryService:
                 and existing.name != reported_hostname
             ):
                 existing.name = reported_hostname
+                changed = True
+            if (
+                completion_paths is not None
+                and existing.source != "manual"
+                and existing.completion_paths != candidate.completion_paths
+            ):
+                existing.completion_paths = candidate.completion_paths
                 changed = True
             if changed:
                 try:
@@ -397,16 +550,148 @@ class DiscoveryService:
                 return
         for host in report.get("hosts", []):
             for service in host.get("services", []):
-                if service.get("status") == "model_service" and service.get("models"):
+                # A catalog identifies a model but not necessarily which
+                # completion request it accepts. Old reports have no exact
+                # operation evidence, so preserve them for review rather than
+                # inventing a compatibility contract during auto-registration.
+                completion_paths = service.get("completion_paths")
+                if (
+                    service.get("registration_eligible") is True
+                    and isinstance(completion_paths, list)
+                    and completion_paths
+                ):
                     await self.discover_url(
                         service["base_url"],
                         "network",
                         service.get("capabilities"),
+                        completion_paths=completion_paths,
                         catalog_protocol=service.get(
                             "catalog_adapter", service.get("protocol", "openai")
                         ),
                         hostname=host.get("name"),
                     )
+
+    async def record_mdns_services(self, candidate: str, services: list[dict]) -> None:
+        """Retain mDNS evidence in the shared network report for operator review.
+
+        An mDNS advertisement proves only that an address and port were
+        announced.  Every classified API surface is kept even when it lacks a
+        model catalog or OpenAI transport, so the Network view can show the
+        operator exactly what was found instead of silently dropping it.
+        """
+        try:
+            parsed = urlsplit(candidate)
+            address, port = parsed.hostname, parsed.port
+        except ValueError:
+            return
+        if not address or port is None:
+            return
+        checked_at = time.time()
+
+        def record(report: dict) -> None:
+            hosts = report.setdefault("hosts", [])
+            host = next(
+                (row for row in hosts if row.get("address") == address), None
+            )
+            if host is None:
+                host = {
+                    "address": address,
+                    "name": "",
+                    "ports": [],
+                    "services": [],
+                    "scope": "mdns",
+                    "status": "up",
+                    "evidence": "mDNS service announcement",
+                    "scan_complete": False,
+                }
+                hosts.append(host)
+            host.setdefault("ports", [])
+            host.setdefault("services", [])
+            host.setdefault("scope", "mdns")
+            host["status"] = "up"
+            host["seen_at"] = checked_at
+            if port not in host["ports"]:
+                host["ports"] = sorted([*host["ports"], port])
+            previous = {
+                str(row.get("surface_id") or row.get("origin")): row
+                for row in host["services"]
+                if row.get("port") == port
+            }
+            observed = []
+            for service in services:
+                surface = dict(service)
+                origin = surface.get("origin")
+                if not isinstance(origin, str) or not origin:
+                    origin = candidate
+                surface_id = str(surface.get("surface_id") or origin)
+                prior = previous.get(surface_id, {})
+                surface.update(
+                    origin=origin,
+                    surface_id=surface_id,
+                    port=port,
+                    checked_at=checked_at,
+                    discovery_source="mdns",
+                    catalog_tracked=prior.get("catalog_tracked", False)
+                    or (
+                        surface.get("status")
+                        in {
+                            "model_service",
+                            "model_surface",
+                            "native_inventory",
+                            "gateway",
+                        }
+                    ),
+                )
+                observed.append(surface)
+            observed_ids = {surface["surface_id"] for surface in observed}
+            host["services"] = [
+                row
+                for row in host["services"]
+                if str(row.get("surface_id") or row.get("origin")) not in observed_ids
+                and not (
+                    row.get("discovery_source") == "mdns"
+                    and row.get("port") == port
+                )
+            ] + observed
+            report["updated_at"] = checked_at
+
+        await asyncio.to_thread(mutate_report, self.store.discovery_directory, record)
+
+    async def inspect_mdns_candidate(self, candidate: str) -> None:
+        """Classify one trusted mDNS address on both bounded web transports."""
+        try:
+            parsed = urlsplit(candidate)
+            hostname, port = parsed.hostname or "", parsed.port
+        except ValueError:
+            return
+        if not hostname or port is None or not await self.trusted_host(hostname):
+            return
+        authority = f"[{hostname}]" if ":" in hostname else hostname
+        services = await inspect_transports(self.http, authority, port)
+        await self.record_mdns_services(candidate, services)
+        for service in services:
+            base_url = service.get("base_url")
+            if not (
+                service.get("registration_eligible") is True
+                and isinstance(base_url, str)
+                and base_url
+            ):
+                continue
+            completion_paths = service.get("completion_paths")
+            if not isinstance(completion_paths, list) or not completion_paths:
+                # Keep the inspected mDNS surface for the operator. Its model
+                # catalog alone cannot authorize a guessed completion path.
+                continue
+            await self.discover_url(
+                base_url,
+                "mDNS",
+                service.get("capabilities"),
+                completion_paths=completion_paths,
+                name=service.get("name"),
+                catalog_protocol=service.get(
+                    "catalog_adapter", service.get("protocol", "openai")
+                ),
+            )
 
     async def scan(self):
         async with self.scan_lock:
@@ -415,8 +700,7 @@ class DiscoveryService:
                 await self.consume_network()
                 self.scan_error = ""
                 for url in list(self.mdns_candidates):
-                    if await self.trusted_host(urlsplit(url).hostname or ""):
-                        await self.discover_url(url, "mDNS")
+                    await self.inspect_mdns_candidate(url)
             except (OSError, ValueError, RuntimeError) as error:
                 self.scan_error = str(error)
             finally:

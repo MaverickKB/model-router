@@ -54,7 +54,7 @@ async def test_concurrent_admission_reserves_once_and_releases(tmp_path):
         if request.url.host == "primary.test":
             entered.set()
             await release.wait()
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json={"choices": []})
 
     app, local, http = await make_router(tmp_path, handler, max_inflight=1)
     async with app.router.lifespan_context(app), http:
@@ -105,7 +105,7 @@ async def test_upstream_response_limit_and_configured_cooldown(tmp_path):
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}]})
         if request.url.host == "backup.test":
-            return httpx.Response(200, json={"ok": True})
+            return httpx.Response(200, json={"choices": []})
         if mode["value"] == "oversize":
             return httpx.Response(200, content=b"x" * 2048)
         return httpx.Response(429)

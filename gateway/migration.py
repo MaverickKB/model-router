@@ -30,5 +30,14 @@ def configuration(raw: dict) -> dict:
             route.setdefault("require_caller_key", legacy_required)
         value["upgraded_from_schema"] = value.get("upgraded_from_schema", version)
         value["schema_version"] = 4
+        version = 4
+    if version < 5:
+        # Existing configurations predate per-engine completion operation
+        # evidence. Preserve their established OpenAI-compatible behavior
+        # rather than silently narrowing an operator's route on upgrade.
+        for engine in value.get("engines", []):
+            engine.setdefault("completion_paths", ["/chat/completions", "/completions"])
+        value["upgraded_from_schema"] = value.get("upgraded_from_schema", version)
+        value["schema_version"] = 5
     value.pop("compatibility", None)
     return value

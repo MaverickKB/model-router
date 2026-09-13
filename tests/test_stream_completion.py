@@ -129,3 +129,34 @@ async def test_closing_generator_after_terminal_yield_records_completed():
     await stream.aclose()
     assert statuses == [("completed", 200)]
     assert observation.inflight == 0
+
+
+async def test_end_of_stream_without_terminal_marker_never_records_success():
+    observation = Observation(engine_id="stream-test")
+    recorded, statuses = [], []
+
+    async def record_success():
+        recorded.append(True)
+
+    connection = InflightRequest(
+        observation,
+        failure_cooldown=1,
+        record_success=record_success,
+    )
+
+    async def chunks():
+        if False:
+            yield b"unreachable"
+
+    async def finish(status, code=None):
+        statuses.append((status, code))
+
+    body = b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+    output = [chunk async for chunk in connection.relay(body, chunks(), finish)]
+    assert output[-1] == (
+        b'event: error\ndata: {"error":{"message":"Upstream stream ended before completion"}}\n\n'
+    )
+    assert recorded == []
+    assert statuses == [("failed", 502)]
+    assert observation.last_success is None
+    assert observation.inflight == 0

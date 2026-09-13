@@ -1,8 +1,10 @@
 """Credential-free discovery policy, explicit jobs, and atomic evidence snapshots."""
 
+import copy
 import json
 import threading
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
@@ -41,8 +43,34 @@ def read_policy(root: Path) -> dict:
     return read_json(root / "policy.json", {"enabled": False, "targets": []})
 
 
+_report_lock = threading.RLock()
+
+
 def publish(root: Path, report: dict):
-    write_json(root / "network.json", report)
+    """Atomically replace a report while serializing in-process writers."""
+    with _report_lock:
+        write_json(root / "network.json", report)
+
+
+def mutate_report(root: Path, mutation: Callable[[dict], dict | None]) -> dict:
+    """Read, change, and publish one discovery report as one critical section.
+
+    A sweep and mDNS listener run as separate asynchronous tasks.  Atomic file
+    replacement protects readers from partial JSON, but it does not protect a
+    stale read-modify-write sequence from replacing newer evidence.  This
+    helper is the single same-process mutation boundary for ``network.json``.
+    The returned copy is a snapshot, so callers cannot mutate stored state
+    after the critical section ends.
+    """
+    with _report_lock:
+        report = read_report(root)
+        replacement = mutation(report)
+        if replacement is not None:
+            if not isinstance(replacement, dict):
+                raise TypeError("network report mutations must return a dictionary")
+            report = replacement
+        write_json(root / "network.json", report)
+        return copy.deepcopy(report)
 
 
 def read_report(root: Path) -> dict:

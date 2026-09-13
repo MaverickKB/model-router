@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 import httpx
@@ -14,7 +16,7 @@ from starlette.responses import Response
 
 from .discovery import DiscoveryService, Observation
 from .identity import Identity
-from .routing import apply_defaults, decide
+from .routing import CompletionOperation, apply_defaults, completion_operation, decide
 from .schema import Client
 from .store import Store
 from .stream_protocol import CompletionMarker
@@ -22,6 +24,37 @@ from .stream_protocol import CompletionMarker
 
 class ResponseTooLarge(Exception):
     pass
+
+
+def is_openai_completion_response(content: bytes) -> bool:
+    """Require the minimum OpenAI completion envelope before recording proof."""
+    try:
+        body = json.loads(content)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(body, dict) and isinstance(body.get("choices"), list)
+
+
+def attempt_identity(engine, model: str, credential_epoch: int) -> tuple:
+    """Identify one forwardable engine contract without retaining a credential.
+
+    The retry loop must suppress a failed attempt, but a same-ID engine can be
+    replaced while that request is in flight.  Endpoint, request translation,
+    declared inventory, and credential generation all define the contract that
+    was actually attempted.  A changed contract receives one fresh attempt.
+    """
+    return (
+        engine.id,
+        model,
+        engine.base_url,
+        engine.catalog_protocol,
+        engine.model_inventory_source,
+        tuple(engine.declared_models),
+        tuple(engine.completion_paths),
+        tuple(engine.unsupported_parameters),
+        json.dumps(engine.value_mappings, sort_keys=True, separators=(",", ":")),
+        credential_epoch,
+    )
 
 
 async def read_limited(response: httpx.Response, limit: int) -> bytes:
@@ -36,20 +69,47 @@ async def read_limited(response: httpx.Response, limit: int) -> bytes:
 class InflightRequest:
     """Own one admission slot and its upstream connection through stream completion."""
 
-    def __init__(self, observation: Observation, failure_cooldown: float):
+    def __init__(
+        self,
+        observation: Observation,
+        failure_cooldown: float,
+        record_success: Callable[[], Awaitable[None]] | None = None,
+        record_contract_failure: Callable[[str], Awaitable[None]] | None = None,
+        requires_response_envelope: bool = False,
+    ):
         self.observation = observation
         self.failure_cooldown = failure_cooldown
+        self.record_success = record_success
+        self.record_contract_failure = record_contract_failure
+        # A normal SSE terminal marker is enough to finish a client request.
+        # A declared inventory has no catalog proof, so it needs the stronger
+        # response-envelope evidence before it can become healthy.
+        self.requires_response_envelope = requires_response_envelope
         self.response: httpx.Response | None = None
         self.released = False
         observation.inflight += 1
 
     @classmethod
-    def claim(cls, observation: Observation, limit: int, failure_cooldown: float):
+    def claim(
+        cls,
+        observation: Observation,
+        limit: int,
+        failure_cooldown: float,
+        record_success: Callable[[], Awaitable[None]] | None = None,
+        record_contract_failure: Callable[[str], Awaitable[None]] | None = None,
+        requires_response_envelope: bool = False,
+    ):
         # This synchronous check-and-increment is atomic on the owning event loop.
         # No database or transport await may enter this reservation boundary.
         if observation.identity_locked or observation.inflight >= limit:
             return None
-        return cls(observation, failure_cooldown)
+        return cls(
+            observation,
+            failure_cooldown,
+            record_success,
+            record_contract_failure,
+            requires_response_envelope,
+        )
 
     async def release(self):
         if not self.released:
@@ -63,6 +123,7 @@ class InflightRequest:
     async def relay(self, first, iterator, finish):
         terminal = CompletionMarker()
         status, code = "cancelled", None
+        contract_failure = ""
         try:
             terminal.feed(first)
             yield first
@@ -72,21 +133,61 @@ class InflightRequest:
                     yield chunk
                     if terminal.complete:
                         break
-            status, code = "completed", 200
+            if terminal.complete:
+                status, code = "completed", 200
+                if (
+                    self.requires_response_envelope
+                    and not terminal.response_envelope
+                ):
+                    # Preserve the terminal event for the client. It still
+                    # completed the stream protocol, but it cannot renew a
+                    # declared engine's OpenAI response proof.
+                    contract_failure = (
+                        "Upstream stream completed without an OpenAI response envelope"
+                    )
+            else:
+                # A terminal marker, not HTTP EOF, defines a completed SSE
+                # response. Do not turn a truncated stream into success.
+                status, code = "failed", 502
+                contract_failure = "Upstream stream ended before completion"
+                self.observation.circuit_until = time.time() + self.failure_cooldown
+                yield (
+                    b'event: error\ndata: {"error":{"message":"'
+                    + contract_failure.encode()
+                    + b'"}}\n\n'
+                )
         except httpx.HTTPError:
-            status, code = "failed", 502
-            self.observation.circuit_until = time.time() + self.failure_cooldown
-            yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted"}}\n\n'
+            # A transport failure before the terminal marker invalidates a
+            # declared engine's durable proof. The client still receives the
+            # same terminal SSE error it received before proof tracking was
+            # added.
+            if not terminal.complete:
+                status, code = "failed", 502
+                contract_failure = "Upstream stream interrupted"
+                self.observation.circuit_until = time.time() + self.failure_cooldown
+                yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted"}}\n\n'
         finally:
             # OpenAI clients close on the terminal event without waiting for
             # HTTP EOF. Preserve that outcome through disconnect and protect
-            # the single history write and connection cleanup from cancellation.
+            # success proof, history write, and connection cleanup from
+            # cancellation.
             if terminal.complete:
                 status, code = "completed", 200
-            if status == "completed":
-                self.observation.last_success = time.time()
             with CancelScope(shield=True):
                 try:
+                    if contract_failure and self.record_contract_failure:
+                        await self.record_contract_failure(contract_failure)
+                    elif status == "completed":
+                        if (
+                            self.record_success
+                            and (
+                                not self.requires_response_envelope
+                                or terminal.response_envelope
+                            )
+                        ):
+                            await self.record_success()
+                        elif not self.requires_response_envelope:
+                            self.observation.last_success = time.time()
                     await finish(status, code)
                 finally:
                     await self.release()
@@ -103,7 +204,14 @@ class Proxy:
         self.store, self.discovery, self.http = store, discovery, http
         self.identity = identity
 
-    async def dispatch(self, request: Request, payload: dict, client: Client):
+    async def dispatch(
+        self,
+        request: Request,
+        payload: dict,
+        client: Client,
+        *,
+        completion_path: CompletionOperation | None = None,
+    ):
         if (
             not isinstance(payload, dict)
             or not isinstance(payload.get("model"), str)
@@ -112,6 +220,11 @@ class Proxy:
             raise HTTPException(400, "A model or route name is required")
         if "messages" in payload and not isinstance(payload["messages"], list):
             raise HTTPException(400, "messages must be an array")
+        path = completion_path or completion_operation(request.url.path)
+        if path is None:
+            # The ASGI application mounts only the OpenAI operations above,
+            # but do not silently coerce a future route into chat semantics.
+            raise HTTPException(404, "Unsupported completion operation")
         config = self.store.config()
         caller_key_present = getattr(request.state, "caller_key_present", True)
         operator_test = getattr(request.state, "identity_basis", "") == "operator_test"
@@ -121,6 +234,7 @@ class Proxy:
             client,
             payload,
             caller_key_present=caller_key_present,
+            completion_path=path,
         )
         event = {
             "id": uuid4().hex,
@@ -179,7 +293,13 @@ class Proxy:
         if not decision["candidates"]:
             return await refuse(decision)
 
-        attempted = set()
+        # A failed upstream attempt is not retried. A saturated engine has not
+        # been sent any traffic, so keep it separate: another eligible engine
+        # may still serve this request without turning a capacity check into a
+        # false upstream attempt.
+        attempted: set[tuple] = set()
+        saturated: set[tuple] = set()
+        terminal_contract_error: tuple[int, str] | None = None
         while True:
             # Re-evaluate the complete policy after each failed attempt.
             try:
@@ -212,6 +332,7 @@ class Proxy:
                 current_client,
                 payload,
                 caller_key_present=caller_key_present,
+                completion_path=path,
             )
             event.update(
                 client_id=current_client.id,
@@ -221,20 +342,46 @@ class Proxy:
             )
             if not fresh["candidates"] and fresh.get("status"):
                 return await refuse(fresh)
-            candidate = next(
-                (
-                    c
-                    for c in fresh["candidates"]
-                    if (c["engine_id"], c["model"]) not in attempted
-                ),
-                None,
-            )
-            if candidate is None:
+            candidate = None
+            engine = None
+            request_snapshot = None
+            attempt_key = None
+            snapshot_changed = False
+            for possible in fresh["candidates"]:
+                possible_engine = next(
+                    (
+                        item
+                        for item in current_config.engines
+                        if item.id == possible["engine_id"]
+                    ),
+                    None,
+                )
+                if possible_engine is None:
+                    continue
+                possible_snapshot = self.store.engine_request_snapshot(possible_engine)
+                if possible_snapshot is None:
+                    snapshot_changed = True
+                    continue
+                possible_key = attempt_identity(
+                    possible_engine,
+                    possible["model"],
+                    possible_snapshot.credential_epoch,
+                )
+                if possible_key in attempted or possible_key in saturated:
+                    continue
+                candidate = possible
+                engine = possible_engine
+                request_snapshot = possible_snapshot
+                attempt_key = possible_key
                 break
-            attempted.add((candidate["engine_id"], candidate["model"]))
-            engine = next(
-                e for e in current_config.engines if e.id == candidate["engine_id"]
-            )
+            if candidate is None or engine is None or request_snapshot is None:
+                if snapshot_changed:
+                    # The configuration changed between policy selection and
+                    # request binding. Yield once, then derive candidates from
+                    # the new contract instead of treating it as an outage.
+                    await asyncio.sleep(0)
+                    continue
+                break
             obs = self.discovery.observation(engine.id)
             optional_defaults = {
                 k: v
@@ -247,17 +394,24 @@ class Proxy:
             for field, mapping in engine.value_mappings.items():
                 if isinstance(body.get(field), str):
                     body[field] = mapping.get(body[field], body[field])
-            path = (
-                "/completions"
-                if request.url.path.endswith("/completions")
-                and not request.url.path.endswith("/chat/completions")
-                else "/chat/completions"
-            )
+            credential = request_snapshot.credential
+            proof_token = request_snapshot.declared_proof
             connection = InflightRequest.claim(
-                obs, engine.max_inflight, engine.failure_cooldown_seconds
+                obs,
+                engine.max_inflight,
+                engine.failure_cooldown_seconds,
+                lambda engine=engine, obs=obs, token=proof_token: self.discovery.record_success(
+                    engine, obs, token
+                ),
+                lambda reason, engine=engine, obs=obs, token=proof_token: self.discovery.record_failure(
+                    engine, obs, reason, token
+                ),
+                requires_response_envelope=proof_token is not None,
             )
             if connection is None:
+                saturated.add(attempt_key)
                 continue
+            attempted.add(attempt_key)
             attempt = {**candidate, "status": "waiting"}
             event["attempts"].append(attempt)
             event.update(
@@ -272,7 +426,7 @@ class Proxy:
                 headers = {
                     "Content-Type": "application/json",
                     "Accept-Encoding": "identity",
-                    **self.discovery.headers(engine),
+                    **({"Authorization": f"Bearer {credential}"} if credential else {}),
                 }
                 req = self.http.build_request(
                     "POST",
@@ -286,20 +440,60 @@ class Proxy:
                 content = None
                 if upstream.status_code == 404:
                     content = await read_limited(upstream, engine.max_response_bytes)
+                    if engine.model_inventory_source == "declared":
+                        await self.discovery.record_failure(
+                            engine,
+                            obs,
+                            "Completion endpoint or declared model returned HTTP 404",
+                            proof_token,
+                        )
+                        terminal_contract_error = (
+                            404,
+                            "Completion endpoint or selected model returned HTTP 404",
+                        )
+                        await connection.release()
+                        continue
+                    # A catalog-backed engine can refresh its model list after
+                    # a selected ID disappears. Preserve the upstream 404 when
+                    # that catalog still advertises the exact ID: replaying a
+                    # caller request after a 404 risks duplicate work.
                     await self.discovery.refresh_engine(engine)
                     if obs.status == "available" and candidate["model"] not in {
-                        m["id"] for m in obs.models
+                        model["id"] for model in obs.models
                     }:
+                        await connection.release()
+                        continue
+                if upstream.status_code in {401, 403}:
+                    content = await read_limited(upstream, engine.max_response_bytes)
+                    if engine.model_inventory_source == "declared":
+                        await self.discovery.record_failure(
+                            engine,
+                            obs,
+                            f"Completion endpoint returned HTTP {upstream.status_code}",
+                            proof_token,
+                        )
+                        terminal_contract_error = (
+                            upstream.status_code,
+                            f"Completion endpoint returned HTTP {upstream.status_code}",
+                        )
                         await connection.release()
                         continue
                 if upstream.status_code in {408, 429, 500, 502, 503, 504}:
                     status = upstream.status_code
+                    if engine.model_inventory_source == "declared":
+                        await self.discovery.record_failure(
+                            engine,
+                            obs,
+                            f"Completion endpoint returned HTTP {status}",
+                            proof_token,
+                        )
+                    else:
+                        obs.circuit_until = time.time() + (
+                            engine.rate_limit_cooldown_seconds
+                            if status == 429
+                            else engine.failure_cooldown_seconds
+                        )
                     await connection.release()
-                    obs.circuit_until = time.time() + (
-                        engine.rate_limit_cooldown_seconds
-                        if status == 429
-                        else engine.failure_cooldown_seconds
-                    )
                     continue
                 event.update(
                     engine_id=engine.id,
@@ -320,9 +514,13 @@ class Proxy:
                     iterator = upstream.aiter_bytes()
                     first = await anext(iterator, None)
                     if first is None:
-                        obs.circuit_until = (
-                            time.time() + engine.failure_cooldown_seconds
+                        await self.discovery.record_failure(
+                            engine,
+                            obs,
+                            "Upstream stream ended before completion",
+                            proof_token,
                         )
+                        terminal_contract_error = (502, "Upstream stream ended before completion")
                         await connection.release()
                         continue
 
@@ -343,7 +541,28 @@ class Proxy:
                 code = upstream.status_code
                 content_type = upstream.headers.get("content-type", "application/json")
                 if upstream.is_success:
-                    obs.last_success = time.time()
+                    if not is_openai_completion_response(content):
+                        await self.discovery.record_failure(
+                            engine,
+                            obs,
+                            "Completion response did not match the OpenAI response format",
+                            proof_token,
+                        )
+                        await connection.release()
+                        # A 2xx response may already represent work upstream.
+                        # Never replay it through a fallback merely because its
+                        # response contract was wrong.
+                        await finish("failed", 502)
+                        return JSONResponse(
+                            {
+                                "error": {
+                                    "message": "Upstream completion response did not match the OpenAI response format"
+                                },
+                                "request_id": event["id"],
+                            },
+                            status_code=502,
+                        )
+                    await self.discovery.record_success(engine, obs, proof_token)
                 await finish("completed" if upstream.is_success else "failed", code)
                 await connection.release()
                 return Response(
@@ -364,8 +583,16 @@ class Proxy:
                 attempt.update(
                     error="Upstream connection failed or timed out", status="failed"
                 )
-                obs.circuit_until = time.time() + engine.failure_cooldown_seconds
-                obs.error = "Completion transport failed"
+                if engine.model_inventory_source == "declared":
+                    await self.discovery.record_failure(
+                        engine,
+                        obs,
+                        "Completion transport failed",
+                        proof_token,
+                    )
+                else:
+                    obs.circuit_until = time.time() + engine.failure_cooldown_seconds
+                    obs.error = "Completion transport failed"
                 await connection.release()
             except BaseException:
                 with CancelScope(shield=True):
@@ -374,6 +601,13 @@ class Proxy:
                     finally:
                         await connection.release()
                 raise
+        if terminal_contract_error:
+            code, message = terminal_contract_error
+            await finish("failed", code)
+            return JSONResponse(
+                {"error": {"message": message}, "request_id": event["id"]},
+                status_code=code,
+            )
         await finish("failed", 503)
         return JSONResponse(
             {
@@ -386,7 +620,14 @@ class Proxy:
             status_code=503,
         )
 
-    async def dispatch_connected(self, request: Request, payload: dict, client: Client):
+    async def dispatch_connected(
+        self,
+        request: Request,
+        payload: dict,
+        client: Client,
+        *,
+        completion_path: CompletionOperation | None = None,
+    ):
         # ASGI does not cancel non-streaming handlers when their caller leaves.
         # Cancel the upstream work as soon as that request is disconnected.
         async def disconnected():
@@ -394,7 +635,14 @@ class Proxy:
                 if (await request.receive())["type"] == "http.disconnect":
                     return
 
-        operation = asyncio.create_task(self.dispatch(request, payload, client))
+        operation = asyncio.create_task(
+            self.dispatch(
+                request,
+                payload,
+                client,
+                completion_path=completion_path,
+            )
+        )
         watcher = asyncio.create_task(disconnected())
         try:
             done, _ = await asyncio.wait(

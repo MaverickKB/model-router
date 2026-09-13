@@ -359,6 +359,8 @@ async def test_network_discovery_keeps_ip_transport_and_records_reported_hostnam
                                 "models": ["generic-chat"],
                                 "capabilities": ["text"],
                                 "protocol": "openai",
+                                "completion_paths": ["/chat/completions"],
+                                "registration_eligible": True,
                             }
                         ],
                     }

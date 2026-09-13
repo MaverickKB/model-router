@@ -329,8 +329,9 @@ def test_pre_route_gate_config_materializes_legacy_global_policy():
     raw["schema_version"] = 3
     raw["routes"][0].pop("require_caller_key")
     migrated = migrate_configuration(raw)
-    assert migrated["schema_version"] == 4
+    assert migrated["schema_version"] == 5
     assert migrated["routes"][0]["require_caller_key"] is True
+    assert migrated["engines"] == []
 
     raw["security"]["client_auth_enabled"] = False
     migrated = migrate_configuration(raw)

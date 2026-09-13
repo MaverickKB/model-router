@@ -14,7 +14,7 @@ Login and registration attempts are bounded. Successful operator bearer authenti
 
 ## Discovery and admission
 
-A fresh installation sends no discovery traffic. Enabling scanning authorizes the selected targets, range and budget. TCP connections themselves can affect connection-sensitive services. HTTP inspection additionally sends catalog requests and may send metadata POSTs for native runtime descriptions. HTTP requests can have side effects on printers and other non-HTTP services. Broad inspection must therefore be an explicit decision for a suitable scope. Open-port labels do not establish HTTP safety.
+A fresh installation sends no discovery traffic. Enabling scanning authorizes the selected targets, range and budget. TCP connections themselves can affect connection-sensitive services. HTTP inspection sends bounded credential-free GET requests for catalog and API-description metadata. HTTP requests can have side effects on printers and other non-HTTP services. Broad inspection must therefore be an explicit decision for a suitable scope. Open-port labels do not establish HTTP safety.
 
 Automatic registration is separate from observation. Enabling it trusts recognized endpoints in that scope to receive permitted client traffic. On a shared or hostile network, keep it disabled and connect reviewed engines explicitly. No unauthenticated health response or mDNS announcement proves a service's operator identity.
 

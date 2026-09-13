@@ -15,16 +15,63 @@ from gateway.network.report import read_report
 from gateway.schema import Client, Configuration, Discovery
 
 
+def completion_openapi(path="/v1/chat/completions"):
+    """The minimum request and response contract the router forwards."""
+    return {
+        "openapi": "3.1.0",
+        "paths": {
+            path: {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "model": {"type": "string"},
+                                        "messages": {"type": "array"},
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "OpenAI-compatible completion response",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {"choices": {"type": "array"}},
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_program_discovers_an_arbitrary_fixture_port_and_follows_model_replacement(
     tmp_path,
 ):
-    model_server = FastAPI()
+    model_server = FastAPI(openapi_url=None)
     hosted = {"id": "new-model-not-in-any-config"}
+
+    @model_server.get("/openapi.json")
+    async def openapi():
+        return completion_openapi()
 
     @model_server.get("/v1/models")
     async def catalog():
         return {"data": [{"id": hosted["id"], "owned_by": "fixture-serving-runtime"}]}
+
+    @model_server.post("/v1/chat/completions")
+    async def completion(payload: dict):
+        return {"choices": []}
 
     async with serving(model_server) as origin:
         port = int(origin.rsplit(":", 1)[1])
@@ -48,7 +95,11 @@ async def test_program_discovers_an_arbitrary_fixture_port_and_follows_model_rep
         assert not collector.report["hosts"]
         await collector.run(once=True)
         report = read_report(discovery_root)
-        service = report["hosts"][0]["services"][0]
+        service = next(
+            item
+            for item in report["hosts"][0]["services"]
+            if item.get("registration_eligible")
+        )
         assert service["base_url"] == origin + "/v1"
         assert service["models"][0]["id"] == hosted["id"]
         assert report["hosts"][0]["scan_complete"]
@@ -114,6 +165,7 @@ async def test_native_catalog_capabilities_and_non_chat_surfaces_do_not_become_c
             "/api/show",
             "/v1/models",
             "/models",
+            "/api/v1/models",
             "/openapi.json",
         }
         for _, path in calls
@@ -130,7 +182,11 @@ async def test_native_catalog_capabilities_and_non_chat_surfaces_do_not_become_c
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(speech)) as http:
         result = await inspect_service(http, "http://speech.test:54321")
-    assert result["capabilities"] == ["speech"]
+    assert result["status"] == "http_service"
+    assert result["models"] == [
+        {"id": "arbitrary-voice", "capabilities": [], "available": True}
+    ]
+    assert result["registration_eligible"] is False
 
 
 @pytest.mark.asyncio
@@ -249,7 +305,7 @@ async def test_disabled_admission_keeps_catalog_observable_and_network_view_curr
 
 
 @pytest.mark.asyncio
-async def test_declared_serving_surface_exposes_health_model_without_inventing_chat_catalog():
+async def test_non_completion_openapi_does_not_promote_health_text_to_model_inventory():
     async def handler(request):
         if request.url.path == "/openapi.json":
             return httpx.Response(
@@ -269,10 +325,8 @@ async def test_declared_serving_surface_exposes_health_model_without_inventing_c
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         result = await inspect_service(http, "http://speech.test:54321")
-    assert result["models"] == [
-        {"id": "observed-speech-model", "capabilities": ["transcription"]}
-    ]
-    assert result["status"] == "model_surface"
+    assert result["models"] == []
+    assert result["status"] == "http_service"
     assert result["base_url"] == ""
 
 
@@ -331,6 +385,8 @@ async def test_relay_provenance_is_visible_and_never_auto_registered(tmp_path):
     )
 
     async def handler(request):
+        if request.url.path == "/openapi.json":
+            return httpx.Response(200, json=completion_openapi())
         return (
             httpx.Response(200, json=declared)
             if request.url.path == "/v1/models"
@@ -341,7 +397,7 @@ async def test_relay_provenance_is_visible_and_never_auto_registered(tmp_path):
         result = await inspect_service(http, "http://relay.test:50123")
     assert result["status"] == "gateway"
     assert result["models"][0]["available"] is False
-    assert result["models"][0]["capabilities"] == []
+    assert result["models"][0]["capabilities"] == ["text", "streaming"]
     app = create_app(
         str(tmp_path), background=False, transport=httpx.MockTransport(handler)
     )
@@ -428,7 +484,10 @@ def test_anonymous_scan_cannot_replace_authenticated_catalog(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_live_catalog_response_survives_inconclusive_port_sweep(tmp_path):
+@pytest.mark.parametrize("service_status", ["model_service", "native_inventory"])
+async def test_live_model_inventory_survives_inconclusive_port_sweep(
+    tmp_path, service_status
+):
     import time
 
     collector = Collector(tmp_path)
@@ -439,7 +498,7 @@ async def test_live_catalog_response_survives_inconclusive_port_sweep(tmp_path):
         "services": [
             {
                 "port": 53191,
-                "status": "model_service",
+                "status": service_status,
                 "models": [{"id": "live-model"}],
                 "checked_at": 0,
                 "catalog_tracked": True,

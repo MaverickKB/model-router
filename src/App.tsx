@@ -18,6 +18,7 @@ import {
   NetworkView,
   networkIsScanning,
 } from "./network/NetworkView";
+import { engineDraftFromNetworkService } from "./network/adoption";
 import "./styles.css";
 import type { Client, Config, Engine, Job, Route } from "./types";
 import { useRouterState } from "./useRouterState";
@@ -324,7 +325,9 @@ export function App() {
                   {hasDiscoveryScope || networkIsScanning(state.network) ? (
                     <Radio
                       size={16}
-                      className={networkIsScanning(state.network) ? "pulse" : ""}
+                      className={
+                        networkIsScanning(state.network) ? "pulse" : ""
+                      }
                     />
                   ) : (
                     <ChevronRight size={16} />
@@ -456,6 +459,10 @@ export function App() {
                             capabilities: found.capabilities,
                             catalog_protocol: found.catalog_protocol,
                             source: "discovery",
+                            // Pending discovery is evidence, not a manual
+                            // OpenAI compatibility default. An empty list
+                            // keeps the editor in explicit-selection mode.
+                            completion_paths: found.completion_paths ?? [],
                           })
                         }
                       >
@@ -509,10 +516,7 @@ export function App() {
                       : ""}
                   </span>
                 </div>
-                <button
-                  className="text-button"
-                  onClick={configureDiscovery}
-                >
+                <button className="text-button" onClick={configureDiscovery}>
                   Configure discovery
                   <ChevronRight size={14} />
                 </button>
@@ -528,14 +532,15 @@ export function App() {
               scopeReady={hasDiscoveryScope}
               onConfigureDiscovery={configureDiscovery}
               onDiscover={() => action(() => post("/api/v1/discover"))}
-              onConnect={(service) =>
-                setEngine({
-                  ...newEngine(),
-                  name: service.name || service.origin,
-                  base_url: service.base_url || service.origin + "/v1",
-                  source: "manual",
-                })
+              onConnect={(service, hostName) =>
+                setEngine(engineDraftFromNetworkService(service, hostName))
               }
+              onOpenEngine={(engineId) => {
+                const connected = config.engines.find(
+                  (item) => item.id === engineId,
+                );
+                if (connected) setEngine(connected);
+              }}
             />
           )}
           {tab === "Routes" && (

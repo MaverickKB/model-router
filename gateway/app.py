@@ -20,10 +20,16 @@ from .engine_identity import MergeEngines
 from .engine_suggestions import suggestions
 from .identity import Identity
 from .network.collector import Collector
+from .network.protocols import inspect_services
 from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
 from .proxy import Proxy
-from .routing import client_reason, decide, route_requires_caller_key
+from .routing import (
+    client_reason,
+    decide,
+    engine_is_routable,
+    route_requires_caller_key,
+)
 from .schema import Configuration, Engine
 from .security.body_limit import BodyLimit
 from .store import Conflict, Store
@@ -384,7 +390,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
                 )
         seen = {row["id"] for row in data}
         for engine in views if client.allow_direct_models else []:
-            if engine["status"] != "available":
+            if not engine_is_routable(engine):
                 continue
             for model in engine["models"]:
                 if (
@@ -441,7 +447,65 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             raise HTTPException(
                 403, "Registration is outside the configured discovery scope"
             )
-        result = await discovery.discover_url(url, "registration")
+        existing = next(
+            (engine for engine in store.config().engines if url in engine.endpoint_urls),
+            None,
+        )
+        if existing:
+            return {
+                "ok": True,
+                "engine_id": existing.id,
+                "note": "Registration does not imply inference readiness",
+            }
+
+        parsed = urlsplit(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        surfaces = await inspect_services(discovery.http, origin)
+        surface = next(
+            (
+                item
+                for item in surfaces
+                if item.get("base_url") == url
+                and item.get("registration_eligible") is True
+                and isinstance(item.get("completion_paths"), list)
+                and item["completion_paths"]
+            ),
+            None,
+        )
+        if surface is None:
+            # The endpoint remains visible to the caller that asked to
+            # register it, but a catalog alone cannot manufacture a
+            # completion operation. The operator can review it manually.
+            discovery.pending[url] = {
+                "name": host,
+                "base_url": url,
+                "models": [],
+                "capabilities": [],
+                "completion_paths": [],
+                "catalog_protocol": "openai",
+                "seen_at": time.time(),
+            }
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "status": "pending",
+                    "note": (
+                        "Operator review is required because this endpoint did not "
+                        "declare a compatible OpenAI completion operation"
+                    ),
+                },
+                status_code=202,
+            )
+        result = await discovery.discover_url(
+            url,
+            "registration",
+            surface.get("capabilities"),
+            completion_paths=surface["completion_paths"],
+            name=surface.get("name"),
+            catalog_protocol=surface.get(
+                "catalog_adapter", surface.get("protocol", "openai")
+            ),
+        )
         if result:
             return {
                 "ok": True,
@@ -501,7 +565,15 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             ],
             "max_tokens": 64,
         }
-        return await proxy.dispatch_connected(request, payload, client)
+        # This management request has no OpenAI path of its own. It exercises
+        # the chat request body constructed above without changing the request
+        # object observed by identity and caller attribution.
+        return await proxy.dispatch_connected(
+            request,
+            payload,
+            client,
+            completion_path="/chat/completions",
+        )
 
     app.include_router(management, prefix="/api/v1")
     app.include_router(management, prefix="/api", include_in_schema=False)

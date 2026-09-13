@@ -12,8 +12,12 @@ flowchart LR
     JOB --> SWEEP[network/sweep.py: observations]
     SWEEP --> TCP[network/portable.py or scanner.py]
     TCP -->|addresses and open ports| SWEEP
-    SWEEP -->|approved HTTP inspection| PROTO[network/protocols.py]
-    PROTO --> ADAPT[adapters: catalog metadata]
+    SWEEP -->|approved HTTP inspection| TRANSPORT[network/transports.py: preserve every API surface]
+    TRANSPORT --> CATALOG[network/catalogs.py: bounded catalog and native inventory GETs]
+    TRANSPORT --> OAS[network/openapi.py: same-origin operation proof]
+    CATALOG --> PROTO[network/protocols.py: classify each API base]
+    OAS --> PROTO
+    PROTO --> ADAPT[adapters: registered catalog refresh]
     SWEEP --> REPORT[(discovery/network.json)]
     REPORT --> REG[discovery.py: scoped admission and refresh]
     DB --> REG
@@ -97,6 +101,10 @@ Select a source and a route to inspect access. Select a permission policy and a 
 | `gateway/adapters/` | Catalog dialects and bounded HTTP metadata. Native enrichment preserves the OpenAI catalog's identity when both exist. |
 | `gateway/network/collector.py` | Schedules identifiable jobs, accepts operator cancellation, and publishes failure/interruption status. |
 | `gateway/network/sweep.py` | Combines TCP observations with explicit HTTP inspection policy. Refreshes known service metadata independently of long sweeps. |
+| `gateway/network/transports.py` | Inspects approved HTTP(S) transports and preserves distinct API surfaces from one host instead of collapsing them into one row. |
+| `gateway/network/catalogs.py` | Makes bounded credential-free GET requests for catalog and native-inventory metadata, then normalizes only explicit model IDs. |
+| `gateway/network/openapi.py` | Resolves bounded same-origin OpenAPI evidence and proves each completion operation's JSON request and response contract separately. |
+| `gateway/network/protocols.py` | Combines catalog and operation evidence only within the same API base, classifies public, protected, native and incomplete surfaces, and never creates an engine itself. |
 | `gateway/network/portable.py` | Bounded TCP connect discovery across configured IPv4/IPv6 addresses and ports. Sends no application payload. |
 | `gateway/network/scanner.py` | Optional Nmap process ownership, validated arguments, XML parsing and termination. |
 | `gateway/network/local.py`, `announcements.py` | Optional local-socket and model-service announcement adapters. Missing permissions/dependencies stay visible. |
@@ -138,13 +146,13 @@ Primary candidates precede fallback candidates. Ordered routes follow the config
 
 Before each attempt, `Proxy.dispatch` reads current policy and identity again. `InflightRequest.claim` checks and increments capacity synchronously, without yielding. Each endpoint/model pair is attempted once. The connection owner releases capacity after completion, cancellation or failure. Stream cancellation shields final metadata and upstream cleanup from Starlette's repeated cancellation at await points. Capacity is released after the connection closes, including when closure raises. This follows [AnyIO's finalization contract](https://anyio.readthedocs.io/en/stable/cancellation.html#finalization).
 
-Selected transient failures can try another permitted candidate before any stream has been delivered. A 404 causes a catalog refresh; retry is justified only when that fresh catalog shows the requested model disappeared. Other 404 responses pass through. Once streaming begins, failure ends the stream with an error and never splices in a backup answer. A complete SSE `[DONE]` event records completion even when the client immediately closes the connection; an earlier disconnect remains cancellation. Final outcome persistence and connection cleanup are shielded together. Non-stream responses and management requests have size bounds. Cooldowns and upstream response limits are operator settings.
+Selected transient failures can try another permitted candidate before any stream has been delivered. A 404 causes a catalog refresh; retry is justified only when that fresh catalog shows the requested model disappeared. Other 404 responses pass through. Once streaming begins, failure ends the stream with an error and never splices in a backup answer. A stream records a declared-engine health proof only after an OpenAI response envelope and terminal SSE `[DONE]` event; an earlier disconnect or transport interruption clears the prior proof. Final outcome persistence and connection cleanup are shielded together. Non-stream responses and management requests have size bounds. Cooldowns and upstream response limits are operator settings.
 
 ## Discovery and trust
 
 The collector reads `policy.json` and writes `network.json` under the discovery directory. It never changes routes or credentials. The gateway reads observations, validates each advertised URL against current discovery scope, probes its catalog, and applies registration policy. A report-file entry alone cannot grant availability.
 
-Open ports and HTTP inspection have separate policies. Complete TCP coverage can be enabled independently of inspection. HTTP requests go only to approved ports unless the operator enables broad inspection. Unknown, protected and non-chat services remain visible. Nmap port labels never prove a protocol. Router provenance uses the explicit catalog extension `model_serving: {version: 1, kind: "router"}`; owner names have no provenance authority. Undeclared relays cannot be proven to be backing engines, so automatic registration requires a trusted operator-selected scope.
+Open ports and HTTP inspection have separate policies. Complete TCP coverage can be enabled independently of inspection. HTTP requests go only to approved ports unless the operator enables broad inspection. Unknown, protected and non-chat services remain visible. Nmap port labels never prove a protocol. Router provenance uses the explicit catalog extension `model_serving: {version: 1, kind: "router"}`; owner names have no provenance authority. A discovered engine can be registered automatically only when one exact API base has both a readable catalog and a public, structurally compatible completion operation. Protected, native and incomplete services stay in the report with their observed API base and a manual review path.
 
 Every job has an ID and a state. Overlapping Discover requests return the queued/running job rather than a false new success. Cancellation and policy changes end the current job. A new job rechecks its configured scope; there are no partial-report resume heuristics. Previous observations retain timestamps during a sweep. A filtered or silent address is inconclusive, not proof of absence.
 

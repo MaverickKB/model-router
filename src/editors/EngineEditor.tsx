@@ -11,10 +11,55 @@ import {
   toggle,
 } from "../components";
 import { requireUnchanged } from "../editor-state";
-import type { Config, Engine, Model, State } from "../types";
+import {
+  OPENAI_COMPLETION_PATHS,
+  type CompletionPath,
+  type Config,
+  type Engine,
+  type Model,
+  type State,
+} from "../types";
 import { engineUrls } from "../engine-addresses";
 
 type SaveConfig = (config: Config) => Promise<Config>;
+
+function normalizedDeclaredModels(models: string[]): string[] {
+  return [...new Set(models.map((model) => model.trim()).filter(Boolean))];
+}
+
+function isExactModelId(model: string): boolean {
+  return !/[?*\[\]]/.test(model);
+}
+
+function exactModelsForDeclaredInventory(engine: Engine): string[] {
+  return normalizedDeclaredModels([
+    ...(engine.declared_models || []),
+    ...engine.model_patterns,
+  ]).filter(isExactModelId);
+}
+
+function catalogModelPatternsFor(engine: Engine): string[] {
+  if (engine.kind === "cloud") return [];
+  return ["*"];
+}
+
+function normalizedCompletionPaths(
+  paths: readonly string[] | undefined,
+): CompletionPath[] {
+  if (paths === undefined) return [...OPENAI_COMPLETION_PATHS];
+  const selected = new Set(paths);
+  return OPENAI_COMPLETION_PATHS.filter((path) => selected.has(path));
+}
+
+function toggleCompletionPath(
+  paths: CompletionPath[],
+  path: CompletionPath,
+): CompletionPath[] {
+  return paths.includes(path)
+    ? paths.filter((value) => value !== path)
+    : [...paths, path];
+}
+
 export function EngineEditor({
   initial,
   models,
@@ -28,7 +73,10 @@ export function EngineEditor({
   save: SaveConfig;
   onClose: () => void;
 }) {
-  const [draft, set] = useState(initial),
+  const [draft, set] = useState<Engine>(() => ({
+      ...initial,
+      completion_paths: normalizedCompletionPaths(initial.completion_paths),
+    })),
     [key, setKey] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -48,8 +96,46 @@ export function EngineEditor({
       Object.entries(values).map(([from, to]) => ({ field, from, to })),
     ),
   );
+  const usesDeclaredInventory = draft.model_inventory_source === "declared";
+  const completionPathProblem = !draft.completion_paths.length
+    ? "Select at least one OpenAI completion operation."
+    : "";
+  const declaredModels = normalizedDeclaredModels(draft.declared_models || []);
+  const declaredInventoryProblem = !declaredModels.length
+    ? "Add at least one exact model ID before connecting this endpoint."
+    : declaredModels.some((model) => !isExactModelId(model))
+      ? "Declared model IDs are exact names. Wildcards and patterns are not allowed here."
+      : "";
+  function setModelInventorySource(
+    model_inventory_source: Engine["model_inventory_source"],
+  ) {
+    if (model_inventory_source === "declared") {
+      const nextDeclaredModels = exactModelsForDeclaredInventory(draft);
+      set({
+        ...draft,
+        model_inventory_source,
+        declared_models: nextDeclaredModels,
+        model_patterns: nextDeclaredModels,
+      });
+      return;
+    }
+    set({
+      ...draft,
+      model_inventory_source,
+      declared_models: [],
+      model_patterns: catalogModelPatternsFor(draft),
+    });
+  }
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (completionPathProblem) {
+      setError(completionPathProblem);
+      return;
+    }
+    if (usesDeclaredInventory && declaredInventoryProblem) {
+      setError(declaredInventoryProblem);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -63,17 +149,28 @@ export function EngineEditor({
         config.engines.find((e) => e.id === draft.id),
         "engine",
       );
+      const savedDraft: Engine = usesDeclaredInventory
+        ? {
+            ...draft,
+            declared_models: declaredModels,
+            // Model patterns are the existing routing allowlist. For a
+            // declared inventory they mirror the exact operator-supplied IDs,
+            // never a wildcard.
+            model_patterns: declaredModels,
+          }
+        : draft;
       const saved = await save({
         ...config,
         engines: [
           ...config.engines.filter((e) => e.id !== draft.id),
           {
-            ...draft,
+            ...savedDraft,
             value_mappings,
             name_source:
-              baseline && draft.name !== baseline.name
+              savedDraft.name_source === "discovered" &&
+              savedDraft.name !== initial.name
                 ? "operator"
-                : draft.name_source,
+                : savedDraft.name_source,
           },
         ],
       });
@@ -86,7 +183,11 @@ export function EngineEditor({
           body: JSON.stringify({ key }),
         });
       await post(`/api/v1/engines/${draft.id}/refresh`);
-      if (draft.kind === "cloud" && draft.model_patterns.length === 0) {
+      if (
+        savedDraft.kind === "cloud" &&
+        savedDraft.model_patterns.length === 0 &&
+        !usesDeclaredInventory
+      ) {
         const latest = await api<State>("/api/v1/state");
         setCatalog(latest.engines.find((e) => e.id === draft.id)?.models || []);
         setSelectingModels(true);
@@ -188,7 +289,10 @@ export function EngineEditor({
               set({
                 ...draft,
                 kind: "local",
-                model_patterns: ["*"],
+                model_patterns:
+                  draft.model_inventory_source === "declared"
+                    ? normalizedDeclaredModels(draft.declared_models || [])
+                    : ["*"],
                 unsupported_parameters: [],
               })
             }
@@ -204,7 +308,10 @@ export function EngineEditor({
               set({
                 ...draft,
                 kind: "cloud",
-                model_patterns: [],
+                model_patterns:
+                  draft.model_inventory_source === "declared"
+                    ? normalizedDeclaredModels(draft.declared_models || [])
+                    : [],
                 unsupported_parameters: ["chat_template_kwargs"],
               })
             }
@@ -298,6 +405,102 @@ export function EngineEditor({
             }
           />
         </Field>
+        <section className="field" aria-labelledby="supported-operations-label">
+          <span id="supported-operations-label">
+            Supported OpenAI operations
+          </span>
+          <div className="choice-line">
+            <Choice
+              checked={draft.completion_paths.includes("/chat/completions")}
+              onClick={() =>
+                set({
+                  ...draft,
+                  completion_paths: toggleCompletionPath(
+                    draft.completion_paths,
+                    "/chat/completions",
+                  ),
+                })
+              }
+            >
+              Chat completions (/chat/completions)
+            </Choice>
+            <Choice
+              checked={draft.completion_paths.includes("/completions")}
+              onClick={() =>
+                set({
+                  ...draft,
+                  completion_paths: toggleCompletionPath(
+                    draft.completion_paths,
+                    "/completions",
+                  ),
+                })
+              }
+            >
+              Text completions (/completions)
+            </Choice>
+          </div>
+          <small>
+            Requests are sent only to the selected operation. Discovery selects
+            only operations it proved; manual engines normally support both
+            unless their API documentation says otherwise.
+          </small>
+        </section>
+        {completionPathProblem && (
+          <p className="hint declared-model-inventory-problem">
+            {completionPathProblem}
+          </p>
+        )}
+        <Field
+          label="Model identities"
+          hint={
+            usesDeclaredInventory
+              ? "Use this when the endpoint accepts OpenAI-compatible completions but does not publish a model catalog."
+              : "Use the endpoint's model catalog when it publishes one."
+          }
+        >
+          <Select
+            label="Model identities"
+            value={draft.model_inventory_source}
+            onChange={(value) =>
+              setModelInventorySource(value as Engine["model_inventory_source"])
+            }
+          >
+            <option value="catalog">Published API catalog</option>
+            <option value="declared">Operator-declared exact IDs</option>
+          </Select>
+        </Field>
+        {usesDeclaredInventory && (
+          <section className="declared-model-inventory">
+            <Field
+              label="Declared model IDs"
+              hint="Enter the exact model IDs this completion endpoint accepts. Patterns and * are not accepted here."
+            >
+              <ListInput
+                values={draft.declared_models || []}
+                onValues={(declared_models) => {
+                  const nextDeclaredModels =
+                    normalizedDeclaredModels(declared_models);
+                  set({
+                    ...draft,
+                    declared_models: nextDeclaredModels,
+                    model_patterns: nextDeclaredModels,
+                  });
+                }}
+                placeholder="Exact model IDs, separated by commas"
+              />
+            </Field>
+            <p className="hint">
+              {declaredModels.length
+                ? "These operator-declared model IDs remain pending their first successful request."
+                : "Enter the exact model IDs this endpoint accepts. They remain pending their first successful request."}
+            </p>
+            {declaredInventoryProblem && (
+              <p className="hint declared-model-inventory-problem">
+                {declaredInventoryProblem}
+              </p>
+            )}
+          </section>
+        )}
         <details className="advanced">
           <summary>
             <SlidersHorizontal size={15} />
@@ -577,7 +780,14 @@ export function EngineEditor({
           <button type="button" className="subtle" onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" disabled={busy}>
+          <button
+            className="primary"
+            disabled={
+              busy ||
+              Boolean(usesDeclaredInventory && declaredInventoryProblem) ||
+              Boolean(completionPathProblem)
+            }
+          >
             {busy ? "Connecting…" : exists ? "Save changes" : "Connect engine"}
           </button>
         </footer>

@@ -9,8 +9,216 @@ import {
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { timeLabel } from "../components";
+import {
+  isCompletionEndpoint,
+  isNativeInventory,
+  isProtectedCompletionEndpoint,
+  isVerifiedCatalog,
+  modelInventoryEvidenceLabel,
+  needsManualEndpointReview,
+  needsManualTransportEntry,
+  serviceKindLabel,
+} from "./service-classification";
 import "./network.css";
-import type { NetworkReport, NetworkService } from "./types";
+import type { NetworkHost, NetworkReport, NetworkService } from "./types";
+
+const networkFilters = [
+  "Responding",
+  "Verified catalogs",
+  "Completion endpoints",
+  "All addresses",
+] as const;
+
+function catalogAttemptLabel(
+  attempt: NonNullable<NetworkService["catalog_attempts"]>[number],
+): string {
+  const target = attempt.path || attempt.url || "Catalog endpoint";
+  if (attempt.status !== undefined && attempt.status !== null) {
+    return `${target}: ${typeof attempt.status === "number" ? `HTTP ${attempt.status}` : attempt.status}`;
+  }
+  return attempt.detail ? `${target}: ${attempt.detail}` : target;
+}
+
+function documentedApiBase(service: NetworkService): string {
+  return (
+    service.observed_base_url ||
+    service.base_url ||
+    service.compatible_base_url ||
+    ""
+  );
+}
+
+function observedApiBase(service: NetworkService): string {
+  return documentedApiBase(service) || service.origin;
+}
+
+function surfaceKey(service: NetworkService): string {
+  return service.surface_id || `${service.origin}|${observedApiBase(service)}`;
+}
+
+function catalogCoverageLabel(count: number): string {
+  return `${count} documented catalog path${count === 1 ? "" : "s"} not checked`;
+}
+
+function modelEvidence(
+  service: NetworkService,
+  model: NetworkService["models"][number],
+): string {
+  const evidence = [
+    service.status === "model_surface"
+      ? "Published identity, not a catalog"
+      : needsManualTransportEntry(service)
+        ? modelInventoryEvidenceLabel(service)
+        : "",
+    ...model.capabilities,
+    !model.capabilities.includes("text")
+      ? "Inventory only, chat routing unavailable"
+      : "",
+    model.available === false
+      ? `Unavailable: ${model.availability_reason || "reported by service"}`
+      : "",
+    model.loaded === true
+      ? "Loaded"
+      : model.loaded === false
+        ? "Available on disk"
+        : "",
+  ];
+  return evidence.filter(Boolean).join(" · ");
+}
+
+function CatalogEvidence({
+  service,
+  onConfigureDiscovery,
+}: {
+  service: NetworkService;
+  onConfigureDiscovery: () => void;
+}) {
+  const apiBase = documentedApiBase(service);
+  const observedEndpoint = observedApiBase(service);
+  return (
+    <dl>
+      <div>
+        <dt>{apiBase ? "Observed API base" : "Service origin"}</dt>
+        <dd>{observedEndpoint}</dd>
+      </div>
+      {apiBase && apiBase !== service.origin && (
+        <div>
+          <dt>Discovered service</dt>
+          <dd>{service.origin}</dd>
+        </div>
+      )}
+      {!service.compatible_base_url && (
+        <div>
+          <dt>Routing proof</dt>
+          <dd>
+            No compatible OpenAI API base was derived. Review a documented
+            endpoint manually before connecting it.
+          </dd>
+        </div>
+      )}
+      {service.catalog_attempts?.length ? (
+        <div>
+          <dt>Catalog checks</dt>
+          <dd>
+            <ul>
+              {service.catalog_attempts.map((attempt, index) => (
+                <li
+                  key={`${attempt.path || attempt.url || "catalog"}-${index}`}
+                >
+                  {catalogAttemptLabel(attempt)}
+                </li>
+              ))}
+            </ul>
+          </dd>
+        </div>
+      ) : null}
+      {(service.catalog_paths_unprobed ?? 0) > 0 && (
+        <div>
+          <dt>Coverage limit</dt>
+          <dd>
+            <span>
+              {catalogCoverageLabel(service.catalog_paths_unprobed ?? 0)}. The
+              inspector did not conclude that those paths have no catalog.
+            </span>{" "}
+            <button
+              className="text-button"
+              onClick={() => onConfigureDiscovery()}
+            >
+              Review discovery coverage
+            </button>
+          </dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
+function ServiceAction({
+  service,
+  hostName,
+  onConnect,
+  onOpenEngine,
+}: {
+  service: NetworkService;
+  hostName: NetworkHost["name"];
+  onConnect: (service: NetworkService, hostName: NetworkHost["name"]) => void;
+  onOpenEngine?: (engineId: string) => void;
+}) {
+  if (service.engine_id) {
+    return onOpenEngine ? (
+      <button onClick={() => onOpenEngine(service.engine_id!)}>
+        Review connected engine
+      </button>
+    ) : null;
+  }
+  if (service.status === "model_service") {
+    return (
+      <button onClick={() => onConnect(service, hostName)}>
+        Review and connect
+      </button>
+    );
+  }
+  if (isProtectedCompletionEndpoint(service)) {
+    return (
+      <button onClick={() => onConnect(service, hostName)}>
+        <LockKeyhole size={14} />
+        Configure access
+      </button>
+    );
+  }
+  if (service.status === "model_surface") {
+    return (
+      <button onClick={() => onConnect(service, hostName)}>
+        {service.compatible_base_url
+          ? "Review and connect"
+          : "Review endpoint manually"}
+      </button>
+    );
+  }
+  if (service.status === "authentication_required") {
+    return (
+      <button onClick={() => onConnect(service, hostName)}>
+        <LockKeyhole size={14} />
+        Review access requirements
+      </button>
+    );
+  }
+  if (needsManualEndpointReview(service)) {
+    return (
+      <button onClick={() => onConnect(service, hostName)}>
+        Review endpoint manually
+      </button>
+    );
+  }
+  if (service.status === "inspection_required") {
+    return (
+      <button onClick={() => onConnect(service, hostName)}>
+        Review endpoint
+      </button>
+    );
+  }
+  return null;
+}
 
 export function networkIsScanning(report: NetworkReport): boolean {
   return [
@@ -46,8 +254,18 @@ export function NetworkSummary({
   onOpen: () => void;
 }) {
   const services = report.hosts.flatMap((h) => h.services);
-  const models = services
-    .filter((s) => s.status !== "gateway")
+  const catalogModels = services
+    .filter((s) => s.status === "model_service")
+    .flatMap((s) => s.models);
+  const completionEndpoints = services.filter(isCompletionEndpoint);
+  const nativeInventoryModels = services
+    .filter(isNativeInventory)
+    .flatMap((s) => s.models);
+  const publishedInventoryModels = services
+    .filter(
+      (service) =>
+        needsManualTransportEntry(service) && !isNativeInventory(service),
+    )
     .flatMap((s) => s.models);
   return (
     <button className="network-summary" onClick={onOpen}>
@@ -60,8 +278,17 @@ export function NetworkSummary({
               (h) => h.scope === "network" && h.status === "up",
             ).length}{" "}
           responding addresses · {report.counts?.services ?? services.length}{" "}
-          observed services · {report.counts?.models ?? models.length} model
-          listings
+          observed services · {report.counts?.models ?? catalogModels.length}{" "}
+          catalog model listings
+          {completionEndpoints.length
+            ? ` · ${completionEndpoints.length} completion endpoint${completionEndpoints.length === 1 ? "" : "s"}`
+            : ""}
+          {nativeInventoryModels.length
+            ? ` · ${nativeInventoryModels.length} native model identit${nativeInventoryModels.length === 1 ? "y" : "ies"}`
+            : ""}
+          {publishedInventoryModels.length
+            ? ` · ${publishedInventoryModels.length} published model identit${publishedInventoryModels.length === 1 ? "y" : "ies"}, transport unverified`
+            : ""}
         </small>
       </span>
       <ChevronRight size={17} />
@@ -75,18 +302,21 @@ export function NetworkView({
   onDiscover,
   onConfigureDiscovery,
   onConnect,
+  onOpenEngine,
 }: {
   report: NetworkReport;
   scopeReady: boolean;
   onDiscover: () => void;
   onConfigureDiscovery: () => void;
-  onConnect: (service: NetworkService) => void;
+  onConnect: (service: NetworkService, hostName: NetworkHost["name"]) => void;
+  onOpenEngine?: (engineId: string) => void;
 }) {
   const [report, setReport] = useState(summary);
   const [page, setPage] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("Responding");
+  const [filter, setFilter] =
+    useState<(typeof networkFilters)[number]>("Responding");
   const [expanded, setExpanded] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -128,24 +358,30 @@ export function NetworkView({
   const hosts = report.hosts.filter(
     (h) =>
       `${h.name} ${h.address} ${h.services.flatMap((s) => s.models.map((m) => m.id)).join(" ")}`
+        .concat(
+          " ",
+          h.services
+            .map((service) => `${observedApiBase(service)} ${service.origin}`)
+            .join(" "),
+        )
         .toLowerCase()
         .includes(search.toLowerCase()) &&
       (filter === "All addresses" ||
         (filter === "Responding" && h.status === "up") ||
-        (filter === "Model services" &&
-          h.services.some(
-            (s) =>
-              s.status === "model_service" ||
-              s.status === "model_surface" ||
-              s.status === "gateway",
-          ))),
+        (filter === "Verified catalogs" &&
+          h.services.some(isVerifiedCatalog)) ||
+        (filter === "Completion endpoints" &&
+          h.services.some(isCompletionEndpoint))),
   );
   return (
     <section className="network-view">
       <div className="section-heading">
         <div>
           <h1>Your network</h1>
-          <p>Serving models and the services found around them.</p>
+          <p>
+            Serving endpoints and published model inventories found in your
+            discovery scope.
+          </p>
         </div>
         {running && (
           <button
@@ -174,7 +410,10 @@ export function NetworkView({
       </div>
       <div className="network-progress">
         {!scopeReady && (
-          <div className="network-setup" aria-labelledby="discovery-scope-heading">
+          <div
+            className="network-setup"
+            aria-labelledby="discovery-scope-heading"
+          >
             <Radio size={18} />
             <div>
               <strong id="discovery-scope-heading">
@@ -231,7 +470,7 @@ export function NetworkView({
       </div>
       <div className="network-toolbar">
         <div className="filter-tabs">
-          {["Responding", "Model services", "All addresses"].map((value) => (
+          {networkFilters.map((value) => (
             <button
               key={value}
               className={filter === value ? "selected" : ""}
@@ -261,18 +500,51 @@ export function NetworkView({
         {hosts.map((host) => {
           const open = expanded === host.address;
           const relays = host.services.filter((s) => s.status === "gateway");
-          const models = host.services
-            .filter((s) => s.status !== "gateway")
+          const catalogServices = host.services.filter(isVerifiedCatalog);
+          const completionEndpoints =
+            host.services.filter(isCompletionEndpoint);
+          const catalogModels = host.services
+            .filter((s) => s.status === "model_service")
+            .flatMap((s) => s.models);
+          const manualTransportInventoryModels = host.services
+            .filter(needsManualTransportEntry)
+            .flatMap((s) => s.models);
+          const nativeInventoryModels = host.services
+            .filter(isNativeInventory)
+            .flatMap((s) => s.models);
+          const publishedInventoryModels = host.services
+            .filter(
+              (service) =>
+                needsManualTransportEntry(service) &&
+                !isNativeInventory(service),
+            )
             .flatMap((s) => s.models);
           const visibleServices =
-            filter === "Model services"
-              ? host.services.filter(
-                  (s) =>
-                    ["model_service", "model_surface", "gateway"].includes(
-                      s.status,
-                    ) || s.catalog_tracked,
-                )
-              : host.services;
+            filter === "Verified catalogs"
+              ? host.services.filter(isVerifiedCatalog)
+              : filter === "Completion endpoints"
+                ? host.services.filter(isCompletionEndpoint)
+                : host.services;
+          const hostInventory = [
+            catalogModels.length
+              ? `${catalogModels.length} catalog model${catalogModels.length === 1 ? "" : "s"}`
+              : "",
+            nativeInventoryModels.length
+              ? `${nativeInventoryModels.length} native model identit${nativeInventoryModels.length === 1 ? "y" : "ies"}`
+              : "",
+            publishedInventoryModels.length
+              ? `${publishedInventoryModels.length} published model identit${publishedInventoryModels.length === 1 ? "y" : "ies"}, transport unverified`
+              : "",
+            completionEndpoints.length
+              ? `${completionEndpoints.length} completion endpoint${completionEndpoints.length === 1 ? "" : "s"}`
+              : "",
+            !catalogModels.length &&
+            !nativeInventoryModels.length &&
+            !completionEndpoints.length &&
+            relays.length
+              ? `${relays.length} routing service catalog${relays.length === 1 ? "" : "s"}`
+              : "",
+          ].filter(Boolean);
           return (
             <article className="network-host" key={host.address}>
               <button
@@ -293,14 +565,11 @@ export function NetworkView({
                   </small>
                 </span>
                 <span className="host-count">
-                  {models.length
-                    ? `${models.length} model${models.length === 1 ? "" : "s"}`
-                    : relays.length
-                      ? `${relays.length} relay catalogs`
-                      : `${host.ports.length} open ports`}
+                  {hostInventory.join(" · ") ||
+                    `${host.ports.length} open ports`}
                   <small>
-                    {relays.length && models.length
-                      ? `${relays.length} relay catalogs · `
+                    {relays.length && catalogServices.length
+                      ? `${relays.length} routing service catalog${relays.length === 1 ? "" : "s"} · `
                       : ""}
                     {host.status !== "up"
                       ? "Address checked"
@@ -311,56 +580,108 @@ export function NetworkView({
                 </span>
                 {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
               </button>
-              {models.length > 0 && !open && (
-                <div className="network-model-preview">
-                  {models.map((m, i) => (
-                    <span key={m.id + i}>{m.id}</span>
-                  ))}
-                </div>
-              )}
+              {[...catalogModels, ...manualTransportInventoryModels].length >
+                0 &&
+                !open && (
+                  <div className="network-model-preview">
+                    {[...catalogModels, ...manualTransportInventoryModels].map(
+                      (m, i) => (
+                        <span key={m.id + i}>{m.id}</span>
+                      ),
+                    )}
+                  </div>
+                )}
               {open && (
                 <div className="host-services">
                   {visibleServices.map((service) => (
-                    <div className="network-service" key={service.origin}>
+                    <div className="network-service" key={surfaceKey(service)}>
                       <div className="service-heading">
                         <span>
-                          <strong>{service.origin}</strong>
+                          <strong>{observedApiBase(service)}</strong>
                           <small>
                             {service.protocol || "Protocol unconfirmed"} ·{" "}
-                            {service.status === "gateway"
-                              ? "Relay catalog"
-                              : service.status.replaceAll("_", " ")}
+                            {serviceKindLabel(service)}
                           </small>
+                          {observedApiBase(service) !== service.origin && (
+                            <small>Discovered service {service.origin}</small>
+                          )}
+                          {service.engine_id && (
+                            <small>
+                              Connected engine{" "}
+                              {service.engine_name || service.engine_id}
+                            </small>
+                          )}
                           <small>Checked {timeLabel(service.checked_at)}</small>
                         </span>
-                        {[
-                          "authentication_required",
-                          "inspection_required",
-                        ].includes(service.status) && (
-                          <button onClick={() => onConnect(service)}>
-                            <LockKeyhole size={14} />
-                            {service.status === "authentication_required"
-                              ? "Configure access"
-                              : "Connect engine"}
-                          </button>
-                        )}
+                        <ServiceAction
+                          service={service}
+                          hostName={host.name}
+                          onConnect={onConnect}
+                          onOpenEngine={onOpenEngine}
+                        />
                       </div>
-                      {service.models.map((model) => (
-                        <div className="network-model" key={model.id}>
+                      {service.status === "model_surface" && (
+                        <div className="discovery-evidence">
+                          <p>
+                            This API base documents a compatible JSON completion
+                            request and OpenAI choices response, but did not
+                            publish a readable model catalog. It is not
+                            registered automatically.
+                          </p>
+                          <CatalogEvidence
+                            service={service}
+                            onConfigureDiscovery={onConfigureDiscovery}
+                          />
+                        </div>
+                      )}
+                      {service.status === "model_service" &&
+                        (service.catalog_paths_unprobed ?? 0) > 0 && (
+                          <div className="discovery-evidence">
+                            <CatalogEvidence
+                              service={service}
+                              onConfigureDiscovery={onConfigureDiscovery}
+                            />
+                          </div>
+                        )}
+                      {isProtectedCompletionEndpoint(service) && (
+                        <div className="discovery-evidence">
+                          <p>
+                            This API base documents a compatible JSON completion
+                            request and OpenAI choices response, but credentials
+                            are required before its model catalog can be read.
+                            It is not registered automatically.
+                          </p>
+                          <CatalogEvidence
+                            service={service}
+                            onConfigureDiscovery={onConfigureDiscovery}
+                          />
+                        </div>
+                      )}
+                      {needsManualEndpointReview(service) && (
+                        <div className="discovery-evidence">
+                          <p>
+                            {isNativeInventory(service)
+                              ? "This API base published a native model inventory"
+                              : service.models.length
+                                ? "This API base published model identities"
+                                : "This API base was observed"}
+                            , but discovery did not prove a compatible JSON
+                            completion request and OpenAI choices response. It
+                            is not registered automatically.
+                          </p>
+                          <CatalogEvidence
+                            service={service}
+                            onConfigureDiscovery={onConfigureDiscovery}
+                          />
+                        </div>
+                      )}
+                      {service.models.map((model, modelIndex) => (
+                        <div
+                          className="network-model"
+                          key={`${surfaceKey(service)}-${model.id}-${modelIndex}`}
+                        >
                           <strong>{model.id}</strong>
-                          <span>
-                            {model.capabilities.join(" · ")}
-                            {!model.capabilities.includes("text") &&
-                              " · Inventory only, chat routing unavailable"}
-                            {model.available === false
-                              ? ` · Unavailable: ${model.availability_reason || "reported by service"}`
-                              : ""}
-                            {model.loaded === true
-                              ? " · Loaded"
-                              : model.loaded === false
-                                ? " · Available on disk"
-                                : ""}
-                          </span>
+                          <span>{modelEvidence(service, model)}</span>
                         </div>
                       ))}
                       {service.detail && <p>{service.detail}</p>}

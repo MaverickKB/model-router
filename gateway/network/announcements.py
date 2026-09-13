@@ -10,8 +10,9 @@ except ImportError:
 
 
 def endpoint(address: str, port: int) -> str:
+    """Return the advertised transport origin without assuming an API path."""
     authority = f"[{address}]" if ":" in address else address
-    return f"http://{authority}:{port}/v1"
+    return f"http://{authority}:{port}"
 
 
 async def listen(candidates, trusted_host, capacity):
