@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fresh installs leave operator sign-in off. An operator key is created only when the owner enables sign-in or sets `MODEL_ROUTER_ADMIN_TOKEN`.
+- Schema v5: account levels and account settings (disabled by default); account storage.
 
 ## 0.3.0
 

@@ -36,6 +36,8 @@ Restore the matching key before starting the router against a restored database,
 
 Operator and new client keys use Argon2id verifiers. Client lookup uses a keyed digest. Existing high-entropy SHA-256 client verifiers migrate when their unchanged keys are next used. Old external backups may still contain legacy plaintext credentials; this migration cannot erase independent backups. Bootstrap operator keys are local owner-only files, and are removed when the operator rotates the key through Settings.
 
+User account keys use the same keyed lookup index and Argon2id verifiers as client keys, so losing the encryption key also breaks account-key authentication. Account password verifiers are Argon2id and do not depend on the encryption key. Activation links and portal sessions are stored only as SHA-256 digests. Usage windows hold token counts, never request or response content. A schema-4 release refuses to start against a schema-5 database rather than dropping account policy; recover a downgrade by restoring the pre-upgrade backup.
+
 Upstream TLS verification stays enabled. Use endpoints with certificates trusted by the server. HTTP and SSH-tunnel access are suitable only within their intended trusted transport boundary. Provider credentials are sent only to their configured endpoint, never to fallback engines. Client credentials are never forwarded upstream. Request history stores route metadata, not prompts, responses or credentials.
 
 Metadata and non-stream responses have size bounds. The service enforces per-engine admission within one process and stops upstream work when a caller disconnects. It does not provide a multi-process or multi-host admission coordinator. Streaming failover stops once output has reached the client.

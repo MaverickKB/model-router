@@ -209,6 +209,34 @@ class Client(NamedRecord):
     source_networks: list[str] = Field(default_factory=list)
 
 
+class TokenBudget(Record):
+    max_tokens: int = Field(ge=1, le=10_000_000_000)
+    window_seconds: int = Field(ge=60, le=30 * 86400)
+
+
+class AccountLevel(NamedRecord):
+    id: str = Field(default_factory=identifier)
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    # Same names and defaults as Client, so a principal derived from a level
+    # is a field copy rather than a translation.
+    route_names: list[str] = Field(default_factory=lambda: ["auto"])
+    engine_ids: list[str] = Field(default_factory=list)
+    model_patterns: list[str] = Field(default_factory=lambda: ["*"])
+    allow_cloud: bool = False
+    allow_direct_models: bool = False
+    # None means unlimited.
+    token_budget: TokenBudget | None = None
+    max_concurrency: int | None = Field(default=None, ge=1, le=10000)
+
+
+class AccountsSettings(Record):
+    enabled: bool = False
+    # Inert unless enabled is also true.
+    device_registration_enabled: bool = False
+    session_hours: int = Field(default=168, ge=1, le=720)
+
+
 class Discovery(Record):
     enabled: bool = False
     targets: list[str] = Field(default_factory=list)
@@ -263,9 +291,9 @@ class Security(Record):
 
 
 class Configuration(Record):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     # Installation provenance for Settings copy; never changes access or routing.
-    upgraded_from_schema: int | None = Field(default=None, ge=0, lt=4)
+    upgraded_from_schema: int | None = Field(default=None, ge=0, lt=5)
     security: Security = Field(default_factory=Security)
     revision: int = 0
     engines: list[Engine] = Field(default_factory=list)
@@ -276,6 +304,8 @@ class Configuration(Record):
     )
     clients: list[Client] = Field(default_factory=list)
     discovery: Discovery = Field(default_factory=Discovery)
+    accounts: AccountsSettings = Field(default_factory=AccountsSettings)
+    account_levels: list[AccountLevel] = Field(default_factory=list)
 
     def validate_endpoint_changes(self, previous: Configuration) -> None:
         previous_engines = {engine.id: engine for engine in previous.engines}
@@ -289,9 +319,13 @@ class Configuration(Record):
 
     @model_validator(mode="after")
     def unique_records(self):
-        for records in [self.engines, self.routes, self.clients]:
+        for records in [self.engines, self.routes, self.clients, self.account_levels]:
             if len({r.id for r in records}) != len(records):
                 raise ValueError("Record IDs must be unique")
+        if len({level.name.casefold() for level in self.account_levels}) != len(
+            self.account_levels
+        ):
+            raise ValueError("Level names must be unique")
         if self.security.anonymous_client_id and not any(
             c.id == self.security.anonymous_client_id for c in self.clients
         ):

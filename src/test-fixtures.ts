@@ -1,7 +1,7 @@
 import type { Config } from "./types";
 export function fixtureConfig(): Config {
   return {
-    schema_version: 4,
+    schema_version: 5,
     revision: 1,
     engines: [],
     routes: [],
@@ -31,5 +31,11 @@ export function fixtureConfig(): Config {
       mdns: false,
       ignored_urls: [],
     },
+    accounts: {
+      enabled: false,
+      device_registration_enabled: false,
+      session_hours: 168,
+    },
+    account_levels: [],
   };
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -10,6 +11,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from .caller_records import caller_id, merge_observations
 from .caller_sources import ensure_source_identity, normalized_address
@@ -20,6 +22,44 @@ from .network.caller_evidence import DiscoveryCallerEvidence
 from .network.report import write_json
 from .schema import Configuration
 from .security.credentials import CredentialCipher, digest, verify
+
+ACTIVATION_SECONDS = 72 * 3600
+MAX_ACCOUNT_KEYS = 20
+MAX_ACCOUNT_DEVICES = 10
+KEY_TOUCH_SECONDS = 60
+USAGE_RETENTION_SECONDS = 35 * 86400
+ACCOUNT_FIELDS = (
+    "id",
+    "username",
+    "name",
+    "level_id",
+    "status",
+    "created",
+    "activated_at",
+    "last_login",
+)
+DEVICE_FIELDS = (
+    "id",
+    "account_id",
+    "address",
+    "name",
+    "enabled",
+    "created",
+    "last_matched",
+)
+USAGE_FIELDS = (
+    "account_id",
+    "window_start",
+    "window_seconds",
+    "prompt_tokens",
+    "completion_tokens",
+    "estimated_tokens",
+    "requests",
+)
+
+
+def token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 class Conflict(Exception):
@@ -66,6 +106,32 @@ class Store:
             CREATE TABLE IF NOT EXISTS callers (id TEXT PRIMARY KEY, seen REAL NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS caller_source_names (source_key TEXT PRIMARY KEY, name TEXT NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts REAL NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS accounts (
+              id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+              level_id TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('pending','active','suspended')),
+              created REAL NOT NULL, activated_at REAL, last_login REAL);
+            CREATE TABLE IF NOT EXISTS account_credentials (
+              account_id TEXT PRIMARY KEY, verifier TEXT NOT NULL, updated REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS account_activations (
+              digest TEXT PRIMARY KEY, account_id TEXT NOT NULL UNIQUE, expires REAL NOT NULL,
+              purpose TEXT NOT NULL CHECK (purpose IN ('activate','reset')));
+            CREATE TABLE IF NOT EXISTS account_keys (
+              id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
+              lookup TEXT NOT NULL UNIQUE, verifier TEXT NOT NULL, created REAL NOT NULL, last_used REAL);
+            CREATE INDEX IF NOT EXISTS account_keys_account ON account_keys(account_id);
+            CREATE TABLE IF NOT EXISTS portal_sessions (
+              digest TEXT PRIMARY KEY, account_id TEXT NOT NULL, expires REAL NOT NULL, created REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS portal_sessions_account ON portal_sessions(account_id);
+            CREATE TABLE IF NOT EXISTS registered_devices (
+              id TEXT PRIMARY KEY, account_id TEXT NOT NULL, address TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+              enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)), created REAL NOT NULL, last_matched REAL);
+            CREATE INDEX IF NOT EXISTS registered_devices_account ON registered_devices(account_id);
+            CREATE TABLE IF NOT EXISTS usage_windows (
+              account_id TEXT NOT NULL, window_start REAL NOT NULL, window_seconds INTEGER NOT NULL,
+              prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+              estimated_tokens INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY (account_id, window_start, window_seconds));
         """)
         self.db.execute(
             "INSERT OR IGNORE INTO installation VALUES (1, ?)",
@@ -119,6 +185,33 @@ class Store:
             for row in self.db.execute(
                 "SELECT client_id FROM client_credentials UNION SELECT client_id FROM client_keys"
             )
+        }
+        self._key_touched: dict[str, float] = {}
+        self._load_account_caches()
+
+    def _load_account_caches(self):
+        # Request paths read these dictionaries without I/O. Each reload
+        # builds fresh dictionaries and swaps them in, never mutates in place.
+        accounts = {
+            row[0]: dict(zip(ACCOUNT_FIELDS, row))
+            for row in self.db.execute(
+                "SELECT id, username, name, level_id, status, created, activated_at, last_login FROM accounts"
+            )
+        }
+        devices = {}
+        for row in self.db.execute(
+            "SELECT id, account_id, address, name, enabled, created, last_matched FROM registered_devices"
+        ):
+            device = dict(zip(DEVICE_FIELDS, row))
+            device["enabled"] = bool(device["enabled"])
+            devices[device["id"]] = device
+        self._accounts = accounts
+        self._accounts_by_username = {
+            account["username"]: account["id"] for account in accounts.values()
+        }
+        self._devices = devices
+        self._devices_by_address = {
+            device["address"]: device for device in devices.values()
         }
 
     def publish_discovery_policy(self):
@@ -210,6 +303,15 @@ class Store:
             if config.revision != current.revision:
                 raise Conflict("Settings changed elsewhere. Refresh before saving.")
             config.validate_endpoint_changes(current)
+            # Accounts reference levels by id from outside the revisioned blob,
+            # so a level with accounts is refused rather than silently orphaned.
+            kept_levels = {level.id for level in config.account_levels}
+            counts = self.level_account_counts()
+            for level in current.account_levels:
+                if level.id not in kept_levels and counts.get(level.id):
+                    raise ValueError(
+                        f"Move {counts[level.id]} account(s) off level '{level.name}' before removing it"
+                    )
             config = config.model_copy(
                 update={
                     "revision": current.revision + 1,
@@ -550,3 +652,431 @@ class Store:
             caller["source_label_source"] = "discovered_hostname"
             caller["source_hostname"] = hostname
         return caller
+
+    # Accounts. Rows never carry verifiers; the request path reads caches only.
+
+    def accounts(self) -> list[dict]:
+        return sorted(
+            (dict(account) for account in self._accounts.values()),
+            key=lambda account: account["username"],
+        )
+
+    def account_snapshot(self, account_id: str) -> dict | None:
+        account = self._accounts.get(account_id)
+        return dict(account) if account else None
+
+    def account_by_username(self, username: str) -> dict | None:
+        account_id = self._accounts_by_username.get(username)
+        return self.account_snapshot(account_id) if account_id else None
+
+    def level_account_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for account in self._accounts.values():
+            counts[account["level_id"]] = counts.get(account["level_id"], 0) + 1
+        return counts
+
+    def _require_level(self, level_id: str):
+        if not any(level.id == level_id for level in self._config.account_levels):
+            raise ValueError("Level does not exist")
+
+    def _require_account(self, account_id: str):
+        if account_id not in self._accounts:
+            raise ValueError("Account does not exist")
+
+    def create_account(self, username: str, name: str, level_id: str) -> dict:
+        with self.lock:
+            self._require_level(level_id)
+            if username in self._accounts_by_username:
+                raise ValueError("Username is already taken")
+            # Account ids double as principal ids next to clients and levels.
+            taken = (
+                {client.id for client in self._config.clients}
+                | {level.id for level in self._config.account_levels}
+                | set(self._accounts)
+            )
+            account_id = uuid4().hex
+            if account_id in taken:
+                account_id = uuid4().hex
+                if account_id in taken:
+                    raise ValueError("Identifier collides with an existing record")
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO accounts VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL)",
+                    (account_id, username, name, level_id, time.time()),
+                )
+            self._load_account_caches()
+            return self.account_snapshot(account_id)
+
+    def update_account(
+        self, account_id: str, *, name=None, level_id=None, status=None
+    ) -> dict:
+        with self.lock:
+            self._require_account(account_id)
+            if level_id is not None:
+                self._require_level(level_id)
+            with self.db:
+                for column, value in (
+                    ("name", name),
+                    ("level_id", level_id),
+                    ("status", status),
+                ):
+                    if value is not None:
+                        self.db.execute(
+                            f"UPDATE accounts SET {column}=? WHERE id=?",
+                            (value, account_id),
+                        )
+                if status == "suspended":
+                    self.db.execute(
+                        "DELETE FROM portal_sessions WHERE account_id=?", (account_id,)
+                    )
+            self._load_account_caches()
+            return self.account_snapshot(account_id)
+
+    def delete_account(self, account_id: str) -> None:
+        with self.lock:
+            with self.db:
+                self.db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+                for table in (
+                    "account_credentials",
+                    "account_activations",
+                    "account_keys",
+                    "portal_sessions",
+                    "registered_devices",
+                    "usage_windows",
+                ):
+                    self.db.execute(
+                        f"DELETE FROM {table} WHERE account_id=?", (account_id,)
+                    )
+            self._load_account_caches()
+
+    # Activation links and passwords.
+
+    def issue_activation(self, account_id: str, purpose: str) -> tuple[str, float]:
+        token = "mra_" + secrets.token_urlsafe(32)
+        expires = time.time() + ACTIVATION_SECONDS
+        with self.lock:
+            self._require_account(account_id)
+            with self.db:
+                self.db.execute(
+                    "DELETE FROM account_activations WHERE account_id=?", (account_id,)
+                )
+                self.db.execute(
+                    "INSERT INTO account_activations VALUES (?, ?, ?, ?)",
+                    (token_digest(token), account_id, expires, purpose),
+                )
+                self.db.execute(
+                    "DELETE FROM portal_sessions WHERE account_id=?", (account_id,)
+                )
+        return token, expires
+
+    def activate_account(self, token: str, verifier: str) -> str | None:
+        """Consume a link and set the password in one transaction; None when unusable."""
+        with self.lock:
+            with self.db:
+                row = self.db.execute(
+                    "SELECT a.account_id FROM account_activations a JOIN accounts ON accounts.id = a.account_id"
+                    " WHERE a.digest=? AND a.expires > ? AND accounts.status != 'suspended'",
+                    (token_digest(token), time.time()),
+                ).fetchone()
+                if not row:
+                    return None
+                account_id = row[0]
+                now = time.time()
+                self.db.execute(
+                    "INSERT OR REPLACE INTO account_credentials VALUES (?, ?, ?)",
+                    (account_id, verifier, now),
+                )
+                self.db.execute(
+                    "UPDATE accounts SET status='active', activated_at=COALESCE(activated_at, ?) WHERE id=?",
+                    (now, account_id),
+                )
+                self.db.execute(
+                    "DELETE FROM account_activations WHERE account_id=?", (account_id,)
+                )
+                self.db.execute(
+                    "DELETE FROM portal_sessions WHERE account_id=?", (account_id,)
+                )
+            self._load_account_caches()
+            return account_id
+
+    def activation_for(self, account_id: str) -> dict | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT expires, purpose FROM account_activations WHERE account_id=?",
+                (account_id,),
+            ).fetchone()
+        return {"expires": row[0], "purpose": row[1]} if row else None
+
+    def account_verifier(self, account_id: str) -> str | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT verifier FROM account_credentials WHERE account_id=?",
+                (account_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_account_verifier(self, account_id: str, verifier: str) -> None:
+        with self.lock:
+            self._require_account(account_id)
+            with self.db:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO account_credentials VALUES (?, ?, ?)",
+                    (account_id, verifier, time.time()),
+                )
+
+    def touch_login(self, account_id: str) -> None:
+        with self.lock:
+            with self.db:
+                self.db.execute(
+                    "UPDATE accounts SET last_login=? WHERE id=?",
+                    (time.time(), account_id),
+                )
+            self._load_account_caches()
+
+    # Account keys use the client-key scheme: keyed lookup index, argon2 verifier.
+
+    def create_account_key(self, account_id: str, name: str) -> tuple[str, dict]:
+        key = "mru_" + secrets.token_urlsafe(32)
+        verifier = digest(key)
+        with self.lock:
+            self._require_account(account_id)
+            names = [
+                row[0]
+                for row in self.db.execute(
+                    "SELECT name FROM account_keys WHERE account_id=?", (account_id,)
+                )
+            ]
+            if len(names) >= MAX_ACCOUNT_KEYS:
+                raise ValueError(
+                    f"This account already has {MAX_ACCOUNT_KEYS} keys. Revoke one first."
+                )
+            if name in names:
+                raise ValueError("A key with this name already exists")
+            record = {
+                "id": uuid4().hex,
+                "name": name,
+                "created": time.time(),
+                "last_used": None,
+            }
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO account_keys VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                    (
+                        record["id"],
+                        account_id,
+                        name,
+                        self.cipher.lookup(key),
+                        verifier,
+                        record["created"],
+                    ),
+                )
+        return key, record
+
+    def account_key(self, key: str) -> dict | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT id, account_id, name, verifier FROM account_keys WHERE lookup=?",
+                (self.cipher.lookup(key),),
+            ).fetchone()
+        if not row or not verify(row[3], key):
+            return None
+        key_id = row[0]
+        with self.lock:
+            # last_used is informational; one write per minute per key bounds
+            # the storage cost of a busy key.
+            touched = self._key_touched.get(key_id)
+            now = time.monotonic()
+            if touched is None or now - touched > KEY_TOUCH_SECONDS:
+                self.db.execute(
+                    "UPDATE account_keys SET last_used=? WHERE id=?",
+                    (time.time(), key_id),
+                )
+                self.db.commit()
+                self._key_touched[key_id] = now
+        return {"account_id": row[1], "key_id": key_id, "key_name": row[2]}
+
+    def account_keys(self, account_id: str) -> list[dict]:
+        with self.lock:
+            return [
+                {"id": row[0], "name": row[1], "created": row[2], "last_used": row[3]}
+                for row in self.db.execute(
+                    "SELECT id, name, created, last_used FROM account_keys WHERE account_id=? ORDER BY created",
+                    (account_id,),
+                )
+            ]
+
+    def revoke_account_key(self, account_id: str, key_id: str) -> bool:
+        with self.lock:
+            with self.db:
+                removed = self.db.execute(
+                    "DELETE FROM account_keys WHERE id=? AND account_id=?",
+                    (key_id, account_id),
+                ).rowcount
+            self._key_touched.pop(key_id, None)
+            return removed > 0
+
+    # Portal sessions: separate table from operator sessions, never shared.
+
+    def portal_sessions(self) -> dict[str, tuple[str, float]]:
+        with self.lock:
+            with self.db:
+                self.db.execute(
+                    "DELETE FROM portal_sessions WHERE expires <= ?", (time.time(),)
+                )
+            return {
+                row[0]: (row[1], row[2])
+                for row in self.db.execute(
+                    "SELECT digest, account_id, expires FROM portal_sessions ORDER BY expires DESC LIMIT 1024"
+                )
+            }
+
+    def save_portal_session(self, digest: str, account_id: str, expires: float):
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO portal_sessions VALUES (?, ?, ?, ?)",
+                (digest, account_id, expires, time.time()),
+            )
+
+    def revoke_portal_session(self, digest: str) -> None:
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM portal_sessions WHERE digest=?", (digest,))
+
+    def revoke_account_sessions(self, account_id: str) -> None:
+        with self.lock, self.db:
+            self.db.execute(
+                "DELETE FROM portal_sessions WHERE account_id=?", (account_id,)
+            )
+
+    # Registered devices: one canonical host address each, globally unique.
+
+    def register_device(self, account_id: str, address: str, name: str) -> dict:
+        address = str(ipaddress.ip_address(address))
+        with self.lock:
+            self._require_account(account_id)
+            if address in self._devices_by_address:
+                raise ValueError("This address is already registered")
+            owned = sum(
+                1 for device in self._devices.values() if device["account_id"] == account_id
+            )
+            if owned >= MAX_ACCOUNT_DEVICES:
+                raise ValueError(
+                    f"This account already has {MAX_ACCOUNT_DEVICES} registered devices"
+                )
+            device_id = uuid4().hex
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO registered_devices VALUES (?, ?, ?, ?, 1, ?, NULL)",
+                    (device_id, account_id, address, name, time.time()),
+                )
+            self._load_account_caches()
+            return self.device_snapshot(device_id)
+
+    def devices(self) -> list[dict]:
+        return sorted(
+            (dict(device) for device in self._devices.values()),
+            key=lambda device: device["created"],
+        )
+
+    def devices_for(self, account_id: str) -> list[dict]:
+        return [
+            device for device in self.devices() if device["account_id"] == account_id
+        ]
+
+    def device_at(self, address: str) -> dict | None:
+        device = self._devices_by_address.get(address)
+        return dict(device) if device else None
+
+    def device_snapshot(self, device_id: str) -> dict | None:
+        device = self._devices.get(device_id)
+        return dict(device) if device else None
+
+    def set_device_enabled(self, device_id: str, enabled: bool) -> dict | None:
+        with self.lock:
+            if device_id not in self._devices:
+                return None
+            with self.db:
+                self.db.execute(
+                    "UPDATE registered_devices SET enabled=? WHERE id=?",
+                    (1 if enabled else 0, device_id),
+                )
+            self._load_account_caches()
+            return self.device_snapshot(device_id)
+
+    def remove_device(self, device_id: str, account_id: str | None = None) -> bool:
+        with self.lock:
+            with self.db:
+                if account_id is None:
+                    removed = self.db.execute(
+                        "DELETE FROM registered_devices WHERE id=?", (device_id,)
+                    ).rowcount
+                else:
+                    removed = self.db.execute(
+                        "DELETE FROM registered_devices WHERE id=? AND account_id=?",
+                        (device_id, account_id),
+                    ).rowcount
+            self._load_account_caches()
+            return removed > 0
+
+    def touch_device(self, device_id: str) -> None:
+        with self.lock:
+            with self.db:
+                self.db.execute(
+                    "UPDATE registered_devices SET last_matched=? WHERE id=?",
+                    (time.time(), device_id),
+                )
+            self._load_account_caches()
+
+    # Usage windows hold token counts only, never request or response content.
+
+    def record_usage(
+        self,
+        account_id: str,
+        window_start: float,
+        window_seconds: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        estimated_tokens: int,
+    ) -> None:
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO usage_windows VALUES (?, ?, ?, ?, ?, ?, 1)"
+                " ON CONFLICT(account_id, window_start, window_seconds) DO UPDATE SET"
+                " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
+                " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                " estimated_tokens = estimated_tokens + excluded.estimated_tokens,"
+                " requests = requests + 1",
+                (
+                    account_id,
+                    window_start,
+                    window_seconds,
+                    prompt_tokens,
+                    completion_tokens,
+                    estimated_tokens,
+                ),
+            )
+            self.db.execute(
+                "DELETE FROM usage_windows WHERE window_start + window_seconds < ?",
+                (time.time() - USAGE_RETENTION_SECONDS,),
+            )
+
+    def usage_windows(self, account_id: str, days: int = 7) -> list[dict]:
+        with self.lock:
+            return [
+                dict(zip(USAGE_FIELDS, row))
+                for row in self.db.execute(
+                    "SELECT account_id, window_start, window_seconds, prompt_tokens, completion_tokens, estimated_tokens, requests"
+                    " FROM usage_windows WHERE account_id=? AND window_start + window_seconds > ? ORDER BY window_start DESC",
+                    (account_id, time.time() - days * 86400),
+                )
+            ]
+
+    def open_usage_windows(self, now: float) -> list[dict]:
+        with self.lock:
+            return [
+                dict(zip(USAGE_FIELDS, row))
+                for row in self.db.execute(
+                    "SELECT account_id, window_start, window_seconds, prompt_tokens, completion_tokens, estimated_tokens, requests"
+                    " FROM usage_windows WHERE window_start + window_seconds > ?",
+                    (now,),
+                )
+            ]
