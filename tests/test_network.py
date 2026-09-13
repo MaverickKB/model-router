@@ -12,7 +12,14 @@ from gateway.app import create_app
 from gateway.network.collector import Collector
 from gateway.network.protocols import inspect_service
 from gateway.network.report import read_report
+from gateway.network.sweep import coverage_ports
 from gateway.schema import Client, Configuration, Discovery, Engine
+
+
+def test_http_inspection_ports_are_included_in_tcp_coverage():
+    assert coverage_ports(
+        {"port_range": "8000-8100", "http_ports": [11434, 8888]}
+    ) == "8000-8100,11434,8888"
 
 
 @pytest.mark.asyncio

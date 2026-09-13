@@ -13,6 +13,13 @@ from .report import Phase, publish, read_policy, read_report
 from .scanner import scan
 
 
+def coverage_ports(policy: dict) -> str:
+    """TCP coverage is the saved range plus ports approved for HTTP inspection."""
+    extra = [str(port) for port in policy.get("http_ports") or []]
+    parts = [part for part in [policy.get("port_range") or "", *extra] if part]
+    return ",".join(parts)
+
+
 class Sweep:
     def __init__(self, root, privileged=False, runner=scan):
         self.root, self.privileged, self.runner = root, privileged, runner
@@ -150,7 +157,7 @@ class Sweep:
             started_at=time.time(),
             completed_at=0,
             targets=policy["targets"],
-            ports=policy["port_range"],
+            ports=coverage_ports(policy),
             packets_per_second=policy["packets_per_second"],
             hosts=hosts,
             error="",
@@ -163,7 +170,7 @@ class Sweep:
             trust_env=False,
             limits=httpx.Limits(max_connections=32),
         ) as http:
-            await self.pass_scan(http, policy["targets"], policy["port_range"])
+            await self.pass_scan(http, policy["targets"], coverage_ports(policy))
             if policy.get("include_loopback"):
                 try:
                     local = await local_listeners()

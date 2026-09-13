@@ -20,7 +20,7 @@ export function fixtureConfig(): Config {
       port_range: "8000-8100",
       scanner: "connect",
       inspect_all_open_ports: false,
-      http_ports: [],
+      http_ports: [11434, 8888, 8000],
       include_loopback: false,
       max_addresses: 4096,
       network_interval_seconds: 1800,

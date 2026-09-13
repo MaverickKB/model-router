@@ -247,7 +247,7 @@ class Discovery(Record):
     scanner: Literal["connect", "nmap"] = "connect"
     inspect_all_open_ports: bool = False
     http_ports: list[Annotated[int, Field(ge=1, le=65535)]] = Field(
-        default_factory=list
+        default_factory=lambda: [11434, 8888, 8000]
     )
     include_loopback: bool = False
     max_addresses: int = Field(default=4096, ge=1)
