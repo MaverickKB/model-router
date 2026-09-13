@@ -419,7 +419,9 @@ it("an account caller shows User account and no edit button", async () => {
   const details = screen.getByRole("region", {
     name: "Source details for 192.0.2.40",
   });
-  await user.click(within(details).getByText("Software: Python requests 2.33.0"));
+  await user.click(
+    within(details).getByText("Software: Python requests 2.33.0"),
+  );
   expect(
     within(details).getAllByText("User account (Settings › Accounts)"),
   ).toHaveLength(2);

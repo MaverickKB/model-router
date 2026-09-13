@@ -141,7 +141,9 @@ class Identity:
         unusable_auth = bool(auth)
         if auth and auth[:7].casefold() == "bearer ":
             if auth[7:].startswith("mru_"):
-                return await self._identify_account_key(request, config, auth[7:])
+                return await self._identify_account_key(
+                    request, self.store.config(), auth[7:]
+                )
             # A number of OpenAI-compatible clients always send an API-key
             # header, even when the operator has not configured caller keys.
             # Resolve usable keys here, but let an unusable header continue

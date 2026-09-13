@@ -292,10 +292,14 @@ async def test_source_network_client_is_still_refreshed_between_attempts(tmp_pat
         setup.caller(key=False) as http,
     ):
         response = await complete(http, "free")
-    assert response.status_code == 403
-    assert response.json()["error"]["message"] == "Client is disabled"
-    assert len(setup.fleet.calls) == 1
-    assert setup.store.events()[0]["status"] == "denied"
+    # The retry is identified afresh: the disabled source policy is skipped and
+    # the open route is served under the transient unkeyed identity, exactly as
+    # a new request from that address would be. The disabled policy never
+    # carries into the second attempt.
+    assert response.status_code == 200
+    assert [host for host, _ in setup.fleet.calls] == ["local-a.test", "local-b.test"]
+    event = setup.store.events()[0]
+    assert event["client_id"] != lan.id and event["client"] == "Unkeyed connection"
     caller = setup.store.callers()[0]
     assert caller["identity_basis"] == "source_network"
     assert caller["policy_id"] == lan.id and caller["account_id"] is None
