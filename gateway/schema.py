@@ -123,8 +123,6 @@ class Engine(NamedRecord):
                 "Use an http(s) endpoint without credentials, query, or fragment"
             )
         path = url.path.rstrip("/")
-        if not path:
-            path = "/v1"
         return f"{url.scheme}://{url.netloc}{path}"
 
     @classmethod
