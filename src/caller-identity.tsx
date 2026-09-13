@@ -67,9 +67,12 @@ export function callerClientLabel(caller: ObservedCaller) {
 }
 
 export function callerDisplayName(caller: ObservedCaller) {
+  // Account callers are named by the router from the account and key, even
+  // when the transport is a generic library.
   if (
     (caller.identity_basis === "operator_test" ||
-      caller.identity_quality === "policy_key") &&
+      caller.identity_quality === "policy_key" ||
+      Boolean(caller.account_id)) &&
     caller.name
   )
     return caller.name;

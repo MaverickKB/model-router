@@ -4,7 +4,7 @@
 
 - Fresh installs leave operator sign-in off. An operator key is created only when the owner enables sign-in or sets `MODEL_ROUTER_ADMIN_TOKEN`.
 - Schema v5: account levels and account settings (disabled by default); account storage.
-- Account keys (`mru_`) authenticate as level-derived principals: exact level access, refused while accounts are disabled, re-derived before every attempt; account callers observed by id and grouped on the routing map.
+- Account keys (`mru_`) authenticate as level-derived principals: exact level access, refused while accounts are disabled, re-derived before every attempt (a policy change between attempts is reported as a denial); account callers observed by id and grouped on the routing map.
 
 ## 0.3.0
 

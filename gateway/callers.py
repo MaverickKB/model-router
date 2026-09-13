@@ -42,7 +42,7 @@ def identity_hints(request: Request) -> dict[str, str]:
 
 
 def identity_quality(basis: str, reported_name: str, hints: dict[str, str]) -> str:
-    if basis in {"api_key", "account_key"}:
+    if basis == "api_key":
         return "policy_key"
     if reported_name:
         return "self_reported"

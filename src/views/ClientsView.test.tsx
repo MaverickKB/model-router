@@ -405,6 +405,7 @@ it("an account caller shows User account and no edit button", async () => {
         name: "Alice · laptop",
         source_address: "192.0.2.40",
         source_port: 51010,
+        identity_quality: "transport_only",
         identity_basis: "account_key",
       }),
     ],

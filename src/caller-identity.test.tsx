@@ -172,3 +172,14 @@ it("preserves the router-owned console test identity ahead of client metadata", 
   ).toBeVisible();
   expect(screen.getByText("Browser metadata")).toBeVisible();
 });
+
+it("keeps the router-assigned name of an account caller on a generic library", () => {
+  const account = {
+    ...caller,
+    name: "Alice · laptop",
+    account_id: "a3f1c2d4e5f60718293a4b5c6d7e8f90",
+    identity_quality: "transport_only" as const,
+    identity_basis: "account_key" as const,
+  };
+  expect(callerDisplayName(account)).toBe("Alice · laptop");
+});

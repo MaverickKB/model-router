@@ -314,6 +314,11 @@ class Store:
                     raise ValueError(
                         f"Move {counts[level.id]} account(s) off level '{level.name}' before removing it"
                     )
+            # Account ids double as principal ids, so a client or level may not
+            # take one: the proxy resolves account keys against clients first.
+            principal_ids = {c.id for c in config.clients} | kept_levels
+            if principal_ids & set(self._accounts):
+                raise ValueError("Client and level ids must not reuse an account id")
             config = config.model_copy(
                 update={
                     "revision": current.revision + 1,
@@ -685,7 +690,16 @@ class Store:
         if account_id not in self._accounts:
             raise ValueError("Account does not exist")
 
+    @staticmethod
+    def _account_name(name: str) -> str:
+        # The name becomes the derived Client's name, which NamedRecord bounds.
+        name = name.strip()
+        if not name or len(name) > 100:
+            raise ValueError("Choose a name of 1 to 100 characters")
+        return name
+
     def create_account(self, username: str, name: str, level_id: str) -> dict:
+        name = self._account_name(name)
         with self.lock:
             self._require_level(level_id)
             if username in self._accounts_by_username:
@@ -714,6 +728,8 @@ class Store:
     ) -> dict:
         if status is not None and status not in ACCOUNT_STATUSES:
             raise ValueError("Unknown account status")
+        if name is not None:
+            name = self._account_name(name)
         with self.lock:
             self._require_account(account_id)
             if level_id is not None:

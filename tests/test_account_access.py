@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from gateway.accounts.principal import derive_principal
 from gateway.app import create_app
 from gateway.schema import (
     AccountLevel,
@@ -17,6 +18,7 @@ from gateway.schema import (
     Selector,
 )
 from gateway.security.credentials import digest
+from gateway.store import Store
 from gateway.topology import route_map
 
 
@@ -246,9 +248,15 @@ async def test_suspension_and_level_change_apply_before_next_attempt(tmp_path):
         narrowed.caller() as http,
     ):
         response = await complete(http, "private")
-    # The fresh decision excludes the route, so the second engine is never tried.
-    assert response.status_code == 503
+    # The fresh decision excludes the route: a denial, not an outage, and the
+    # second engine is never tried.
+    assert response.status_code == 403
+    assert (
+        response.json()["error"]["message"] == "Route is outside the client's allowlist"
+    )
     assert len(narrowed.fleet.calls) == 1
+    event = narrowed.store.events()[0]
+    assert event["status"] == "denied" and event["http_status"] == 403
 
     control = await build(tmp_path / "control")
     control.fleet.statuses = [503]
@@ -284,8 +292,10 @@ async def test_source_network_client_is_still_refreshed_between_attempts(tmp_pat
         setup.caller(key=False) as http,
     ):
         response = await complete(http, "free")
-    assert response.status_code == 503
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Client is disabled"
     assert len(setup.fleet.calls) == 1
+    assert setup.store.events()[0]["status"] == "denied"
     caller = setup.store.callers()[0]
     assert caller["identity_basis"] == "source_network"
     assert caller["policy_id"] == lan.id and caller["account_id"] is None
@@ -301,7 +311,9 @@ async def test_account_caller_is_observed_with_ids_not_material(tmp_path):
     caller = callers[0]
     assert caller["name"] == "Alice · laptop"
     assert caller["identity_basis"] == "account_key"
-    assert caller["identity_quality"] == "policy_key"
+    # The evidence vocabulary is unchanged: a generic library with no label is
+    # still transport evidence; the console names the row from account_id.
+    assert caller["identity_quality"] == "transport_only"
     assert caller["policy_id"] == setup.account["id"]
     assert caller["account_id"] == setup.account["id"]
     assert caller["key_id"] == setup.key_record["id"]
@@ -416,3 +428,43 @@ async def test_try_route_never_carries_account_state(tmp_path):
     caller = setup.store.callers()[0]
     assert caller["identity_basis"] == "operator_test"
     assert caller["account_id"] is None and caller["key_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_config_save_refuses_a_client_or_level_reusing_an_account_id(tmp_path):
+    setup = await build(tmp_path)
+    wide = Client(id=setup.account["id"], name="Wide", route_names=["*"])
+    config = setup.store.config()
+    with pytest.raises(ValueError, match="must not reuse an account id"):
+        setup.store.save(config.model_copy(update={"clients": [wide]}))
+    twin = AccountLevel(id=setup.account["id"], name="Twin")
+    with pytest.raises(ValueError, match="must not reuse an account id"):
+        setup.store.save(
+            config.model_copy(update={"account_levels": [*config.account_levels, twin]})
+        )
+    async with setup.operator() as http:
+        state = (await http.get("/api/v1/state")).json()["config"]
+        refused = await http.put(
+            "/api/v1/config",
+            json={**state, "clients": [wide.model_dump(mode="json")]},
+        )
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == (
+        "Client and level ids must not reuse an account id"
+    )
+    assert setup.store.config().clients == []
+
+
+def test_account_names_are_bounded_where_they_are_stored(tmp_path):
+    store = Store(str(tmp_path))
+    level = AccountLevel(name="Standard")
+    store.save(store.config().model_copy(update={"account_levels": [level]}))
+    for name in ("", "   ", "x" * 101):
+        with pytest.raises(ValueError, match="Choose a name of 1 to 100 characters"):
+            store.create_account("alice", name, level.id)
+    account = store.create_account("alice", "  Alice  ", level.id)
+    assert account["name"] == "Alice"
+    with pytest.raises(ValueError, match="Choose a name of 1 to 100 characters"):
+        store.update_account(account["id"], name=" ")
+    longest = store.update_account(account["id"], name="y" * 100)
+    assert derive_principal(longest, level).name == "y" * 100
