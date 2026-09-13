@@ -211,7 +211,7 @@ def test_map_uses_caller_permissions_and_kind_is_only_a_label(tmp_path):
         topology = route_map(
             config,
             app.state.discovery.views(),
-            [{"id": "observed", "policy_id": caller.id}],
+            [{"id": "observed", "policy_id": caller.id, "identity_basis": "api_key"}],
         )
         assert topology["caller_routes"][0]["ready_engines"] == []
         assert topology["route_engines"][0]["ready"]
@@ -219,7 +219,7 @@ def test_map_uses_caller_permissions_and_kind_is_only_a_label(tmp_path):
     assert route_map(
         config,
         app.state.discovery.views(),
-        [{"id": "observed", "policy_id": caller.id}],
+        [{"id": "observed", "policy_id": caller.id, "identity_basis": "api_key"}],
     )["caller_routes"][0]["ready_engines"] == [engine.id]
 
 

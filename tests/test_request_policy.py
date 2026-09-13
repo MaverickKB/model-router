@@ -9,7 +9,7 @@ from gateway.app import create_app
 from gateway.identity import Identity
 from gateway.request_policy import resolve_unkeyed_policy
 from gateway.routing import decide
-from gateway.schema import Client, Configuration, Engine, Route, Security
+from gateway.schema import Client, Configuration, Engine, Route, Security, Selector
 from gateway.topology import route_map
 
 
@@ -183,3 +183,188 @@ async def test_key_resolution_uses_policy_saved_during_key_verification(changed)
         with pytest.raises(HTTPException) as error:
             await identity.identify(request)
         assert error.value.status_code == (401 if changed == "disabled" else 403)
+
+
+def test_observation_edges_do_not_borrow_keys_from_same_policy_or_source():
+    policy = Client(name="One permission policy", route_names=["open", "gated"])
+    config = Configuration(
+        clients=[policy],
+        security=Security(anonymous_client_id=policy.id),
+        routes=[Route(name="open"), Route(name="gated", require_caller_key=True)],
+    )
+    callers = [
+        observation(policy.id, "api_key", id="keyed-sdk"),
+        observation(policy.id, "shared_access", id="unkeyed-sdk"),
+        observation(
+            policy.id, "api_key", id="another-source", source_address="192.0.2.11"
+        ),
+    ]
+    engine = available_engine()
+    topology = route_map(config, [engine], callers)
+    edges = {
+        (edge["caller_id"], edge["route_id"]): edge
+        for edge in topology["caller_routes"]
+    }
+    assert len(edges) == len(callers) * len(config.routes)
+    assert {edge["caller_id"] for edge in edges.values()} == {c["id"] for c in callers}
+    assert all(edge["policy_id"] == policy.id for edge in edges.values())
+    for caller in callers:
+        assert edges[caller["id"], config.routes[0].id]["ready_engines"] == [
+            engine["id"]
+        ]
+        gated = edges[caller["id"], config.routes[1].id]
+        assert bool(gated["ready_engines"]) == (caller["identity_basis"] == "api_key")
+    assert "key is required" in edges["unkeyed-sdk", config.routes[1].id]["reason"]
+    assert all(
+        edge["ready_engines"] == [engine["id"]] for edge in topology["policy_routes"]
+    )
+
+
+def test_preconfigured_policy_is_only_a_preview_until_a_connection_exists():
+    policy = Client(name="Future caller", route_names=["private"])
+    route = Route(name="private", require_caller_key=True)
+    config = Configuration(clients=[policy], routes=[route])
+    engine = available_engine()
+    topology = route_map(config, [engine], [])
+    assert topology["caller_routes"] == []
+    assert topology["policies"] == [{"policy_id": policy.id, "observed_callers": []}]
+    assert topology["policy_routes"] == [
+        {
+            "policy_id": policy.id,
+            "route_id": route.id,
+            "ready_engines": [engine["id"]],
+            "ready_paths": [{"engine_id": engine["id"], "tier": "primary"}],
+            "reason": "Eligible text path",
+        }
+    ]
+    assert "unassigned_callers" not in topology
+
+
+@pytest.mark.parametrize("basis", ["unassigned", "shared_access", "source_network"])
+@pytest.mark.parametrize("source_override", [False, True])
+def test_unkeyed_map_uses_current_source_policy_not_observed_assignment(
+    basis, source_override
+):
+    old_policy = Client(name="Old default", route_names=["old"])
+    current = Client(
+        name="Current policy",
+        route_names=["current"],
+        source_networks=["192.0.2.10/32"] if source_override else [],
+        allow_network_auth=source_override,
+    )
+    config = Configuration(
+        clients=[old_policy, current],
+        security=Security(
+            anonymous_client_id=old_policy.id if source_override else current.id
+        ),
+        routes=[Route(name="old"), Route(name="current")],
+    )
+    caller = observation(old_policy.id, basis)
+    engine = available_engine()
+    topology = route_map(config, [engine], [caller])
+    edges = {edge["route_id"]: edge for edge in topology["caller_routes"]}
+    assert all(edge["policy_id"] == current.id for edge in edges.values())
+    assert edges[config.routes[0].id]["ready_engines"] == []
+    assert "allowlist" in edges[config.routes[0].id]["reason"]
+    assert edges[config.routes[1].id]["ready_engines"] == [engine["id"]]
+    assert topology["policies"] == [
+        {"policy_id": old_policy.id, "observed_callers": []},
+        {"policy_id": current.id, "observed_callers": [caller]},
+    ]
+
+
+@pytest.mark.parametrize("change", ["removed", "disabled", "source", "rejected"])
+def test_key_observation_cannot_fall_back_to_open_access_when_policy_rejects_it(change):
+    policy = Client(name="Saved key policy", route_names=["open", "gated"])
+    caller = observation(policy.id, "api_key")
+    if change == "disabled":
+        policy.enabled = False
+    if change == "source":
+        policy.source_networks = ["198.51.100.0/24"]
+    if change == "rejected":
+        caller["authentication_error"] = {"status": 401, "detail": "Key revoked"}
+    config = Configuration(
+        clients=[] if change == "removed" else [policy],
+        routes=[Route(name="open"), Route(name="gated", require_caller_key=True)],
+    )
+    topology = route_map(config, [available_engine()], [caller])
+    assert len(topology["caller_routes"]) == 2
+    for edge in topology["caller_routes"]:
+        assert edge["caller_id"] == caller["id"]
+        assert edge["policy_id"] == (None if change == "removed" else policy.id)
+        assert edge["ready_engines"] == []
+        assert edge["ready_paths"] == []
+        assert {
+            "removed": "no longer configured",
+            "disabled": "disabled",
+            "source": "source address",
+            "rejected": "Last request rejected: Key revoked",
+        }[change] in edge["reason"]
+
+
+def test_source_allowlist_is_evaluated_for_each_observation_using_one_key():
+    policy = Client(
+        name="Scoped key", route_names=["private"], source_networks=["192.0.2.0/24"]
+    )
+    config = Configuration(
+        clients=[policy], routes=[Route(name="private", require_caller_key=True)]
+    )
+    callers = [
+        observation(policy.id, "api_key", id="allowed-source"),
+        observation(
+            policy.id, "api_key", id="blocked-source", source_address="198.51.100.10"
+        ),
+    ]
+    edges = route_map(config, [available_engine()], callers)["caller_routes"]
+    assert edges[0]["ready_engines"]
+    assert edges[1]["ready_engines"] == []
+    assert "source address" in edges[1]["reason"]
+
+
+def test_unkeyed_transient_access_has_no_invented_policy_id():
+    route = Route(name="open")
+    caller = observation("removed-policy", "shared_access")
+    topology = route_map(Configuration(routes=[route]), [available_engine()], [caller])
+    edge = topology["caller_routes"][0]
+    assert edge["caller_id"] == caller["id"]
+    assert edge["policy_id"] is None
+    assert edge["ready_engines"]
+    assert topology["policies"] == []
+    assert topology["policy_routes"] == []
+
+
+@pytest.mark.parametrize("allowed_models", [["primary-*"], ["fallback-model"], ["*"]])
+def test_ready_paths_keep_model_permissions_separate_for_each_engine_tier(
+    allowed_models,
+):
+    engine = available_engine()
+    engine["models"] = [
+        {"id": name, "capabilities": ["text"], "enabled": True}
+        for name in ["primary-one", "primary-two", "fallback-model"]
+    ]
+    policy = Client(name="Model-scoped key", model_patterns=allowed_models)
+    route = Route(
+        name="auto",
+        primary=Selector(engine_ids=[engine["id"]], model_patterns=["primary-*"]),
+        fallback=Selector(engine_ids=[engine["id"]], model_patterns=["fallback-*"]),
+    )
+    config = Configuration(clients=[policy], routes=[route])
+    topology = route_map(config, [engine], [observation(policy.id, "api_key")])
+    expected_tiers = (
+        ["primary"]
+        if allowed_models == ["primary-*"]
+        else ["fallback"]
+        if allowed_models == ["fallback-model"]
+        else ["primary", "fallback"]
+    )
+    for edge in topology["caller_routes"] + topology["policy_routes"]:
+        assert edge["ready_engines"] == [engine["id"]]
+        assert edge["ready_paths"] == [
+            {"engine_id": engine["id"], "tier": tier} for tier in expected_tiers
+        ]
+    # Both model selections exist on the engine. The observation's allowed
+    # primary models must not make its forbidden fallback path eligible.
+    assert {edge["tier"] for edge in topology["route_engines"]} == {
+        "primary",
+        "fallback",
+    }

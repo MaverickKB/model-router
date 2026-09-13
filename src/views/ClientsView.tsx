@@ -1,84 +1,9 @@
-import { useId, useState } from "react";
-import {
-  callerClientLabel,
-  callerDisplayName,
-  CallerIdentity,
-} from "../caller-identity";
-import { ArrowLeft, ChevronDown, Plus, Users } from "lucide-react";
+import { useState } from "react";
+import { CallerSourceDetails, groupCallerSources } from "../caller-sources";
+import { timeLabel } from "../components";
+import { ArrowLeft, Plus, Users } from "lucide-react";
 import { ClientEditor, newClient } from "../editors";
 import type { Client, Config, EngineView, ObservedCaller } from "../types";
-
-function CallerSource({
-  address,
-  callers,
-  selected,
-  onSelect,
-}: {
-  address: string;
-  callers: ObservedCaller[];
-  selected: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const detailsId = useId();
-  const latest = Math.max(...callers.map((caller) => caller.last_seen));
-  return (
-    <div className="caller-source">
-      <button
-        className="caller-source-toggle"
-        aria-expanded={expanded}
-        aria-controls={detailsId}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span>
-          <strong>{address || "Source address unavailable"}</strong>{" "}
-          <small>
-            {callers.length}{" "}
-            {callers.length === 1 ? "observation" : "observations"}
-            {" · "}Last seen{" "}
-            {latest
-              ? new Date(latest * 1000).toLocaleString([], {
-                  month: "short",
-                  day: "numeric",
-                  hour: "numeric",
-                  minute: "2-digit",
-                })
-              : "time unavailable"}
-          </small>
-        </span>
-        <ChevronDown size={15} aria-hidden="true" />
-      </button>
-      <div
-        id={detailsId}
-        className="caller-source-observations"
-        hidden={!expanded}
-      >
-        {callers.map((caller) => {
-          const name = callerDisplayName(caller);
-          const client = callerClientLabel(caller);
-          const unnamed = !name || name === "Unidentified caller";
-          const label = unnamed ? client : name;
-          return (
-            <button
-              key={caller.id}
-              className={selected === caller.id ? "selected" : ""}
-              aria-pressed={selected === caller.id}
-              aria-label={`Inspect ${label} from ${address || "unknown source"}`}
-              onClick={() => onSelect(caller.id)}
-            >
-              <span>
-                <strong>{label}</strong>
-                <small>
-                  {unnamed ? "Application name not supplied" : client}
-                </small>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export function ClientsView({
   config,
@@ -99,40 +24,44 @@ export function ClientsView({
   clients: Client[];
   callers?: ObservedCaller[];
 }) {
-  const [selectedCaller, selectCaller] = useState<string | null>(null);
-  const connection = callers.find((c) => c.id === selectedCaller);
-  const sources = new Map<string, ObservedCaller[]>();
-  for (const caller of callers) {
-    const observations = sources.get(caller.source_address) || [];
-    observations.push(caller);
-    sources.set(caller.source_address, observations);
-  }
+  const [selectedAddress, selectAddress] = useState<string | null>(null);
+  const sources = groupCallerSources(callers);
+  const source = sources.find((entry) => entry.address === selectedAddress);
   return (
     <div
       className={
-        "management " + (activeClient || connection ? "has-selection" : "")
+        "management " + (activeClient || source ? "has-selection" : "")
       }
     >
       <div className="record-list">
         <h2>
-          Caller sources <span>{sources.size}</span>
+          Caller sources <span>{sources.length}</span>
         </h2>
         <p>
-          Activity from the last seven days, grouped by direct source address.
-          Expand a source to inspect its applications and client libraries. One
-          address can represent several applications or devices.
+          Direct source addresses observed in the last seven days. Select a
+          source to inspect its request metadata and permissions.
         </p>
-        {[...sources].map(([address, observations]) => (
-          <CallerSource
-            key={address}
-            address={address}
-            callers={observations}
-            selected={selectedCaller}
-            onSelect={(id) => {
-              selectCaller(id);
+        {sources.map((entry) => (
+          <button
+            key={entry.address}
+            className={
+              selectedAddress === entry.address && !activeClient
+                ? "selected"
+                : ""
+            }
+            aria-pressed={selectedAddress === entry.address && !activeClient}
+            aria-label={`Inspect source ${entry.address || "address unavailable"}`}
+            onClick={() => {
+              selectAddress(entry.address);
               onSelect(null);
             }}
-          />
+          >
+            <Users size={17} />
+            <span>
+              <strong>{entry.address || "Source address unavailable"}</strong>
+              <small>Last seen {timeLabel(entry.lastSeen)}</small>
+            </span>
+          </button>
         ))}
         {!callers.length && <p>No caller traffic yet.</p>}
         <h2>
@@ -147,7 +76,7 @@ export function ClientsView({
             key={c.id}
             className={activeClient?.id === c.id ? "selected" : ""}
             onClick={() => {
-              selectCaller(null);
+              selectAddress(null);
               onSelect(c);
             }}
           >
@@ -181,41 +110,26 @@ export function ClientsView({
           onClose={() => onSelect(null)}
           onDelete={onDelete}
         />
-      ) : connection ? (
-        <div>
-          <button className="subtle" onClick={() => selectCaller(null)}>
+      ) : source ? (
+        <div className="source-inspector">
+          <button className="subtle" onClick={() => selectAddress(null)}>
             <ArrowLeft size={16} />
             Back to caller sources
           </button>
-          <CallerIdentity
-            caller={connection}
-            policy={
-              connection.policy_id
-                ? config.clients.find((p) => p.id === connection.policy_id)
-                : undefined
-            }
+          <CallerSourceDetails
+            source={source}
+            policies={config.clients}
+            onEditPolicy={onSelect}
           />
-          {connection.policy_id && (
-            <button
-              onClick={() =>
-                onSelect(
-                  config.clients.find((p) => p.id === connection.policy_id) ||
-                    null,
-                )
-              }
-            >
-              Edit assigned permissions
-            </button>
-          )}
         </div>
       ) : (
         <div className="detail-empty">
           <Users size={30} strokeWidth={1.3} />
           <h2>Inspect a caller source.</h2>
           <p>
-            Expand a source and select an observation to inspect its
+            Select a source to see its activity, reported software,
             <br />
-            application details and latest identity evidence.
+            and the permission policies used by its requests.
           </p>
           <button onClick={() => onSelect(newClient())}>
             <Plus size={16} />

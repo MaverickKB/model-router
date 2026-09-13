@@ -92,9 +92,9 @@ it("shows source evidence and the failure reason before opening request details"
   );
 
   const card = screen.getByRole("button", {
-    name: /Unidentified caller.*writing/,
+    name: /192\.0\.2\.30.*writing/,
   });
-  expect(within(card).getByText("Unidentified caller")).toBeVisible();
+  expect(within(card).getByText("192.0.2.30")).toBeVisible();
   expect(
     within(card).getByText("192.0.2.30:51002 · Python requests 2.33.0"),
   ).toBeVisible();
@@ -124,7 +124,7 @@ it.each(["192.0.2.30", "TOOLS"])(
     await user.type(search, query);
 
     expect(
-      screen.getByRole("button", { name: /Unidentified caller.*writing/ }),
+      screen.getByRole("button", { name: /192\.0\.2\.30.*writing/ }),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", {

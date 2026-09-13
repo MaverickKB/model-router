@@ -67,19 +67,10 @@ export function callerClientLabel(caller: ObservedCaller) {
 }
 
 export function callerDisplayName(caller: ObservedCaller) {
-  if (caller.reported_name || caller.identity_quality === "policy_key") {
+  if (caller.identity_quality === "policy_key" && caller.name)
     return caller.name;
-  }
-  const rawName = `${caller.name} ${caller.software}`;
-  if (parsedSoftware(rawName)) return "Unidentified caller";
-  if (
-    !caller.identity_quality &&
-    caller.name === caller.software &&
-    /^[A-Za-z][A-Za-z0-9._-]*\/[^\s]+$/.test(caller.name)
-  ) {
-    return "Unidentified caller";
-  }
-  return caller.name;
+  if (caller.reported_name) return caller.reported_name;
+  return caller.source_address || "Source address unavailable";
 }
 
 export function callerSummary(caller: ObservedCaller) {
@@ -104,9 +95,11 @@ export function identityExplanation(caller: ObservedCaller) {
 export function CallerIdentity({
   caller,
   policy,
+  showHeading = true,
 }: {
   caller: ObservedCaller;
   policy?: Client;
+  showHeading?: boolean;
 }) {
   const quality = caller.identity_quality || "transport_only";
   const hints = Object.entries(caller.identity_hints || {}).filter(
@@ -118,7 +111,7 @@ export function CallerIdentity({
       className="caller-identity"
       aria-label={`Connection details for ${callerDisplayName(caller)}`}
     >
-      <h3>{callerDisplayName(caller)}</h3>
+      {showHeading && <h3>{callerDisplayName(caller)}</h3>}
       <p>{identityExplanation(caller)}</p>
       <dl>
         <dt>Last observed identity</dt>
