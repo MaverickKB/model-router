@@ -10,12 +10,14 @@ export function SettingsPage({
   save,
   onSignOut,
   initialSection = "Access",
+  focusDiscoveryTargets = false,
 }: {
   config: Config;
   operatorUrl: string | null;
   save: (config: Config) => Promise<Config>;
   onSignOut: () => void;
   initialSection?: "Access" | "Discovery";
+  focusDiscoveryTargets?: boolean;
 }) {
   const [section, setSection] = useState(initialSection);
   return (
@@ -81,7 +83,11 @@ export function SettingsPage({
         aria-labelledby="settings-tab-Discovery"
         hidden={section !== "Discovery"}
       >
-        <DiscoveryEditor config={config} save={save} />
+        <DiscoveryEditor
+          config={config}
+          save={save}
+          focusTargets={focusDiscoveryTargets}
+        />
       </div>
     </section>
   );

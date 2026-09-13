@@ -42,6 +42,27 @@
   justify-content: space-between;
   gap: 16px;
 }
+.network-progress .network-setup {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  margin: 0 0 17px;
+  padding: 14px 15px;
+  border: 1px solid #a5de1533;
+  border-radius: 6px;
+  background: linear-gradient(110deg, #a5de1510, transparent 65%);
+}
+.network-setup > svg {
+  color: var(--green);
+  margin-top: 1px;
+}
+.network-progress .network-setup strong {
+  display: block;
+}
+.network-progress .network-setup p {
+  margin-top: 5px;
+}
 .network-progress strong {
   font-weight: 500;
   font-size: 12px;

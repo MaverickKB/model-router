@@ -71,11 +71,15 @@ export function NetworkSummary({
 
 export function NetworkView({
   report: summary,
+  scopeReady,
   onDiscover,
+  onConfigureDiscovery,
   onConnect,
 }: {
   report: NetworkReport;
+  scopeReady: boolean;
   onDiscover: () => void;
+  onConfigureDiscovery: () => void;
   onConnect: (service: NetworkService) => void;
 }) {
   const [report, setReport] = useState(summary);
@@ -115,6 +119,7 @@ export function NetworkView({
     };
   }, [page, search, filter]);
   const running = networkIsScanning(report);
+  const needsScope = !scopeReady && !running;
   const responding = report.hosts.filter(
     (h) => h.scope === "network" && h.status === "up",
   );
@@ -155,12 +160,34 @@ export function NetworkView({
             Cancel scan
           </button>
         )}
-        <button onClick={onDiscover} disabled={running}>
-          <Radio size={15} />
-          {running ? "Scanning…" : "Discover"}
-        </button>
+        {needsScope ? (
+          <button className="primary" onClick={onConfigureDiscovery}>
+            Set discovery scope
+            <ChevronRight size={15} />
+          </button>
+        ) : (
+          <button onClick={onDiscover} disabled={running}>
+            <Radio size={15} />
+            {running ? "Scanning…" : "Discover"}
+          </button>
+        )}
       </div>
       <div className="network-progress">
+        {!scopeReady && (
+          <div className="network-setup" aria-labelledby="discovery-scope-heading">
+            <Radio size={18} />
+            <div>
+              <strong id="discovery-scope-heading">
+                Set a discovery scope before scanning
+              </strong>
+              <p>
+                Choose hostnames, IP addresses, network ranges, or router-local
+                listeners in Settings. Save the scope, then return here to
+                discover.
+              </p>
+            </div>
+          </div>
+        )}
         <div>
           <strong>{scanStatus(report)}</strong>
           <span>
@@ -179,8 +206,9 @@ export function NetworkView({
           />
         )}
         <p>
-          {report.targets?.join(", ") ||
-            "Configure discovery scope in Settings"}
+          {scopeReady
+            ? report.targets?.join(", ") || "Discovery scope is saved"
+            : "No discovery scope is saved"}
           {report.completed_at
             ? ` · Completed ${timeLabel(report.completed_at)}`
             : " · Sweep incomplete"}
