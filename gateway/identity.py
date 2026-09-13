@@ -141,9 +141,7 @@ class Identity:
         unusable_auth = bool(auth)
         if auth and auth[:7].casefold() == "bearer ":
             if auth[7:].startswith("mru_"):
-                return await self._identify_account_key(
-                    request, self.store.config(), auth[7:]
-                )
+                return await self._identify_account_key(request, auth[7:])
             # A number of OpenAI-compatible clients always send an API-key
             # header, even when the operator has not configured caller keys.
             # Resolve usable keys here, but let an unusable header continue
@@ -184,13 +182,20 @@ class Identity:
         request.state.caller_key_present = False
         return client
 
-    async def _identify_account_key(self, request: Request, config, key: str) -> Client:
+    async def _identify_account_key(self, request: Request, key: str) -> Client:
+        disabled = HTTPException(401, "User accounts are not enabled on this router")
         # A disabled router refuses before any lookup, so it is not an oracle
         # for key validity and spends no verification work on account keys.
-        if not config.accounts.enabled:
-            raise HTTPException(401, "User accounts are not enabled on this router")
+        if not self.store.config().accounts.enabled:
+            raise disabled
         async with self.verification_slots:
             match = await asyncio.to_thread(self.store.account_key, key)
+        # Key verification yields to configuration updates. Evaluate the master
+        # switch and the level as they exist after that work, as the bearer
+        # branch does for client keys.
+        config = self.store.config()
+        if not config.accounts.enabled:
+            raise disabled
         if match is None:
             raise HTTPException(401, "Account key is invalid or revoked")
         account = self.store.account_snapshot(match["account_id"])

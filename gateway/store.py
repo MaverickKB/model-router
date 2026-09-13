@@ -314,8 +314,9 @@ class Store:
                     raise ValueError(
                         f"Move {counts[level.id]} account(s) off level '{level.name}' before removing it"
                     )
-            # Account ids double as principal ids, so a client or level may not
-            # take one: the proxy resolves account keys against clients first.
+            # Account ids double as principal ids (events.client_id,
+            # callers.policy_id, route-map edges), so a client or level may
+            # not take one without mis-attributing that account's traffic.
             principal_ids = {c.id for c in config.clients} | kept_levels
             if principal_ids & set(self._accounts):
                 raise ValueError("Client and level ids must not reuse an account id")

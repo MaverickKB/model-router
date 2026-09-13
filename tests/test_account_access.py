@@ -269,6 +269,63 @@ async def test_suspension_and_level_change_apply_before_next_attempt(tmp_path):
     assert [host for host, _ in control.fleet.calls] == ["local-a.test", "local-b.test"]
 
 
+def change_policy_during_verification(monkeypatch, setup, change, on_call):
+    """Commit a configuration change while argon2 runs for the n-th key check."""
+    verify, seen = setup.store.account_key, [0]
+
+    def verify_then_change(key):
+        match = verify(key)
+        seen[0] += 1
+        if seen[0] == on_call:
+            config = setup.store.config()
+            if change == "disable":
+                config.accounts.enabled = False
+            else:
+                config.account_levels[0].route_names = ["free"]
+            setup.store.save(config)
+        return match
+
+    monkeypatch.setattr(setup.store, "account_key", verify_then_change)
+
+
+@pytest.mark.parametrize("change", ["disable", "narrow"])
+@pytest.mark.asyncio
+async def test_policy_saved_during_key_verification_governs_that_request(
+    tmp_path, monkeypatch, change
+):
+    # The proxy identifies the key once on entry and again before the first
+    # attempt; the change lands during that second verification, so only a
+    # decision taken on the post-verification configuration can catch it.
+    setup = await build(tmp_path)
+    change_policy_during_verification(monkeypatch, setup, change, on_call=2)
+    async with setup.app.router.lifespan_context(setup.app), setup.caller() as http:
+        completion = await complete(http, "private")
+    assert setup.fleet.calls == []
+    if change == "disable":
+        assert completion.status_code == 401
+        assert (
+            completion.json()["detail"] == "User accounts are not enabled on this router"
+        )
+    else:
+        assert completion.status_code == 403
+        assert (
+            completion.json()["error"]["message"]
+            == "Route is outside the client's allowlist"
+        )
+
+    # The model listing identifies the key exactly once.
+    listing_setup = await build(tmp_path / "listing")
+    change_policy_during_verification(monkeypatch, listing_setup, change, on_call=1)
+    async with listing_setup.caller() as http:
+        listing = await http.get("/v1/models")
+    if change == "disable":
+        assert listing.status_code == 401
+        assert listing.json()["detail"] == "User accounts are not enabled on this router"
+    else:
+        assert listing.status_code == 200
+        assert [m["id"] for m in listing.json()["data"]] == ["free"]
+
+
 @pytest.mark.asyncio
 async def test_source_network_client_is_still_refreshed_between_attempts(tmp_path):
     lan = Client(
