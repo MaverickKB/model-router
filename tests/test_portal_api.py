@@ -343,7 +343,7 @@ async def test_portal_writes_require_same_origin(tmp_path):
 async def test_operator_cookie_never_authorizes_portal_and_vice_versa(tmp_path):
     harness = await build(tmp_path)
     body = {"username": "bob", "level_id": harness.level.id}
-    account, token = await harness.add_account("alice")
+    _account, token = await harness.add_account("alice")
     async with harness.browser(address="192.0.2.50") as session:
         activated = await session.post(
             ACTIVATE, json={"token": token, "password": PASSWORD}
