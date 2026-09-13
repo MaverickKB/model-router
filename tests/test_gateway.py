@@ -162,8 +162,8 @@ async def test_model_replacement_preserves_auto_and_removes_old_catalog(setup):
         and "first-model" not in ids
         and "replacement-with-unseen-name" in ids
     )
-    assert (await send(http, "first-model")).status_code == 503
-    assert (await send(http, "*")).status_code == 503
+    assert (await send(http, "first-model")).status_code == 404
+    assert (await send(http, "*")).status_code == 404
 
 
 @pytest.mark.asyncio
@@ -378,6 +378,9 @@ async def test_capability_selection(setup):
     assert failed.status_code == 400
     assert failed.json()["error"]["code"] == "unsupported_capability"
     assert "tools" in failed.json()["error"]["message"]
+    event = app.state.store.events()[0]
+    assert event["http_status"] == 400 and event["status"] == "failed"
+    assert event["attempts"] == []
 
 
 @pytest.mark.asyncio
@@ -658,3 +661,117 @@ async def test_manual_discovery_keeps_verified_candidates_and_registration_is_id
         "/v1/gateway/register", json={"base_url": "http://127.0.0.2/v1?key=invalid"}
     )
     assert invalid.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize(
+    "requested", ["not-configured", "first-*", "*", "first-model?"]
+)
+async def test_unknown_exact_name_is_failed_404_without_model_attempts(
+    setup, direct, requested
+):
+    app, http, fleet, *_ = setup
+    config = app.state.store.config()
+    config.clients[0].allow_direct_models = direct
+    saved = app.state.store.save(config)
+    response = await send(http, requested)
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "model_not_found"
+    assert repr(requested) in error["message"] and "/v1/models" in error["message"]
+    assert not fleet.calls
+    event = app.state.store.events()[0]
+    assert event["status"] == "failed" and event["http_status"] == 404
+    assert event["attempts"] == []
+    assert event["requested"] == requested
+    assert app.state.store.config() == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("eligible_catalog", [False, True])
+async def test_missing_name_preserves_uncertainty_only_for_permitted_direct_catalogs(
+    setup, direct, eligible_catalog
+):
+    app, http, fleet, _local, cloud, *_ = setup
+    config = app.state.store.config()
+    config.clients[0].allow_direct_models = direct
+    if not eligible_catalog:
+        config.clients[0].engine_ids = [cloud.id]
+    app.state.store.save(config)
+    fleet.catalog_failure.add("local.test")
+    await app.state.discovery.refresh()
+    assert app.state.discovery.views()[0]["models"] == []
+    response = await send(http, "not-configured")
+    expected = 503 if direct and eligible_catalog else 404
+    assert response.status_code == expected
+    assert not fleet.calls
+    event = app.state.store.events()[0]
+    assert event["status"] == ("unavailable" if expected == 503 else "failed")
+    assert event["attempts"] == []
+    if not direct:
+        # An unavailable catalog cannot support a claim about model existence.
+        # This caller can use configured routes, so identify that missing route.
+        message = response.json()["error"]["message"]
+        assert "No configured route named" in message
+        assert "advertised model" not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direct", [False, True])
+async def test_known_model_in_temporary_cooldown_is_not_reported_missing(setup, direct):
+    app, http, fleet, local, *_ = setup
+    config = app.state.store.config()
+    config.clients[0].allow_direct_models = direct
+    app.state.store.save(config)
+    app.state.discovery.observation(local.id).circuit_until = time.time() + 60
+    response = await send(http, "first-model")
+    assert response.status_code == (503 if direct else 403)
+    assert response.json()["error"].get("code") != "model_not_found"
+    assert not fleet.calls
+    event = app.state.store.events()[0]
+    assert event["status"] == ("unavailable" if direct else "denied")
+    assert event["attempts"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["model[1]", "model?", "*"])
+async def test_literal_glob_characters_in_known_model_id_are_exact_names(setup, model):
+    app, http, fleet, *_ = setup
+    fleet.models["local.test"] = [model, "another-model"]
+    await app.state.discovery.refresh()
+    response = await send(http, model)
+    assert response.status_code == 200
+    assert response.json()["model"] == model
+    assert len(fleet.calls) == 1 and fleet.calls[0][1]["model"] == model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["key", "allowlist", "disabled"])
+async def test_configured_route_precedes_same_named_model_and_retains_its_gate(
+    setup, blocker
+):
+    app, http, fleet, *_ = setup
+    config = app.state.store.config()
+    config.routes.append(
+        Route(
+            name="first-model",
+            require_caller_key=blocker == "key",
+            enabled=blocker != "disabled",
+        )
+    )
+    if blocker != "allowlist":
+        config.clients[0].route_names.append("first-model")
+    config.security.anonymous_client_id = config.clients[0].id
+    app.state.store.save(config)
+    if blocker == "key":
+        http.headers.pop("Authorization")
+    response = await send(http, "first-model")
+    expected = {"key": 401, "allowlist": 403, "disabled": 503}[blocker]
+    assert response.status_code == expected
+    assert not fleet.calls
+    event = app.state.store.events()[0]
+    assert event["status"] == ("unavailable" if expected == 503 else "denied")
+    assert event["attempts"] == []
