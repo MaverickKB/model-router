@@ -100,6 +100,14 @@ class PortalIdentity:
             valid = await asyncio.to_thread(
                 verify, verifier or DUMMY_VERIFIER, body.password
             )
+        if valid and account is not None:
+            # Verification ran against a verifier read before the expensive work;
+            # a password change or reset link that landed meanwhile must not be
+            # answered with the password it replaced.
+            valid = verifier == await asyncio.to_thread(
+                self.store.account_verifier, account["id"]
+            )
+            account = self.store.account_snapshot(account["id"])
         if not valid or account is None or account["status"] == "pending":
             raise HTTPException(401, "Username or password is incorrect")
         if account["status"] == "suspended":
@@ -151,7 +159,11 @@ class PortalIdentity:
             valid = await asyncio.to_thread(
                 verify, verifier or DUMMY_VERIFIER, body.current
             )
-        if not valid:
+        # A concurrent change or reset link that replaced the verifier while
+        # this one was being checked wins; the stale current password is refused.
+        if not valid or verifier != await asyncio.to_thread(
+            self.store.account_verifier, account["id"]
+        ):
             raise HTTPException(401, "Current password is incorrect")
         self.login_limit.reset(source)
         replacement = await asyncio.to_thread(digest, body.new)

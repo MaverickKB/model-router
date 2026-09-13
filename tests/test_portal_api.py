@@ -1,7 +1,9 @@
 """Account holders activate, sign in and manage keys through a portal session that is never operator authority."""
 
+import asyncio
 import hashlib
 import json
+import threading
 from contextlib import asynccontextmanager
 
 import httpx
@@ -424,6 +426,76 @@ async def test_reset_link_signs_out_every_session_until_it_is_consumed(tmp_path)
                 LOGIN, json={"username": "alice", "password": PASSWORD}
             )
         assert again.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_verification_in_flight_during_a_password_change_is_refused(
+    tmp_path, monkeypatch
+):
+    """A sign-in or change whose argon2 check straddles a password change loses to it."""
+    harness = await build(tmp_path)
+    real = portal_module.verify
+    gates: list[tuple[threading.Event, threading.Event]] = []
+
+    def gated_verify(encoded, value):
+        # The first call after each arm() blocks until the test releases it.
+        if gates and not gates[-1][0].is_set():
+            reached, release = gates[-1]
+            reached.set()
+            release.wait(5)
+        return real(encoded, value)
+
+    def arm():
+        gates.append((threading.Event(), threading.Event()))
+        return gates[-1]
+
+    monkeypatch.setattr(portal_module, "verify", gated_verify)
+    async with harness.activated() as (account, first):
+        reached, release = arm()
+        async with harness.browser("192.0.2.40") as late:
+            attempt = asyncio.create_task(
+                late.post(LOGIN, json={"username": "alice", "password": PASSWORD})
+            )
+            await asyncio.to_thread(reached.wait, 5)
+            changed = await first.put(
+                PASSWORD_PATH, json={"current": PASSWORD, "new": NEW_PASSWORD}
+            )
+            assert changed.status_code == 200
+            release.set()
+            refused = await attempt
+        assert refused.status_code == 401
+        assert refused.json()["detail"] == "Username or password is incorrect"
+        assert "set-cookie" not in refused.headers
+        assert len(harness.store.portal_sessions()) == 1
+        assert len(harness.app.state.portal.sessions) == 1
+        # Two changes against the same current password: only the first lands.
+        verifier = harness.store.account_verifier(account["id"])
+        reached, release = arm()
+        async with harness.browser("192.0.2.41", cookies=first.cookies) as other:
+            attempt = asyncio.create_task(
+                other.put(
+                    PASSWORD_PATH, json={"current": NEW_PASSWORD, "new": PASSWORD}
+                )
+            )
+            await asyncio.to_thread(reached.wait, 5)
+            winner = await first.put(
+                PASSWORD_PATH,
+                json={"current": NEW_PASSWORD, "new": "third password here"},
+            )
+            assert winner.status_code == 200
+            release.set()
+            loser = await attempt
+        assert loser.status_code == 401
+        assert loser.json()["detail"] == "Current password is incorrect"
+        assert "set-cookie" not in loser.headers
+        assert harness.store.account_verifier(account["id"]) not in (None, verifier)
+        assert (await first.get(ME)).status_code == 200
+        async with harness.browser() as http:
+            assert (
+                await http.post(
+                    LOGIN, json={"username": "alice", "password": "third password here"}
+                )
+            ).status_code == 200
 
 
 @pytest.mark.asyncio
