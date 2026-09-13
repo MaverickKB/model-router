@@ -887,15 +887,18 @@ class Store:
         return key, record
 
     def account_key(self, key: str) -> dict | None:
+        lookup = self.cipher.lookup(key)
+        query = "SELECT id, account_id, name, verifier FROM account_keys WHERE lookup=?"
         with self.lock:
-            row = self.db.execute(
-                "SELECT id, account_id, name, verifier FROM account_keys WHERE lookup=?",
-                (self.cipher.lookup(key),),
-            ).fetchone()
+            row = self.db.execute(query, (lookup,)).fetchone()
         if not row or not verify(row[3], key):
             return None
         key_id = row[0]
         with self.lock:
+            # Verification is expensive and must not hold up other requests.
+            # Revocation or account deletion during that work invalidates this read.
+            if self.db.execute(query, (lookup,)).fetchone() != row:
+                return None
             # last_used is informational; one write per minute per key bounds
             # the storage cost of a busy key.
             touched = self._key_touched.get(key_id)

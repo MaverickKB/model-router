@@ -237,6 +237,33 @@ def test_last_used_write_is_throttled(tmp_path):
     assert last_used() > first
 
 
+def test_account_key_revoked_during_verification_is_refused(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    level = AccountLevel(name="Standard")
+    with_levels(store, level)
+    account = store.create_account("alice", "Alice", level.id)
+    key, record = store.create_account_key(account["id"], "laptop")
+    other = store.create_account("bob", "Bob", level.id)
+    other_key, _ = store.create_account_key(other["id"], "phone")
+
+    def revoke_then_verify(verifier, presented):
+        store.revoke_account_key(account["id"], record["id"])
+        return verify(verifier, presented)
+
+    monkeypatch.setattr("gateway.store.verify", revoke_then_verify)
+    assert store.account_key(key) is None
+    assert record["id"] not in store._key_touched
+    assert store.account_keys(account["id"]) == []
+
+    def delete_then_verify(verifier, presented):
+        store.delete_account(other["id"])
+        return verify(verifier, presented)
+
+    monkeypatch.setattr("gateway.store.verify", delete_then_verify)
+    assert store.account_key(other_key) is None
+    assert store.account_snapshot(other["id"]) is None
+
+
 def test_activation_token_is_one_time_and_expires(tmp_path):
     store = Store(str(tmp_path))
     level = AccountLevel(name="Standard")
