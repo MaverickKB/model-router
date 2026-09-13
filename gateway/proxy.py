@@ -17,6 +17,7 @@ from .identity import Identity
 from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
+from .stream_protocol import CompletionMarker
 
 
 class ResponseTooLarge(Exception):
@@ -60,25 +61,35 @@ class InflightRequest:
                 self.observation.inflight = max(0, self.observation.inflight - 1)
 
     async def relay(self, first, iterator, finish):
+        terminal = CompletionMarker()
+        status, code = "cancelled", None
         try:
+            terminal.feed(first)
             yield first
-            async for chunk in iterator:
-                yield chunk
-            self.observation.last_success = time.time()
-            await finish("completed", 200)
-        except asyncio.CancelledError:
-            # Starlette cancellation remains active at every await. Cleanup must
-            # finish inside its own shield before that cancellation propagates.
-            with CancelScope(shield=True):
-                await finish("cancelled")
-            raise
+            if not terminal.complete:
+                async for chunk in iterator:
+                    terminal.feed(chunk)
+                    yield chunk
+                    if terminal.complete:
+                        break
+            status, code = "completed", 200
         except httpx.HTTPError:
+            status, code = "failed", 502
             self.observation.circuit_until = time.time() + self.failure_cooldown
-            await finish("failed", 502)
             yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted"}}\n\n'
         finally:
+            # OpenAI clients close on the terminal event without waiting for
+            # HTTP EOF. Preserve that outcome through disconnect and protect
+            # the single history write and connection cleanup from cancellation.
+            if terminal.complete:
+                status, code = "completed", 200
+            if status == "completed":
+                self.observation.last_success = time.time()
             with CancelScope(shield=True):
-                await self.release()
+                try:
+                    await finish(status, code)
+                finally:
+                    await self.release()
 
 
 class Proxy:
