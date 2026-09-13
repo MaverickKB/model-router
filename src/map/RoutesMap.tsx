@@ -8,7 +8,8 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Dialog, timeLabel } from "../components";
+import { Dialog } from "../components";
+import { sourceTimeLabel } from "../source-time";
 import {
   callerClientLabel,
   callerDisplayName,
@@ -360,7 +361,7 @@ export function RoutesMap({
               node(
                 { kind: "source", id: sourceId(source.address) },
                 source.address || "Source address unavailable",
-                `Last seen ${timeLabel(source.lastSeen)}`,
+                `Last seen ${sourceTimeLabel(source.lastSeen)}`,
                 <Monitor size={18} />,
               ),
             )}

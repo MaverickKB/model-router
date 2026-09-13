@@ -95,7 +95,9 @@ it("selects one source across software and policies, with metadata collapsed ins
   const software = within(details).getByText("Software: OpenAI Python 2.24.0");
   expect(software).toBeVisible();
   expect(
-    within(details).getByText("Latest policy: Household account"),
+    within(details).getByText(
+      "Policy identified by request: Household account",
+    ),
   ).toBeVisible();
   expect(within(details).getByText("192.0.2.30:51002")).not.toBeVisible();
   await user.click(software);
@@ -167,7 +169,9 @@ it("shows declared names as metadata and keeps the same key on separate source a
   ).toHaveTextContent("Writing assistant");
   expect(within(details).getByText("Reported operating systems")).toBeVisible();
   expect(
-    within(details).getByText("Latest policy: Household account"),
+    within(details).getByText(
+      "Policy identified by request: Household account",
+    ),
   ).toBeVisible();
   expect(
     screen.queryByRole("button", { name: /Inspect Writing assistant/ }),
@@ -180,7 +184,7 @@ it("shows declared names as metadata and keeps the same key on separate source a
     name: "Source details for 192.0.2.31",
   });
   expect(
-    within(other).getByText("Latest policy: Household account"),
+    within(other).getByText("Policy identified by request: Household account"),
   ).toBeVisible();
 });
 

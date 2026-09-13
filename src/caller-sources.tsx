@@ -1,5 +1,5 @@
 import { callerClientLabel, CallerIdentity } from "./caller-identity";
-import { timeLabel } from "./components";
+import { sourceTimeLabel } from "./source-time";
 import type { Client, ObservedCaller } from "./types";
 import "./caller-sources.css";
 
@@ -64,7 +64,7 @@ export function CallerSourceDetails({
         <h2>{address}</h2>
         <p>
           {requests} {requests === 1 ? "request" : "requests"} observed · Last
-          seen {timeLabel(source.lastSeen)}
+          seen {sourceTimeLabel(source.lastSeen)}
         </p>
       </header>
       {(names.length > 0 || systems.length > 0) && (
@@ -85,7 +85,7 @@ export function CallerSourceDetails({
       )}
       <h3>Request metadata</h3>
       <p className="source-explanation">
-        Software and permissions observed on requests from this address. One
+        Software and identification recorded from requests at this address. One
         address can represent several applications or devices.
       </p>
       <div className="source-metadata-list">
@@ -103,8 +103,8 @@ export function CallerSourceDetails({
                       <>Reported name: {caller.reported_name} · </>
                     )}
                     {policy
-                      ? `Latest policy: ${policy.name}`
-                      : "No named policy identified"}
+                      ? `Policy identified by request: ${policy.name}`
+                      : "No named policy identified by the request"}
                   </span>
                 </span>
               </summary>
