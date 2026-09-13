@@ -71,8 +71,33 @@
   font-size: 13px;
   color: #aaa;
 }
+.map-source-group {
+  border-left: 2px solid #ffffff18;
+  padding-left: 8px;
+  display: flow-root;
+}
+.map-source-group h4 {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #c7c7c7;
+}
+.map-source-group h4 small {
+  font-size: 10px;
+  color: #92999e;
+}
+.map-source-group h4 span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .map-node {
-  min-height: 84px;
+  height: 84px;
   margin-bottom: 20px;
   display: flex;
   align-items: center;
@@ -124,16 +149,6 @@
   color: #9aa0a4;
   margin-top: 6px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.map-node .map-observations {
-  margin-top: 5px;
-  color: #cbd7c2;
-  white-space: normal;
-}
-.map-observations span {
-  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
 }

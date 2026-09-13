@@ -2,6 +2,15 @@ import { ChevronRight, Clock3, Route as RouteIcon, Search } from "lucide-react";
 import { useState } from "react";
 import type { Job } from "../types";
 import { callerDisplayName, callerSummary } from "../caller-identity";
+
+function failureReason(job: Job) {
+  if (job.decision.error) return job.decision.error;
+  if (!["failed", "denied", "unavailable"].includes(job.status) || job.model)
+    return "";
+  const reasons = [...new Set(job.decision.rejections.map((r) => r.reason))];
+  return reasons.join("; ");
+}
+
 export function ActivityRail({
   events,
   hover,
@@ -21,7 +30,7 @@ export function ActivityRail({
         (filter === "Errors"
           ? ["failed", "denied", "unavailable"].includes(j.status)
           : ["running", "routing", "waiting"].includes(j.status))) &&
-      `${j.client} ${j.caller ? callerSummary(j.caller) : ""} ${j.requested} ${j.model || ""} ${j.engine || ""} ${j.decision.error || ""}`
+      `${j.client} ${j.caller ? callerSummary(j.caller) : ""} ${j.requested} ${j.model || ""} ${j.engine || ""} ${failureReason(j)}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
@@ -67,7 +76,9 @@ export function ActivityRail({
           >
             <div className="job-top">
               <span className={"status-dot " + j.status} />
-              <strong>{j.caller ? callerDisplayName(j.caller) : "Caller not recorded"}</strong>
+              <strong>
+                {j.caller ? callerDisplayName(j.caller) : "Caller not recorded"}
+              </strong>
               <span>
                 {new Date(j.ts * 1000).toLocaleTimeString([], {
                   hour: "numeric",
@@ -80,7 +91,9 @@ export function ActivityRail({
               {j.requested}
             </div>
             {j.caller && <p>{callerSummary(j.caller)}</p>}
-            <p>{j.decision.error || j.model || "No model selected"}</p>
+            <p className={failureReason(j) ? "request-error" : undefined}>
+              {failureReason(j) || j.model || "No model selected"}
+            </p>
             <div className="job-bottom">
               <span>{j.status}</span>
               <span>

@@ -47,6 +47,39 @@ const completed: Job = {
   },
 };
 
+it("explains preserved legacy failures without labeling rejected alternatives as a failed request", async () => {
+  const decision = {
+    candidates: [],
+    rejections: [
+      {
+        engine: "Engine",
+        engine_id: "engine",
+        model: "model",
+        tier: "primary",
+        reason: "Missing capability: tools",
+      },
+    ],
+  };
+  render(
+    <ActivityRail
+      events={[
+        { ...failed, decision },
+        { ...completed, decision },
+      ]}
+      hover={null}
+      onHover={vi.fn()}
+      onSelect={vi.fn()}
+    />,
+  );
+  expect(screen.getAllByText("Missing capability: tools")).toHaveLength(1);
+  expect(screen.getByText("chat-model")).toBeVisible();
+  await userEvent
+    .setup()
+    .type(screen.getByRole("textbox", { name: "Search requests" }), "tools");
+  expect(screen.getByText("Missing capability: tools")).toBeVisible();
+  expect(screen.queryByText("chat-model")).not.toBeInTheDocument();
+});
+
 it("shows source evidence and the failure reason before opening request details", async () => {
   const onSelect = vi.fn();
   render(
@@ -100,9 +133,7 @@ it.each(["192.0.2.30", "TOOLS"])(
     ).not.toBeInTheDocument();
     expect(screen.getByText(error)).toBeVisible();
 
-    await user.click(
-      screen.getByRole("button", { name: "Errors" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Errors" }));
     expect(screen.getByText(error)).toBeVisible();
     await user.clear(search);
     await user.click(screen.getByRole("button", { name: "All" }));
