@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.0-beta.1
+
+Initial public beta. Not a production guarantee.
+
 - Discovery TCP coverage includes HTTP-inspection ports, so catalogs on 11434 or 8888 are found even when the range is 8000-8100. The Model services list only shows catalogs that published models.
 - Settings › Updates can check GitHub releases and install a published tag with one operator click. Checking never applies; apply refuses a dirty tree and restarts after a successful checkout.
 - Fresh installs leave operator sign-in off. An operator key is created only when the owner enables sign-in or sets `MODEL_ROUTER_ADMIN_TOKEN`.
