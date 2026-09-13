@@ -143,10 +143,29 @@ async def limits_are_never_consulted(ctx: Disabled):
     assert limits.ledger.windows == {}
 
 
+async def admin_endpoints_stay_available(ctx: Disabled):
+    # F1: operators prepare accounts and hand out links before enabling.
+    token = (ctx.store.directory / "operator-bootstrap.key").read_text().strip()
+    async with ctx.http("127.0.0.1", Origin="http://router.test") as http:
+        assert (
+            await http.post("/api/v1/login", json={"token": token})
+        ).status_code == 200
+        listed = await http.get("/api/v1/accounts")
+        link = await http.post(f"/api/v1/accounts/{ctx.account['id']}/activation")
+        state = await http.get("/api/v1/state")
+    assert listed.status_code == 200
+    (row,) = listed.json()["accounts"]
+    assert row["id"] == ctx.account["id"] and row["key_count"] == 1
+    assert link.status_code == 200
+    assert link.json()["url"].startswith("http://router.test/portal/activate#token=")
+    assert state.json()["account_levels_in_use"] == {ctx.account["level_id"]: 1}
+
+
 SURFACES = [
     account_key_is_refused_before_lookup,
     registered_device_grants_nothing,
     limits_are_never_consulted,
+    admin_endpoints_stay_available,
 ]
 
 

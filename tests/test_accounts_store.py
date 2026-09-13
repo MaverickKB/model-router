@@ -432,13 +432,17 @@ def test_store_restart_preserves_accounts_keys_devices_sessions_and_usage(tmp_pa
 
 def test_usage_windows_upsert_add_and_prune(tmp_path):
     store = Store(str(tmp_path))
+    level = AccountLevel(name="Standard")
+    with_levels(store, level)
+    acct = store.create_account("acct", "Acct", level.id)["id"]
+    other = store.create_account("other", "Other", level.id)["id"]
     now = time.time()
     start = now - (now % 3600)
-    store.record_usage("acct", start, 3600, 10, 20, 0)
-    store.record_usage("acct", start, 3600, 5, 5, 2)
-    (row,) = store.usage_windows("acct")
+    store.record_usage(acct, start, 3600, 10, 20, 0)
+    store.record_usage(acct, start, 3600, 5, 5, 2)
+    (row,) = store.usage_windows(acct)
     assert row == {
-        "account_id": "acct",
+        "account_id": acct,
         "window_start": start,
         "window_seconds": 3600,
         "prompt_tokens": 15,
@@ -448,17 +452,21 @@ def test_usage_windows_upsert_add_and_prune(tmp_path):
     }
     stale = now - 36 * 86400
     store.db.execute(
-        "INSERT INTO usage_windows VALUES ('acct', ?, 3600, 1, 1, 0, 1)", (stale,)
+        "INSERT INTO usage_windows VALUES (?, ?, 3600, 1, 1, 0, 1)", (acct, stale)
     )
     store.db.commit()
-    store.record_usage("other", start, 86400, 1, 1, 0)
+    store.record_usage(other, start, 86400, 1, 1, 0)
     starts = [r[0] for r in store.db.execute("SELECT window_start FROM usage_windows")]
     assert stale not in starts and len(starts) == 2
-    assert {w["account_id"] for w in store.open_usage_windows(now)} == {"acct", "other"}
+    assert {w["account_id"] for w in store.open_usage_windows(now)} == {acct, other}
     assert store.open_usage_windows(now + 86400 * 2) == []
-    store.record_usage("acct", start - 8 * 86400, 3600, 1, 1, 0)
-    assert len(store.usage_windows("acct", days=7)) == 1
-    assert len(store.usage_windows("acct", days=9)) == 2
+    store.record_usage(acct, start - 8 * 86400, 3600, 1, 1, 0)
+    assert len(store.usage_windows(acct, days=7)) == 1
+    assert len(store.usage_windows(acct, days=9)) == 2
+    # Usage for a deleted account is dropped rather than resurrecting a row.
+    store.delete_account(other)
+    store.record_usage(other, start, 86400, 1, 1, 0)
+    assert store.usage_windows(other) == []
 
 
 def test_device_address_is_canonical_and_globally_unique(tmp_path):

@@ -235,6 +235,7 @@ export interface State {
   observed_callers?: ObservedCaller[];
   route_map?: RouteMap;
   warnings?: string[];
+  account_levels_in_use?: Record<string, number>;
   network: import("./network/types").NetworkReport;
   environment_label: string;
   operator_url?: string | null;

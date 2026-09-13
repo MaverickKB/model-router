@@ -838,6 +838,12 @@ class Store:
             ).fetchone()
         return {"expires": row[0], "purpose": row[1]} if row else None
 
+    def clear_activation(self, account_id: str) -> None:
+        with self.lock, self.db:
+            self.db.execute(
+                "DELETE FROM account_activations WHERE account_id=?", (account_id,)
+            )
+
     def account_verifier(self, account_id: str) -> str | None:
         with self.lock:
             row = self.db.execute(
@@ -1074,27 +1080,32 @@ class Store:
         completion_tokens: int,
         estimated_tokens: int,
     ) -> None:
-        with self.lock, self.db:
-            self.db.execute(
-                "INSERT INTO usage_windows VALUES (?, ?, ?, ?, ?, ?, 1)"
-                " ON CONFLICT(account_id, window_start, window_seconds) DO UPDATE SET"
-                " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
-                " completion_tokens = completion_tokens + excluded.completion_tokens,"
-                " estimated_tokens = estimated_tokens + excluded.estimated_tokens,"
-                " requests = requests + 1",
-                (
-                    account_id,
-                    window_start,
-                    window_seconds,
-                    prompt_tokens,
-                    completion_tokens,
-                    estimated_tokens,
-                ),
-            )
-            self.db.execute(
-                "DELETE FROM usage_windows WHERE window_start + window_seconds < ?",
-                (time.time() - USAGE_RETENTION_SECONDS,),
-            )
+        with self.lock:
+            # A request settling after its account was deleted must not
+            # resurrect a usage row for it.
+            if account_id not in self._accounts:
+                return
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO usage_windows VALUES (?, ?, ?, ?, ?, ?, 1)"
+                    " ON CONFLICT(account_id, window_start, window_seconds) DO UPDATE SET"
+                    " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
+                    " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                    " estimated_tokens = estimated_tokens + excluded.estimated_tokens,"
+                    " requests = requests + 1",
+                    (
+                        account_id,
+                        window_start,
+                        window_seconds,
+                        prompt_tokens,
+                        completion_tokens,
+                        estimated_tokens,
+                    ),
+                )
+                self.db.execute(
+                    "DELETE FROM usage_windows WHERE window_start + window_seconds < ?",
+                    (time.time() - USAGE_RETENTION_SECONDS,),
+                )
 
     def usage_windows(self, account_id: str, days: int = 7) -> list[dict]:
         with self.lock:
