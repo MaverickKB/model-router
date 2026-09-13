@@ -127,6 +127,20 @@ class Engine(NamedRecord):
             path = "/v1"
         return f"{url.scheme}://{url.netloc}{path}"
 
+    @classmethod
+    def validate_connection_url(cls, value: str) -> None:
+        # Stored configurations may contain endpoints accepted by earlier
+        # versions. Validate connection ports when an endpoint is changed,
+        # while allowing an unchanged invalid endpoint to be repaired in place.
+        try:
+            port = urlsplit(cls.validate_url(value)).port
+            if port == 0:
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                "Use an endpoint with a valid TCP port (1-65535)"
+            ) from None
+
     @field_validator("aliases")
     @classmethod
     def alias_urls(cls, values: list[str]) -> list[str]:
@@ -264,6 +278,16 @@ class Configuration(Record):
     )
     clients: list[Client] = Field(default_factory=list)
     discovery: Discovery = Field(default_factory=Discovery)
+
+    def validate_endpoint_changes(self, previous: Configuration) -> None:
+        previous_engines = {engine.id: engine for engine in previous.engines}
+        for engine in self.engines:
+            old = previous_engines.get(engine.id)
+            changed = set(engine.endpoint_urls) - set(old.endpoint_urls if old else [])
+            if old is None or engine.base_url != old.base_url:
+                changed.add(engine.base_url)
+            for url in changed:
+                Engine.validate_connection_url(url)
 
     @model_validator(mode="after")
     def unique_records(self):

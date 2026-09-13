@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .request_policy import resolve_unkeyed_policy
 from .schema import Client
 from .security.credentials import bootstrap_key, digest, verify
 from .security.limits import RateLimit
@@ -123,7 +124,7 @@ class Identity:
             raise HTTPException(403, "Settings require a same-origin operator request")
 
     async def identify(self, request: Request) -> Client:
-        config = self.store.config()
+        request.state.authentication_error = None
         auth = request.headers.get("Authorization", "")
         unusable_auth = bool(auth)
         if auth and auth[:7].casefold() == "bearer ":
@@ -135,6 +136,9 @@ class Identity:
             # compatible with those clients without weakening a gated route.
             async with self.verification_slots:
                 client_id = await asyncio.to_thread(self.store.key_client, auth[7:])
+            # Key verification yields to configuration updates. Evaluate the
+            # policy as it exists after that work, including disable/removal.
+            config = self.store.config()
             configured = next((c for c in config.clients if c.id == client_id), None)
             if configured is not None and not configured.enabled:
                 raise HTTPException(401, "Client key is invalid or revoked")
@@ -157,57 +161,12 @@ class Identity:
                 request.state.identity_basis = "api_key"
                 request.state.caller_key_present = True
                 return client
-        try:
-            address = ipaddress.ip_address(request.client.host)
-        except (ValueError, AttributeError):
-            address = None
-        network_clients = []
-        for client in config.clients:
-            if not client.enabled or not client.allow_network_auth:
-                continue
-            for value in client.source_networks:
-                try:
-                    net = ipaddress.ip_network(value, strict=False)
-                    if address is not None and address in net:
-                        network_clients.append((net.prefixlen, client))
-                except ValueError:
-                    continue
-        if network_clients:
-            network_clients.sort(key=lambda item: item[0], reverse=True)
-            request.state.identity_basis = (
-                "unassigned" if unusable_auth else "source_network"
-            )
-            request.state.caller_key_present = False
-            return network_clients[0][1]
-        anonymous = next(
-            (
-                c
-                for c in config.clients
-                if c.id == config.security.anonymous_client_id and c.enabled
-            ),
-            None,
+        client, basis = resolve_unkeyed_policy(
+            self.store.config(), request.client.host if request.client else None
         )
-        if anonymous and address is not None and (
-            not anonymous.source_networks
-            or any(
-                address in ipaddress.ip_network(n, strict=False)
-                for n in anonymous.source_networks
-            )
-        ):
-            request.state.identity_basis = "unassigned" if unusable_auth else "shared_access"
-            request.state.caller_key_present = False
-            return anonymous
-        # Observation is intentionally independent from policy creation.  An
-        # unkeyed request receives a transient routing identity; it is never
-        # persisted as a permission policy and route gates still apply later.
-        request.state.identity_basis = "unassigned" if unusable_auth else "shared_access"
+        request.state.identity_basis = "unassigned" if unusable_auth else basis
         request.state.caller_key_present = False
-        return Client(
-            name="Unkeyed connection",
-            kind="shared",
-            route_names=[route.name for route in config.routes],
-            allow_cloud=True,
-        )
+        return client
 
     async def login(self, request: Request):
         if not self.origin_allowed(request):

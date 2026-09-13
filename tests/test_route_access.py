@@ -250,18 +250,10 @@ async def test_placeholder_header_matches_default_policy_without_claiming_it(tmp
     assert {item["id"] for item in unkeyed.json()["data"]} == {"free"}
     assert {item["id"] for item in placeholder.json()["data"]} == {"free"}
     callers = Store(str(tmp_path)).callers()
-    assert {caller["identity_basis"] for caller in callers} == {
-        "shared_access",
-        "unassigned",
-    }
-    assert all(
-        caller["policy_id"] in {None, default.id}
-        for caller in callers
-    )
-    assert any(
-        caller["identity_basis"] == "unassigned" and caller["policy_id"] is None
-        for caller in callers
-    )
+    assert len(callers) == 1
+    assert callers[0]["request_count"] == 2
+    assert callers[0]["identity_basis"] == "unassigned"
+    assert callers[0]["policy_id"] is None
 
 
 @pytest.mark.asyncio

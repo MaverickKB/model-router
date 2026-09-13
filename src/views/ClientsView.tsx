@@ -1,12 +1,85 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
+  callerClientLabel,
   callerDisplayName,
-  callerSummary,
   CallerIdentity,
 } from "../caller-identity";
-import { Plus, Users } from "lucide-react";
+import { ArrowLeft, ChevronDown, Plus, Users } from "lucide-react";
 import { ClientEditor, newClient } from "../editors";
 import type { Client, Config, EngineView, ObservedCaller } from "../types";
+
+function CallerSource({
+  address,
+  callers,
+  selected,
+  onSelect,
+}: {
+  address: string;
+  callers: ObservedCaller[];
+  selected: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  const latest = Math.max(...callers.map((caller) => caller.last_seen));
+  return (
+    <div className="caller-source">
+      <button
+        className="caller-source-toggle"
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span>
+          <strong>{address || "Source address unavailable"}</strong>{" "}
+          <small>
+            {callers.length}{" "}
+            {callers.length === 1 ? "observation" : "observations"}
+            {" · "}Last seen{" "}
+            {latest
+              ? new Date(latest * 1000).toLocaleString([], {
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              : "time unavailable"}
+          </small>
+        </span>
+        <ChevronDown size={15} aria-hidden="true" />
+      </button>
+      <div
+        id={detailsId}
+        className="caller-source-observations"
+        hidden={!expanded}
+      >
+        {callers.map((caller) => {
+          const name = callerDisplayName(caller);
+          const client = callerClientLabel(caller);
+          const unnamed = !name || name === "Unidentified caller";
+          const label = unnamed ? client : name;
+          return (
+            <button
+              key={caller.id}
+              className={selected === caller.id ? "selected" : ""}
+              aria-pressed={selected === caller.id}
+              aria-label={`Inspect ${label} from ${address || "unknown source"}`}
+              onClick={() => onSelect(caller.id)}
+            >
+              <span>
+                <strong>{label}</strong>
+                <small>
+                  {unnamed ? "Application name not supplied" : client}
+                </small>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function ClientsView({
   config,
   engines,
@@ -28,31 +101,42 @@ export function ClientsView({
 }) {
   const [selectedCaller, selectCaller] = useState<string | null>(null);
   const connection = callers.find((c) => c.id === selectedCaller);
+  const sources = new Map<string, ObservedCaller[]>();
+  for (const caller of callers) {
+    const observations = sources.get(caller.source_address) || [];
+    observations.push(caller);
+    sources.set(caller.source_address, observations);
+  }
   return (
-    <div className={"management " + (activeClient ? "has-selection" : "")}>
+    <div
+      className={
+        "management " + (activeClient || connection ? "has-selection" : "")
+      }
+    >
       <div className="record-list">
         <h2>
-          Connected callers<span>{callers.length}</span>
+          Caller sources <span>{sources.size}</span>
         </h2>
-        <p>Connections observed by this candidate in the last seven days.</p>
-        {callers.map((caller) => (
-          <button
-            key={caller.id}
-            onClick={() => {
-              selectCaller(caller.id);
+        <p>
+          Activity from the last seven days, grouped by direct source address.
+          Expand a source to inspect its applications and client libraries. One
+          address can represent several applications or devices.
+        </p>
+        {[...sources].map(([address, observations]) => (
+          <CallerSource
+            key={address}
+            address={address}
+            callers={observations}
+            selected={selectedCaller}
+            onSelect={(id) => {
+              selectCaller(id);
               onSelect(null);
             }}
-          >
-            <Users size={17} />
-            <span>
-              <strong>{callerDisplayName(caller)}</strong>
-              <small>{callerSummary(caller)}</small>
-            </span>
-          </button>
+          />
         ))}
         {!callers.length && <p>No caller traffic yet.</p>}
         <h2>
-          Permission policies<span>{config.clients.length}</span>
+          Permission policies <span>{config.clients.length}</span>
         </h2>
         <p>
           These rules govern callers. A policy is not proof that an agent has
@@ -62,7 +146,10 @@ export function ClientsView({
           <button
             key={c.id}
             className={activeClient?.id === c.id ? "selected" : ""}
-            onClick={() => onSelect(c)}
+            onClick={() => {
+              selectCaller(null);
+              onSelect(c);
+            }}
           >
             <Users size={17} />
             <span>
@@ -96,6 +183,10 @@ export function ClientsView({
         />
       ) : connection ? (
         <div>
+          <button className="subtle" onClick={() => selectCaller(null)}>
+            <ArrowLeft size={16} />
+            Back to caller sources
+          </button>
           <CallerIdentity
             caller={connection}
             policy={
@@ -120,11 +211,11 @@ export function ClientsView({
       ) : (
         <div className="detail-empty">
           <Users size={30} strokeWidth={1.3} />
-          <h2>Know who is connected.</h2>
+          <h2>Inspect a caller source.</h2>
           <p>
-            Select a connection to inspect its source,
+            Expand a source and select an observation to inspect its
             <br />
-            software and assigned permission policy.
+            application details and latest identity evidence.
           </p>
           <button onClick={() => onSelect(newClient())}>
             <Plus size={16} />
