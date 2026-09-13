@@ -9,9 +9,11 @@ type SaveConfig = (config: Config) => Promise<Config>;
 export function DiscoveryEditor({
   config,
   save,
+  focusTargets = false,
 }: {
   config: Config;
   save: SaveConfig;
+  focusTargets?: boolean;
 }) {
   const [draft, set] = useState<Discovery>(config.discovery),
     [error, setError] = useState(""),
@@ -56,6 +58,8 @@ export function DiscoveryEditor({
         hint="Hostnames, IP addresses, or network ranges, separated by commas. IP/CIDR scopes avoid DNS ambiguity. Hostname addresses are checked but are not pinned through connection; DNS rebinding protection remains open work."
       >
         <ListInput
+          autoFocus={focusTargets}
+          aria-label="Where to look"
           placeholder="Add a host or a network range"
           values={draft.targets}
           onValues={(targets) => set({ ...draft, targets })}

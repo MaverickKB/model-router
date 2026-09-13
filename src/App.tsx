@@ -40,6 +40,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<
     "Access" | "Discovery"
   >("Access");
+  const [focusDiscoveryTargets, setFocusDiscoveryTargets] = useState(false);
   const [engine, setEngine] = useState<Engine | null>(null),
     [route, setRoute] = useState<Route | null>(null),
     [client, setClient] = useState<Client | null>(null);
@@ -163,14 +164,26 @@ export function App() {
       </div>
     );
   const config = state.config;
+  const hasDiscoveryScope =
+    config.discovery.targets.length > 0 || config.discovery.include_loopback;
   const activeRoute = config.routes.find((r) => r.id === route?.id) || route;
   const activeClient = state.clients.find((c) => c.id === client?.id) || client;
-  function selectTab(t: Tab, section: "Access" | "Discovery" = "Access") {
+  function selectTab(
+    t: Tab,
+    section: "Access" | "Discovery" = "Access",
+    focusTargets = false,
+  ) {
     setSettingsSection(section);
+    setFocusDiscoveryTargets(
+      t === "Settings" && section === "Discovery" && focusTargets,
+    );
     setTab(t);
     setError("");
     setHover(null);
     workspace.current?.querySelector("main")?.scrollTo({ top: 0 });
+  }
+  function configureDiscovery() {
+    selectTab("Settings", "Discovery", true);
   }
   return (
     <div className="application">
@@ -284,18 +297,30 @@ export function App() {
                 </div>
                 <button
                   className="subtle"
-                  onClick={() => void action(() => post("/api/v1/discover"))}
+                  onClick={() => {
+                    if (!hasDiscoveryScope) {
+                      configureDiscovery();
+                      return;
+                    }
+                    void action(() => post("/api/v1/discover"));
+                  }}
                   disabled={
                     networkIsScanning(state.network) || state.discovery.scanning
                   }
                 >
-                  <Radio
-                    size={16}
-                    className={networkIsScanning(state.network) ? "pulse" : ""}
-                  />
+                  {hasDiscoveryScope || networkIsScanning(state.network) ? (
+                    <Radio
+                      size={16}
+                      className={networkIsScanning(state.network) ? "pulse" : ""}
+                    />
+                  ) : (
+                    <ChevronRight size={16} />
+                  )}
                   {networkIsScanning(state.network)
                     ? "Discovering…"
-                    : "Discover"}
+                    : hasDiscoveryScope
+                      ? "Discover"
+                      : "Set discovery scope"}
                 </button>
               </div>
               <button
@@ -439,7 +464,7 @@ export function App() {
                     or connect a cloud provider.
                   </p>
                   <div className="actions">
-                    <button onClick={() => selectTab("Settings", "Discovery")}>
+                    <button onClick={configureDiscovery}>
                       <Radio size={16} />
                       Set discovery scope
                     </button>
@@ -473,7 +498,7 @@ export function App() {
                 </div>
                 <button
                   className="text-button"
-                  onClick={() => selectTab("Settings", "Discovery")}
+                  onClick={configureDiscovery}
                 >
                   Configure discovery
                   <ChevronRight size={14} />
@@ -487,6 +512,8 @@ export function App() {
           {tab === "Network" && (
             <NetworkView
               report={state.network}
+              scopeReady={hasDiscoveryScope}
+              onConfigureDiscovery={configureDiscovery}
               onDiscover={() => action(() => post("/api/v1/discover"))}
               onConnect={(service) =>
                 setEngine({
@@ -553,8 +580,9 @@ export function App() {
           )}
           {tab === "Settings" && (
             <SettingsPage
-              key={settingsSection}
+              key={`${settingsSection}-${focusDiscoveryTargets ? "scope" : "default"}`}
               initialSection={settingsSection}
+              focusDiscoveryTargets={focusDiscoveryTargets}
               config={config}
               operatorUrl={state.operator_url ?? null}
               save={save}
