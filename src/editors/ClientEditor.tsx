@@ -261,8 +261,8 @@ export function ClientEditor({
           <div>
             <strong>Allow shared network access</strong>
             <p>
-              Use this policy for matching source addresses when caller API keys
-              are optional in Settings.
+              Use this policy for matching source addresses without a key. Each
+              route's caller-key requirement still applies.
             </p>
           </div>
           <Switch

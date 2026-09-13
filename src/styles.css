@@ -384,6 +384,11 @@ code {
   white-space: nowrap;
   font-weight: 400;
 }
+.job-card p.request-error {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
 .job-bottom {
   margin-top: 13px;
   display: flex;

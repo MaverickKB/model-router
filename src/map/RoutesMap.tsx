@@ -2,8 +2,10 @@ import { Cloud, Cpu, Pencil, Route as RouteIcon, Users, X } from "lucide-react";
 import { useState } from "react";
 import { Dialog } from "../components";
 import {
+  callerClientLabel,
   callerDisplayName,
   callerSummary,
+  CallerIdentity,
   PermissionPolicyIdentity,
 } from "../caller-identity";
 import { engineHost } from "../engine-addresses";
@@ -21,6 +23,14 @@ import { linkPolicy, type MapLink } from "./links";
 import "./map.css";
 
 type Selection = { kind: "caller" | "route" | "engine"; id: string };
+
+function observationTitle(caller: ObservedCaller) {
+  const name = callerDisplayName(caller);
+  return !name || name === "Unidentified caller"
+    ? callerClientLabel(caller)
+    : name;
+}
+
 type Props = {
   config: Config;
   callers?: ObservedCaller[];
@@ -60,31 +70,35 @@ export function RoutesMap({
   const observationsFor = (policyId: string) =>
     callers.filter((caller) => caller.policy_id === policyId);
   const unassigned =
-    topology?.unassigned_callers || callers.filter((caller) => !caller.policy_id);
-  const callerNodes = [
-    ...policies.map((policy) => ({
-      id: policy.id,
-      name: policy.name,
-      detail: `${policy.kind ? `Kind: ${policy.kind}` : "Kind not set"} · ${observationsFor(policy.id).length} connection${observationsFor(policy.id).length === 1 ? "" : "s"}`,
-      policy,
-      observation: null as ObservedCaller | null,
-    })),
-    ...unassigned.map((caller) => ({
-      id: caller.id,
-      name: callerDisplayName(caller),
-      detail: `Observed connection · ${callerSummary(caller)} · No permission policy`,
-      policy: null,
-      observation: caller,
-    })),
-  ];
-  const rows = Math.max(
-    callerNodes.length,
-    config.routes.length,
-    engines.length,
-    2,
-  );
-  const height = 50 + rows * 104;
+    topology?.unassigned_callers ||
+    callers.filter((caller) => !caller.policy_id);
+  const sourceGroups = new Map<string, ObservedCaller[]>();
+  for (const caller of unassigned) {
+    const group = sourceGroups.get(caller.source_address) || [];
+    group.push(caller);
+    sourceGroups.set(caller.source_address, group);
+  }
   const y = (index: number) => 50 + index * 104 + 42;
+  const sourceHeadingHeight = 44;
+  const callerPositions = new Map(
+    policies.map((policy, index) => [policy.id, y(index)]),
+  );
+  let callerBottom = 50 + policies.length * 104;
+  for (const observations of sourceGroups.values()) {
+    callerBottom += sourceHeadingHeight;
+    for (const caller of observations) {
+      callerPositions.set(caller.id, callerBottom + 42);
+      callerBottom += 104;
+    }
+  }
+  const height = Math.max(
+    callerBottom,
+    50 + Math.max(config.routes.length, engines.length, 2) * 104,
+  );
+  const selectedObservation =
+    selected?.kind === "caller"
+      ? unassigned.find((caller) => caller.id === selected.id)
+      : undefined;
   const pick = (next: Selection) => {
     if (
       selected?.kind === "caller" &&
@@ -128,12 +142,13 @@ export function RoutesMap({
     dim: boolean;
   }[] = [];
   for (const edge of topology?.caller_routes || []) {
-    const a = callerNodes.findIndex((caller) => caller.id === edge.caller_id);
+    const from = callerPositions.get(edge.caller_id);
     const b = config.routes.findIndex((route) => route.id === edge.route_id);
-    if (a < 0 || b < 0) continue;
+    if (from === undefined || b < 0) continue;
+    const policyEdge = policies.some((policy) => policy.id === edge.caller_id);
     edges.push({
       id: `${edge.caller_id}-${edge.route_id}`,
-      from: y(a),
+      from,
       to: y(b),
       x: 280,
       xx: 360,
@@ -142,7 +157,9 @@ export function RoutesMap({
       title: edge.reason,
       jobs: active.filter(
         (job) =>
-          (job.caller?.policy_id || job.client_id) === edge.caller_id &&
+          (policyEdge
+            ? (job.caller?.policy_id || job.client_id) === edge.caller_id
+            : job.caller?.id === edge.caller_id) &&
           (job.decision.route || job.requested) === config.routes[b].name,
       ),
       dim:
@@ -200,7 +217,6 @@ export function RoutesMap({
     icon: React.ReactNode,
     edit?: () => void,
     disabled = false,
-    observations: ObservedCaller[] = [],
   ) => (
     <div
       key={value.id}
@@ -217,19 +233,6 @@ export function RoutesMap({
         <span>
           <strong>{name}</strong>
           <small>{detail}</small>
-          {observations.length > 0 && (
-            <small className="map-observations">
-              {observations.slice(0, 2).map((observation) => (
-                <span key={observation.id}>
-                  {callerDisplayName(observation)} ·{" "}
-                  {callerSummary(observation)}
-                </span>
-              ))}
-              {observations.length > 2 && (
-                <span>+{observations.length - 2} more connections</span>
-              )}
-            </small>
-          )}
         </span>
       </button>
       {edit && (
@@ -261,8 +264,10 @@ export function RoutesMap({
           <p>
             Follow observed callers and saved permission policies into each
             route, then into the engines that can serve it. Select a saved
-            policy, then a route to link them; observed callers without a
-            policy remain visible for review.
+            policy, then a route to link them. Observations without a named
+            policy are grouped by direct source address; each keeps its own
+            route access. An address can represent several applications or
+            devices.
           </p>
         </div>
         {selected && (
@@ -301,6 +306,7 @@ export function RoutesMap({
             {edges.map((edge) => (
               <g
                 key={edge.id}
+                data-edge-id={edge.id}
                 className={`map-edge ${edge.ready ? "ready" : "waiting"} ${edge.backup ? "backup" : ""} ${edge.jobs.length ? "active" : ""} ${edge.dim ? "dim" : ""}`}
               >
                 <title>{edge.title}</title>
@@ -321,22 +327,43 @@ export function RoutesMap({
           </svg>
           <div className="map-column">
             <h3>Callers and permission policies</h3>
-            {callerNodes.map((caller) =>
+            {policies.map((policy) =>
               node(
-                { kind: "caller", id: caller.id },
-                caller.name,
-                caller.detail,
+                { kind: "caller", id: policy.id },
+                policy.name,
+                `${policy.kind ? `Kind: ${policy.kind}` : "Kind not set"} · ${observationsFor(policy.id).length} observation${observationsFor(policy.id).length === 1 ? "" : "s"}`,
                 <Users size={18} />,
-                caller.policy ? () => editCaller(caller.policy!) : undefined,
-                caller.policy ? !caller.policy.enabled : false,
-                caller.policy
-                  ? observationsFor(caller.policy.id)
-                  : caller.observation
-                    ? [caller.observation]
-                    : [],
+                () => editCaller(policy),
+                !policy.enabled,
               ),
             )}
-            {!callerNodes.length && (
+            {[...sourceGroups].map(([address, observations]) => (
+              <div
+                key={address}
+                className="map-source-group"
+                role="group"
+                aria-label={`Observed source ${address || "unknown"}`}
+              >
+                <h4 style={{ height: sourceHeadingHeight }}>
+                  <span title={address}>
+                    {address || "Source address unavailable"}
+                  </span>{" "}
+                  <small>
+                    {observations.length}{" "}
+                    {observations.length === 1 ? "observation" : "observations"}
+                  </small>
+                </h4>
+                {observations.map((caller) =>
+                  node(
+                    { kind: "caller", id: caller.id },
+                    observationTitle(caller),
+                    callerSummary(caller),
+                    <Users size={18} />,
+                  ),
+                )}
+              </div>
+            ))}
+            {!policies.length && !sourceGroups.size && (
               <p className="map-empty">
                 No callers observed and no permission policies configured yet.
               </p>
@@ -389,6 +416,7 @@ export function RoutesMap({
             callers={observationsFor(selected.id)}
           />
         )}
+      {selectedObservation && <CallerIdentity caller={selectedObservation} />}
       {selected?.kind === "caller" && (
         <div className="map-reasons">
           {topology?.caller_routes
@@ -407,8 +435,10 @@ export function RoutesMap({
         <div className="map-jobs">
           {active.map((job) => (
             <button key={job.id} onClick={() => inspectJob(job)}>
-              {job.caller ? callerDisplayName(job.caller) : "Caller not recorded"} →{" "}
-              {job.decision.route || job.requested} →{" "}
+              {job.caller
+                ? callerDisplayName(job.caller)
+                : "Caller not recorded"}{" "}
+              → {job.decision.route || job.requested} →{" "}
               {job.engine || "Selecting"}
             </button>
           ))}
