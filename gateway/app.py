@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import callers
+from .accounts.api import admin_router
 from .accounts.principal import derive_principal, level_for
 from .discovery import DiscoveryService
 from .engine_identity import MergeEngines
@@ -135,6 +136,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             "engines": engines,
             "engine_merge_suggestions": suggestions(engines),
             "route_map": route_map(config, engines, connections, store.accounts()),
+            "account_levels_in_use": store.level_account_counts(),
             "events": await asyncio.to_thread(store.events),
             "clients": [
                 {**c.model_dump(), "has_key": store.has_key(c.id)}
@@ -516,6 +518,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         }
         return await proxy.dispatch_connected(request, payload, client)
 
+    management.include_router(admin_router(store, identity, discovery, proxy))
     app.include_router(management, prefix="/api/v1")
     app.include_router(management, prefix="/api", include_in_schema=False)
 
