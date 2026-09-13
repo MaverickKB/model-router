@@ -241,6 +241,10 @@ async def test_reissued_activation_replaces_previous_and_suspended_accounts_cann
         reset = await http.post(path)
         assert reset.status_code == 200
         assert harness.store.activation_for(account["id"])["purpose"] == "reset"
+        with_reset = (await http.get(f"/api/v1/accounts/{account['id']}")).json()
+        assert with_reset["account"]["status"] == "active"
+        assert with_reset["account"]["activation_pending"] is False
+        assert with_reset["account"]["activation_expires"] == reset.json()["expires"]
         assert harness.store.activate_account(reset.json()["token"], digest("new one"))
         suspended = await http.put(
             f"/api/v1/accounts/{account['id']}", json={"status": "suspended"}
@@ -251,6 +255,45 @@ async def test_reissued_activation_replaces_previous_and_suspended_accounts_cann
     assert refused.status_code == 409
     assert refused.json()["detail"] == "Enable the account before issuing a link"
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_expired_activation_link_is_not_reported_as_pending(tmp_path):
+    harness = await build(tmp_path)
+    async with harness.operator() as http:
+        account, _ = await harness.add_account(http)
+        listed = (await http.get("/api/v1/accounts")).json()["accounts"][0]
+        assert listed["activation_pending"] is True
+        with harness.store.db:
+            harness.store.db.execute(
+                "UPDATE account_activations SET expires=? WHERE account_id=?",
+                (time.time() - 1, account["id"]),
+            )
+        lapsed = (await http.get("/api/v1/accounts")).json()["accounts"][0]
+    assert lapsed["status"] == "pending"
+    assert lapsed["activation_pending"] is False
+    assert lapsed["activation_expires"] < time.time()
+
+
+@pytest.mark.asyncio
+async def test_suspended_pending_account_returns_to_pending_and_activates(tmp_path):
+    harness = await build(tmp_path)
+    async with harness.operator() as http:
+        account, first = await harness.add_account(http)
+        path = f"/api/v1/accounts/{account['id']}"
+        suspended = await http.put(path, json={"status": "suspended"})
+        assert suspended.status_code == 200
+        assert harness.activate(first["token"]) is None
+        refused = await http.post(f"{path}/activation")
+        assert refused.status_code == 409
+        restored = await http.put(path, json={"status": "active"})
+        assert restored.status_code == 200
+        assert restored.json()["account"]["status"] == "pending"
+        link = await http.post(f"{path}/activation")
+        assert link.status_code == 200
+        assert harness.store.activation_for(account["id"])["purpose"] == "activate"
+        assert harness.activate(link.json()["token"]) == account["id"]
+        assert harness.store.account_snapshot(account["id"])["status"] == "active"
 
 
 @pytest.mark.asyncio

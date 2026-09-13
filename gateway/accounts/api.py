@@ -80,7 +80,12 @@ def account_summary(
     activation = store.activation_for(account["id"])
     return {
         **account,
-        "activation_pending": activation is not None,
+        # A link counts as pending only while it can still activate the account.
+        "activation_pending": (
+            activation is not None
+            and activation["expires"] > now
+            and account["status"] == "pending"
+        ),
         "activation_expires": activation["expires"] if activation else None,
         "key_count": len(store.account_keys(account["id"])),
         "device_count": len(store.devices_for(account["id"])),
@@ -149,21 +154,26 @@ def admin_router(store: Store, identity, discovery, proxy) -> APIRouter:
     async def update_account(account_id: str, body: UpdateAccount, request: Request):
         await identity.require_operator(request, True)
         account = existing(account_id)
+        status = body.status
         if (
-            body.status == "active"
+            status == "active"
             and account["status"] != "active"
             and await asyncio.to_thread(store.account_verifier, account_id) is None
         ):
-            raise HTTPException(
-                422, "Activate the account with its link before enabling it"
-            )
+            if account["status"] == "pending":
+                raise HTTPException(
+                    422, "Activate the account with its link before enabling it"
+                )
+            # Suspended before it was ever activated: re-enabling returns the
+            # account to pending so the operator can issue an activation link.
+            status = "pending"
         try:
             updated = await asyncio.to_thread(
                 store.update_account,
                 account_id,
                 name=body.name,
                 level_id=body.level_id,
-                status=body.status,
+                status=status,
             )
         except ValueError as exc:
             raise store_error(exc)
