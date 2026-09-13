@@ -32,10 +32,21 @@ class Identity:
         self.registration_limit = RateLimit(capacity=10, period=60)
         supplied = os.environ.get("MODEL_ROUTER_ADMIN_TOKEN")
         self.admin_verifier = store.operator_verifier()
-        if supplied or not self.admin_verifier:
-            token = supplied or bootstrap_key(store.directory)
-            self.admin_verifier = digest(token)
+        if supplied:
+            self.admin_verifier = digest(supplied)
             store.set_operator_verifier(self.admin_verifier)
+        elif (
+            not self.admin_verifier
+            and store.config().security.operator_auth_enabled
+        ):
+            self.install_bootstrap_key()
+
+    def install_bootstrap_key(self) -> str:
+        """Mint an operator key only when sign-in is (or is becoming) required."""
+        token = bootstrap_key(self.store.directory)
+        self.admin_verifier = digest(token)
+        self.store.set_operator_verifier(self.admin_verifier)
+        return token
 
     def origin_allowed(self, request: Request) -> bool:
         origin = urlsplit(request.headers.get("Origin", ""))

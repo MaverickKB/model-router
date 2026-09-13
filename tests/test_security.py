@@ -4,8 +4,22 @@ import httpx
 import pytest
 
 from gateway.app import create_app
-from gateway.schema import Client, Configuration, Discovery
+from gateway.schema import Client, Configuration, Discovery, Security
 from gateway.store import Store
+
+
+def operator_key(app) -> str:
+    config = app.state.store.config()
+    app.state.store.save(
+        config.model_copy(
+            update={
+                "security": config.security.model_copy(
+                    update={"operator_auth_enabled": True}
+                )
+            }
+        )
+    )
+    return app.state.identity.install_bootstrap_key()
 
 
 @pytest.mark.asyncio
@@ -30,7 +44,13 @@ async def test_authenticated_mode_covers_tunnels_with_a_separate_canonical_url(
     app = create_app(
         str(tmp_path), background=False, transport=httpx.MockTransport(upstream)
     )
-    app.state.store.save(Configuration(discovery=Discovery(targets=["192.0.2.0/24"])))
+    app.state.store.save(
+        Configuration(
+            discovery=Discovery(targets=["192.0.2.0/24"]),
+            security=Security(operator_auth_enabled=True),
+        )
+    )
+    app.state.identity.install_bootstrap_key()
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
@@ -48,6 +68,7 @@ async def test_authenticated_mode_covers_tunnels_with_a_separate_canonical_url(
             assert result.status_code == 401
         assert not calls
         token = (tmp_path / "operator-bootstrap.key").read_text().strip()
+        assert token
         assert (
             await client.post(
                 "/api/login", json={"token": token}, headers={"Origin": origin}
@@ -67,8 +88,22 @@ async def test_authenticated_mode_covers_tunnels_with_a_separate_canonical_url(
 
 
 @pytest.mark.asyncio
+async def test_fresh_install_does_not_mint_an_operator_key(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    assert not app.state.store.config().security.operator_auth_enabled
+    assert not (tmp_path / "operator-bootstrap.key").exists()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+    ) as client:
+        assert (await client.get("/api/v1/state")).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_login_has_a_bounded_rate_and_rotates_sessions(tmp_path):
     app = create_app(str(tmp_path), background=False)
+    token = operator_key(app)
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
@@ -77,7 +112,6 @@ async def test_login_has_a_bounded_rate_and_rotates_sessions(tmp_path):
             headers={"Origin": "http://router.test"},
         ) as client,
     ):
-        token = (tmp_path / "operator-bootstrap.key").read_text().strip()
         await client.post("/api/login", json={"token": token})
         old = client.cookies.get("router_operator")
         await client.post("/api/login", json={"token": token})
@@ -167,22 +201,21 @@ async def test_pristine_install_is_configurable_before_auth_then_uses_session(tm
 async def test_bootstrap_login_and_rotation_end_first_use(tmp_path):
     origin = "http://localhost"
     app = create_app(str(tmp_path), background=False)
-    token = (tmp_path / "operator-bootstrap.key").read_text().strip()
+    assert not (tmp_path / "operator-bootstrap.key").exists()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
         base_url=origin,
         headers={"Origin": origin},
     ) as browser:
         assert app.state.store.setup_required
-        login = await browser.post("/api/v1/login", json={"token": token})
-        assert login.status_code == 200
+        created = await browser.post("/api/v1/operator/key")
+        assert created.status_code == 200
+        assert created.json()["key"]
         assert not app.state.store.setup_required
         assert (await browser.get("/api/v1/state")).status_code == 200
 
     restarted = create_app(str(tmp_path / "rotation"), background=False)
-    rotation_token = (
-        tmp_path / "rotation" / "operator-bootstrap.key"
-    ).read_text().strip()
+    assert not (tmp_path / "rotation" / "operator-bootstrap.key").exists()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=restarted, client=("127.0.0.1", 1)),
         base_url=origin,
@@ -194,7 +227,6 @@ async def test_bootstrap_login_and_rotation_end_first_use(tmp_path):
         assert not restarted.state.store.setup_required
         assert not (tmp_path / "rotation" / "operator-bootstrap.key").exists()
         assert (await browser.get("/api/v1/state")).status_code == 200
-        assert rotation_token
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=restarted, client=("8.8.8.8", 1)),
         base_url=origin,
@@ -363,7 +395,7 @@ async def test_operator_bearer_polling_and_rotation_do_not_change_client_keys(tm
     caller = Client(name="Agent")
     app.state.store.save(Configuration(clients=[caller]))
     client_key = app.state.store.issue_key(caller.id)
-    token = (tmp_path / "operator-bootstrap.key").read_text().strip()
+    token = operator_key(app)
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(

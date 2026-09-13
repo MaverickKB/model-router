@@ -108,7 +108,7 @@ it("puts operator access and route gates on reachable Settings and Routes pages"
   await user.click(await screen.findByRole("button", { name: "Settings" }));
   expect(
     screen.getByRole("switch", { name: "Operator sign-in" }),
-  ).toHaveAttribute("aria-checked", "true");
+  ).toHaveAttribute("aria-checked", "false");
   expect(
     screen.queryByRole("switch", { name: "Require caller API keys" }),
   ).not.toBeInTheDocument();

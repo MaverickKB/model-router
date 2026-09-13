@@ -212,6 +212,12 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             raise HTTPException(422, str(exc)) from exc
         changed = [e for e in saved.engines if e not in old.engines]
         await asyncio.gather(*(discovery.refresh_engine(e) for e in changed))
+        if (
+            saved.security.operator_auth_enabled
+            and not identity.admin_verifier
+            and not os.environ.get("MODEL_ROUTER_ADMIN_TOKEN")
+        ):
+            identity.install_bootstrap_key()
         if setup_required or old.security != saved.security:
             return await identity.new_session(request, saved.model_dump())
         return saved.model_dump()

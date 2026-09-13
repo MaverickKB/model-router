@@ -246,7 +246,7 @@ class Discovery(Record):
 
 
 class Security(Record):
-    operator_auth_enabled: bool = True
+    operator_auth_enabled: bool = False
     # Kept for pre-v4 config migration. New authorization decisions are made
     # by Route.require_caller_key, never by this global compatibility field.
     client_auth_enabled: bool = True

@@ -11,6 +11,7 @@ describe("Access settings", () => {
   it("changes operator access without inventing a caller policy", async () => {
     const user = userEvent.setup();
     const config = fixtureConfig();
+    config.security.operator_auth_enabled = true;
     config.clients = [
       {
         ...newClient(),
