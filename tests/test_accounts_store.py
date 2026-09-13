@@ -1,6 +1,5 @@
 """Account storage: schema v5 migration, tables, caches and credential hygiene."""
 
-import ipaddress
 import json
 import sqlite3
 import time
@@ -10,8 +9,17 @@ import pytest
 from pydantic import ValidationError
 
 from gateway.app import create_app
+from gateway.engine_identity import MergeEngines, merged_configuration
 from gateway.migration import configuration as migrate_configuration
-from gateway.schema import AccountLevel, Client, Configuration, TokenBudget
+from gateway.schema import (
+    AccountLevel,
+    Client,
+    Configuration,
+    Engine,
+    Route,
+    Selector,
+    TokenBudget,
+)
 from gateway.security.credentials import digest, verify
 from gateway.store import Store
 
@@ -147,6 +155,9 @@ def test_account_lifecycle_validates_levels_usernames_and_suspension(tmp_path):
         store.update_account(account["id"], level_id="missing")
     with pytest.raises(ValueError, match="Account does not exist"):
         store.update_account("missing", name="Nobody")
+    with pytest.raises(ValueError, match="Unknown account status"):
+        store.update_account(account["id"], status="bogus")
+    assert store.account_snapshot(account["id"])["status"] == "pending"
     store.save_portal_session("session", account["id"], time.time() + 60)
     updated = store.update_account(
         account["id"], name="Alice B", level_id=premium.id, status="suspended"
@@ -232,6 +243,9 @@ def test_activation_token_is_one_time_and_expires(tmp_path):
     with_levels(store, level)
     account = store.create_account("alice", "Alice", level.id)
     store.save_portal_session("stale", account["id"], time.time() + 60)
+    with pytest.raises(ValueError, match="Unknown activation purpose"):
+        store.issue_activation(account["id"], "bogus")
+    assert store.activation_for(account["id"]) is None
     token, expires = store.issue_activation(account["id"], "activate")
     assert token.startswith("mra_")
     assert abs(expires - (time.time() + 72 * 3600)) < 5
@@ -354,10 +368,13 @@ def test_delete_account_cascades_every_table(tmp_path):
     bob, bob_key, bob_device = populate(store, level.id, "bob")
     for table in ACCOUNT_TABLES:
         assert count(store, table, alice["id"]) == 1, table
+    alice_key_id = store.account_key(alice_key)["key_id"]
+    assert alice_key_id in store._key_touched
     store.delete_account(alice["id"])
     for table in ACCOUNT_TABLES:
         assert count(store, table, alice["id"]) == 0, table
         assert count(store, table, bob["id"]) == 1, table
+    assert alice_key_id not in store._key_touched
     assert store.account_snapshot(alice["id"]) is None
     assert store.account_by_username("alice") is None
     assert store.account_key(alice_key) is None
@@ -426,7 +443,8 @@ def test_device_address_is_canonical_and_globally_unique(tmp_path):
     alice = store.create_account("alice", "Alice", level.id)
     bob = store.create_account("bob", "Bob", level.id)
     device = store.register_device(alice["id"], "::FFFF:192.0.2.1", "Desk")
-    canonical = str(ipaddress.ip_address("::FFFF:192.0.2.1"))
+    # The IPv4-mapped form names the same host as the plain IPv4 literal.
+    canonical = "192.0.2.1"
     assert device["address"] == canonical and device["enabled"] is True
     assert set(device) == {
         "id",
@@ -438,13 +456,17 @@ def test_device_address_is_canonical_and_globally_unique(tmp_path):
         "last_matched",
     }
     assert store.device_at(canonical) == device
-    with pytest.raises(ValueError, match="This address is already registered"):
-        store.register_device(bob["id"], "::ffff:192.0.2.1", "Same host")
+    for same_host in ("::ffff:192.0.2.1", "192.0.2.1"):
+        with pytest.raises(ValueError, match="This address is already registered"):
+            store.register_device(bob["id"], same_host, "Same host")
+    assert store.register_device(alice["id"], "2001:DB8::1", "v6")["address"] == (
+        "2001:db8::1"
+    )
     with pytest.raises(ValueError):
         store.register_device(bob["id"], "192.0.2.0/24", "Not a host")
     with pytest.raises(ValueError, match="Account does not exist"):
         store.register_device("missing", "192.0.2.9", "Orphan")
-    for index in range(9):
+    for index in range(8):
         store.register_device(alice["id"], f"10.0.0.{index}", f"box-{index}")
     with pytest.raises(ValueError, match="already has 10 registered devices"):
         store.register_device(alice["id"], "10.0.1.1", "one-too-many")
@@ -473,3 +495,33 @@ def test_account_ids_never_collide_with_clients_or_levels(tmp_path):
     )
     account = store.create_account("alice", "Alice", level.id)
     assert account["id"] not in {client.id, level.id}
+
+
+def test_engine_merge_relinks_level_engine_ids(tmp_path):
+    store = Store(str(tmp_path))
+    target = Engine(name="Kept", base_url="http://model.test:8000/v1")
+    source = Engine(name="Removed", base_url="http://192.0.2.3:8000/v1")
+    level = AccountLevel(name="Standard", engine_ids=[source.id])
+    config = Configuration(
+        engines=[target, source],
+        clients=[Client(name="Shared", kind="shared", engine_ids=[source.id])],
+        routes=[Route(name="auto", primary=Selector(engine_ids=[source.id]))],
+        account_levels=[level],
+    )
+    merge = MergeEngines(
+        revision=config.revision,
+        source_id=source.id,
+        target_id=target.id,
+        preferred_url=target.base_url,
+        credential_source="target",
+    )
+    assert merged_configuration(config, merge).account_levels[0].engine_ids == [
+        target.id
+    ]
+    store.save(config)
+    merge = merge.model_copy(update={"revision": store.config().revision})
+    saved = store.merge_engines(merge)
+    assert [engine.id for engine in saved.engines] == [target.id]
+    assert saved.account_levels[0].engine_ids == [target.id]
+    assert saved.clients[0].engine_ids == [target.id]
+    assert store.config().account_levels[0].engine_ids == [target.id]

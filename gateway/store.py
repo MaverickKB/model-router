@@ -27,6 +27,8 @@ ACTIVATION_SECONDS = 72 * 3600
 MAX_ACCOUNT_KEYS = 20
 MAX_ACCOUNT_DEVICES = 10
 KEY_TOUCH_SECONDS = 60
+ACCOUNT_STATUSES = ("pending", "active", "suspended")
+ACTIVATION_PURPOSES = ("activate", "reset")
 USAGE_RETENTION_SECONDS = 35 * 86400
 ACCOUNT_FIELDS = (
     "id",
@@ -710,6 +712,8 @@ class Store:
     def update_account(
         self, account_id: str, *, name=None, level_id=None, status=None
     ) -> dict:
+        if status is not None and status not in ACCOUNT_STATUSES:
+            raise ValueError("Unknown account status")
         with self.lock:
             self._require_account(account_id)
             if level_id is not None:
@@ -734,6 +738,12 @@ class Store:
 
     def delete_account(self, account_id: str) -> None:
         with self.lock:
+            key_ids = [
+                row[0]
+                for row in self.db.execute(
+                    "SELECT id FROM account_keys WHERE account_id=?", (account_id,)
+                )
+            ]
             with self.db:
                 self.db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
                 for table in (
@@ -747,11 +757,15 @@ class Store:
                     self.db.execute(
                         f"DELETE FROM {table} WHERE account_id=?", (account_id,)
                     )
+            for key_id in key_ids:
+                self._key_touched.pop(key_id, None)
             self._load_account_caches()
 
     # Activation links and passwords.
 
     def issue_activation(self, account_id: str, purpose: str) -> tuple[str, float]:
+        if purpose not in ACTIVATION_PURPOSES:
+            raise ValueError("Unknown activation purpose")
         token = "mra_" + secrets.token_urlsafe(32)
         expires = time.time() + ACTIVATION_SECONDS
         with self.lock:
@@ -950,7 +964,10 @@ class Store:
     # Registered devices: one canonical host address each, globally unique.
 
     def register_device(self, account_id: str, address: str, name: str) -> dict:
-        address = str(ipaddress.ip_address(address))
+        # An IPv4-mapped IPv6 literal names the same host as its IPv4 form;
+        # storing the unmapped form keeps the address unique across both.
+        parsed = ipaddress.ip_address(address)
+        address = str(getattr(parsed, "ipv4_mapped", None) or parsed)
         with self.lock:
             self._require_account(account_id)
             if address in self._devices_by_address:
