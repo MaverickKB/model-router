@@ -73,14 +73,7 @@ class Harness:
 
     @asynccontextmanager
     async def operator(self, origin=True):
-        token = (self.store.directory / "operator-bootstrap.key").read_text().strip()
         async with self.browser(origin) as http:
-            login = await http.post(
-                "/api/login",
-                json={"token": token},
-                headers={"Origin": "http://localhost"},
-            )
-            assert login.status_code == 200
             yield http
 
     def caller(self, key):
@@ -458,7 +451,11 @@ async def test_admin_endpoints_require_operator_and_same_origin(tmp_path):
     async with harness.operator() as http:
         account, _ = await harness.add_account(http)
     body = {"username": "bob", "level_id": harness.level.id}
-    async with harness.browser() as anonymous:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=harness.app, client=("192.0.2.10", 1)),
+        base_url="http://router.test",
+        headers={"Origin": "http://router.test"},
+    ) as anonymous:
         assert (await anonymous.get("/api/v1/accounts")).status_code == 401
         assert (await anonymous.post("/api/v1/accounts", json=body)).status_code == 401
         deleted = await anonymous.delete(f"/api/v1/accounts/{account['id']}")
