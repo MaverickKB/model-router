@@ -50,6 +50,10 @@ Enabling sign-in keeps the current browser signed in. Generating a replacement o
 
 Settings identifies installations upgraded from the earlier schema and shows the saved access and discovery mode separately from unsaved edits. Inherited broad inspection and automatic registration stay enabled until you choose otherwise. With sign-in off, everyone using the trusted management boundary shares administrative authority. Scoped endpoint registration also remains open, independently of scheduled sweeps; automatic registration determines whether new endpoints become engines.
 
+### User accounts (optional)
+
+User accounts are off by default. When an administrator enables them, a person's API key (prefixed `mru_`) authenticates as that person's account and receives exactly the access of the account's level: allowed routes, engines, models and cloud access. Such a key never widens access, is refused while accounts are disabled, and stops working between attempts as soon as the account is suspended or its level changes. The Callers page shows account connections named after the account and key, with permissions attributed to the account rather than to a caller policy. Self-service portal, limits and administration arrive in later changes.
+
 Back up the database and its matching external encryption key. Restore that key before starting a restored database. [Credential backup and restore](docs/THREAT_MODEL.md#back-up-and-restore-credentials) explains the key location, consistent SQLite backups and the effect of losing the key. Back up before upgrading: the schema moves forward on first start, and an older release does not read a newer database.
 
 ## Discovery belongs to the application

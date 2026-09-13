@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .accounts.principal import derive_principal, level_for
 from .request_policy import resolve_unkeyed_policy
 from .schema import Client
 from .security.credentials import bootstrap_key, digest, verify
@@ -139,6 +140,8 @@ class Identity:
         auth = request.headers.get("Authorization", "")
         unusable_auth = bool(auth)
         if auth and auth[:7].casefold() == "bearer ":
+            if auth[7:].startswith("mru_"):
+                return await self._identify_account_key(request, auth[7:])
             # A number of OpenAI-compatible clients always send an API-key
             # header, even when the operator has not configured caller keys.
             # Resolve usable keys here, but let an unusable header continue
@@ -178,6 +181,36 @@ class Identity:
         request.state.identity_basis = "unassigned" if unusable_auth else basis
         request.state.caller_key_present = False
         return client
+
+    async def _identify_account_key(self, request: Request, key: str) -> Client:
+        disabled = HTTPException(401, "User accounts are not enabled on this router")
+        # A disabled router refuses before any lookup, so it is not an oracle
+        # for key validity and spends no verification work on account keys.
+        if not self.store.config().accounts.enabled:
+            raise disabled
+        async with self.verification_slots:
+            match = await asyncio.to_thread(self.store.account_key, key)
+        # Key verification yields to configuration updates. Evaluate the master
+        # switch and the level as they exist after that work, as the bearer
+        # branch does for client keys.
+        config = self.store.config()
+        if not config.accounts.enabled:
+            raise disabled
+        if match is None:
+            raise HTTPException(401, "Account key is invalid or revoked")
+        account = self.store.account_snapshot(match["account_id"])
+        if account is None or account["status"] != "active":
+            raise HTTPException(403, "Account is suspended")
+        level = level_for(config, account["level_id"])
+        if level is None:
+            raise HTTPException(403, "Account level is unavailable")
+        request.state.identity_basis = "account_key"
+        request.state.caller_key_present = True
+        request.state.account_id = account["id"]
+        request.state.key_id = match["key_id"]
+        request.state.device_id = None
+        request.state.principal_label = f"{account['name']} · {match['key_name']}"
+        return derive_principal(account, level)
 
     async def login(self, request: Request):
         if not self.origin_allowed(request):

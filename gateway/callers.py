@@ -75,14 +75,23 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
         )
     client_runtime = hints.get("stainless_runtime") or derived_runtime
     observed_at = time.time()
+    account_id = getattr(request.state, "account_id", None)
+    key_id = getattr(request.state, "key_id", None)
+    device_id = getattr(request.state, "device_id", None)
+    principal_label = getattr(request.state, "principal_label", None)
     if basis == "operator_test":
         name = "Console route test"
     elif basis == "api_key" and policy is not None:
         name = policy.name
+    elif basis in {"account_key", "registered_device"} and principal_label:
+        name = principal_label
     else:
         name = reported_name or "Unidentified caller"
     caller = {
         "policy_id": policy.id if policy else None,
+        "account_id": account_id,
+        "key_id": key_id,
+        "device_id": device_id,
         "name": name,
         "source_address": source,
         "source_port": source_port,

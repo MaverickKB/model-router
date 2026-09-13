@@ -393,3 +393,42 @@ it("has an explicit empty state without inventing connected clients", () => {
     screen.queryByRole("button", { name: /^Inspect source/ }),
   ).not.toBeInTheDocument();
 });
+
+it("an account caller shows User account and no edit button", async () => {
+  const input = props(
+    [
+      observation("observed-account", {
+        policy_id: "a3f1c2d4e5f60718293a4b5c6d7e8f90",
+        account_id: "a3f1c2d4e5f60718293a4b5c6d7e8f90",
+        key_id: "key-1",
+        device_id: null,
+        name: "Alice · laptop",
+        source_address: "192.0.2.40",
+        source_port: 51010,
+        identity_quality: "transport_only",
+        identity_basis: "account_key",
+      }),
+    ],
+    [policy],
+  );
+  render(<ClientsView {...input} />);
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "Inspect source 192.0.2.40" }),
+  );
+  const details = screen.getByRole("region", {
+    name: "Source details for 192.0.2.40",
+  });
+  await user.click(
+    within(details).getByText("Software: Python requests 2.33.0"),
+  );
+  expect(
+    within(details).getAllByText("User account (Settings › Accounts)"),
+  ).toHaveLength(2);
+  expect(
+    within(details).queryByText(/Policy identified by request/),
+  ).not.toBeInTheDocument();
+  expect(
+    within(details).queryByRole("button", { name: /^Edit permission policy/ }),
+  ).not.toBeInTheDocument();
+});
