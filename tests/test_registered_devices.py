@@ -27,7 +27,7 @@ ORIGIN = "http://localhost"
 REGISTERED = "192.0.2.20"
 NEIGHBOUR = "192.0.2.21"
 BUDGET = TokenBudget(max_tokens=3000, window_seconds=3600)
-REMOVED = "Account access was removed"
+OUTSIDE = "Route is outside the client's allowlist"
 
 
 class Fleet:
@@ -363,8 +363,10 @@ async def test_device_disable_applies_before_next_attempt(tmp_path):
     setup.fleet.on_call = disable
     async with setup.app.router.lifespan_context(setup.app), setup.caller() as http:
         response = await complete(http, "private")
+    # The proxy re-identifies the host before every attempt, so the disabled
+    # row falls through to the source policy exactly as a fresh request would.
     assert response.status_code == 403
-    assert response.json()["detail"] == REMOVED
+    assert response.json()["error"]["message"] == OUTSIDE
     assert len(setup.fleet.calls) == 1
     event = setup.store.events()[0]
     assert event["status"] == "denied" and event["http_status"] == 403
@@ -383,7 +385,8 @@ async def test_device_disable_applies_before_next_attempt(tmp_path):
         switched.caller() as http,
     ):
         response = await complete(http, "private")
-    assert response.status_code == 403 and response.json()["detail"] == REMOVED
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == OUTSIDE
     assert len(switched.fleet.calls) == 1
 
 
