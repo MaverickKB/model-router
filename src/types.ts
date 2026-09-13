@@ -222,19 +222,32 @@ export interface EngineMergeSuggestion {
   target_name: string;
   reasons: string[];
 }
+export interface ReadyPath {
+  engine_id: string;
+  tier: "primary" | "fallback";
+}
+export interface CallerRoute {
+  caller_id: string;
+  policy_id?: string | null;
+  route_id: string;
+  ready_engines: string[];
+  ready_paths?: ReadyPath[];
+  reason: string;
+}
+export interface PolicyRoute {
+  policy_id: string;
+  route_id: string;
+  ready_engines: string[];
+  ready_paths?: ReadyPath[];
+  reason: string;
+}
 export interface RouteMap {
   policies?: {
     policy_id: string;
     observed_callers: ObservedCaller[];
   }[];
-  unassigned_callers?: ObservedCaller[];
-  caller_routes: {
-    caller_id: string;
-    policy_id?: string | null;
-    route_id: string;
-    ready_engines: string[];
-    reason: string;
-  }[];
+  caller_routes: CallerRoute[];
+  policy_routes?: PolicyRoute[];
   route_engines: {
     route_id: string;
     engine_id: string;

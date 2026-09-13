@@ -1,115 +1,128 @@
-"""Build the policy-first picture used by the route map."""
+"""Map observed connections and saved permission previews as separate edges."""
+
+import ipaddress
 
 from .contracts import EngineView
 from .request_policy import resolve_unkeyed_policy
-from .routing import decide, matches, route_requires_caller_key, selector_reason
-from .schema import Configuration
+from .routing import decide, matches, selector_reason
+from .schema import Client, Configuration, Route
+
+
+def _observed_policy(
+    config: Configuration, caller: dict
+) -> tuple[Client | None, bool, str]:
+    """Resolve one observation without borrowing another connection's key."""
+    basis = caller.get("identity_basis")
+    keyed = basis in {"api_key", "operator_test"}
+    if keyed:
+        policy = next(
+            (
+                client
+                for client in config.clients
+                if client.id == caller.get("policy_id")
+            ),
+            None,
+        )
+    else:
+        policy, _ = resolve_unkeyed_policy(config, caller.get("source_address"))
+
+    rejection = caller.get("authentication_error")
+    if rejection:
+        return policy, keyed, "Last request rejected: " + rejection["detail"]
+    if policy is None:
+        return None, keyed, "Observed permission policy is no longer configured"
+    # Source limits constrain presented keys too. A console test deliberately
+    # evaluates its selected policy under the existing operator-test contract.
+    if basis == "api_key" and policy.source_networks:
+        try:
+            source = ipaddress.ip_address(caller.get("source_address"))
+            allowed = any(
+                source in ipaddress.ip_network(network, strict=False)
+                for network in policy.source_networks
+            )
+        except (ValueError, TypeError):
+            allowed = False
+        if not allowed:
+            return policy, keyed, "Client key is not allowed from this source address"
+    return policy, keyed, ""
+
+
+def _route_access(
+    config: Configuration,
+    engines: list[EngineView],
+    policy: Client | None,
+    route: Route,
+    *,
+    keyed: bool,
+    rejection: str = "",
+) -> dict:
+    if rejection:
+        return {"ready_engines": [], "ready_paths": [], "reason": rejection}
+    assert policy is not None
+    decision = decide(
+        config,
+        engines,
+        policy,
+        {"model": route.name},
+        consider_capacity=False,
+        caller_key_present=keyed,
+    )
+    ready = list(dict.fromkeys(c["engine_id"] for c in decision["candidates"]))
+    return {
+        "ready_engines": ready,
+        "ready_paths": [
+            {"engine_id": engine_id, "tier": tier}
+            for engine_id, tier in dict.fromkeys(
+                (candidate["engine_id"], candidate["tier"])
+                for candidate in decision["candidates"]
+            )
+        ],
+        "reason": decision.get("error")
+        or ("Eligible text path" if ready else "No eligible text destination"),
+    }
 
 
 def route_map(
     config: Configuration, engines: list[EngineView], callers: list[dict]
 ) -> dict:
-    """Return policy edges even before a caller has produced traffic.
+    """Keep observation IDs on live paths and policy IDs on key previews.
 
-    Observations describe connections nested under a permission policy. They do
-    not create graph nodes and are never used as the policy source of truth.
+    Each observed path uses its own authentication evidence and current policy.
+    Saved policies can be previewed before traffic exists without inventing a
+    connected caller. Source grouping belongs to presentation, never permission.
     """
     observed_by_policy: dict[str, list[dict]] = {
         client.id: [] for client in config.clients
     }
-    unassigned = []
+    caller_routes = []
     for caller in callers:
-        policy_id = caller.get("policy_id")
-        if policy_id in observed_by_policy:
+        policy, keyed, rejection = _observed_policy(config, caller)
+        policy_id = policy.id if policy and policy.id in observed_by_policy else None
+        if policy_id is not None:
             observed_by_policy[policy_id].append(caller)
-        else:
-            unassigned.append(caller)
-
-    caller_routes, route_engines = [], []
-    for client in config.clients:
-        observations = observed_by_policy[client.id]
-        # An unobserved policy shows what its key permits. Once connections
-        # exist, source/default selection alone cannot imply a presented key.
-        caller_key_present = not observations or any(
-            caller.get("identity_basis") in {"api_key", "operator_test"}
-            for caller in observations
-        )
         for route in config.routes:
-            if not matches(route.name, client.route_names):
-                continue
-            decision = decide(
-                config,
-                engines,
-                client,
-                {"model": route.name},
-                consider_capacity=False,
-                caller_key_present=caller_key_present,
-            )
-            ready_engines = (
-                list(dict.fromkeys(c["engine_id"] for c in decision["candidates"]))
-                if route.enabled and client.enabled
-                else []
-            )
-            caller_routes.append(
-                {
-                    "caller_id": client.id,
-                    "policy_id": client.id,
-                    "route_id": route.id,
-                    "ready_engines": ready_engines,
-                    "reason": (
-                        "Permission policy disabled"
-                        if not client.enabled
-                        else "Route disabled"
-                        if not route.enabled
-                        else decision.get("error")
-                        or (
-                            "Eligible text path"
-                            if ready_engines
-                            else "No eligible text destination for this policy"
-                        )
-                    ),
-                }
-            )
-    # An observed connection without a permission policy is still a real
-    # caller. Show the route gate it would encounter without inventing a
-    # persistent policy or granting it direct model access.
-    for caller in unassigned:
-        unkeyed, _ = resolve_unkeyed_policy(config, caller.get("source_address"))
-        authentication_error = caller.get("authentication_error")
-        for route in config.routes:
-            decision = decide(
-                config,
-                engines,
-                unkeyed,
-                {"model": route.name},
-                consider_capacity=False,
-                caller_key_present=False,
-            )
-            ready_engines = (
-                []
-                if authentication_error
-                else list(dict.fromkeys(c["engine_id"] for c in decision["candidates"]))
-            )
             caller_routes.append(
                 {
                     "caller_id": caller["id"],
-                    "policy_id": None,
+                    "policy_id": policy_id,
                     "route_id": route.id,
-                    "ready_engines": ready_engines,
-                    "reason": (
-                        "Last request rejected: " + authentication_error["detail"]
-                        if authentication_error
-                        else "A caller key is required for this route"
-                        if route_requires_caller_key(route)
-                        else decision.get("error")
-                        or (
-                            "Eligible text path"
-                            if ready_engines
-                            else "No eligible text destination"
-                        )
+                    **_route_access(
+                        config, engines, policy, route, keyed=keyed, rejection=rejection
                     ),
                 }
             )
+
+    policy_routes = [
+        {
+            "policy_id": policy.id,
+            "route_id": route.id,
+            **_route_access(config, engines, policy, route, keyed=True),
+        }
+        for policy in config.clients
+        for route in config.routes
+        if matches(route.name, policy.route_names)
+    ]
+    route_engines = []
     for route in config.routes:
         for tier, selector in [
             ("primary", route.primary),
@@ -159,7 +172,7 @@ def route_map(
             }
             for client in config.clients
         ],
-        "unassigned_callers": unassigned,
         "caller_routes": caller_routes,
+        "policy_routes": policy_routes,
         "route_engines": route_engines,
     }
