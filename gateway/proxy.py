@@ -12,6 +12,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.responses import Response
 
+from .accounts.limits import AccountLimits, Refusal, UsageMeter
+from .accounts.principal import level_for
 from .discovery import DiscoveryService, Observation
 from .identity import Identity
 from .routing import apply_defaults, decide
@@ -60,15 +62,19 @@ class InflightRequest:
             finally:
                 self.observation.inflight = max(0, self.observation.inflight - 1)
 
-    async def relay(self, first, iterator, finish):
+    async def relay(self, first, iterator, finish, observe=None):
         terminal = CompletionMarker()
         status, code = "cancelled", None
         try:
             terminal.feed(first)
+            if observe is not None:
+                observe(first)
             yield first
             if not terminal.complete:
                 async for chunk in iterator:
                     terminal.feed(chunk)
+                    if observe is not None:
+                        observe(chunk)
                     yield chunk
                     if terminal.complete:
                         break
@@ -102,6 +108,9 @@ class Proxy:
     ):
         self.store, self.discovery, self.http = store, discovery, http
         self.identity = identity
+        # Open windows are preloaded once; the request path never loads one.
+        self.limits = AccountLimits()
+        self.limits.ledger.seed(store.open_usage_windows(time.time()))
 
     async def dispatch(self, request: Request, payload: dict, client: Client):
         if (
@@ -135,10 +144,33 @@ class Proxy:
             "stream": bool(payload.get("stream")),
             "revision": config.revision,
         }
+        # Bound before finish exists: finish settles an admission when one was
+        # claimed and must stay callable on every earlier exit.
+        admission = None
+        meter = None
+        account_id = getattr(request.state, "account_id", None)
         started = time.monotonic()
         await asyncio.to_thread(self.store.event, event)
 
         async def finish(status, code=None):
+            row = None
+            if admission is not None and not admission.settled:
+                # Settle synchronously before the first await so a cancellation
+                # landing here can lose durability, never a slot or reservation.
+                usage = meter.result(status, code)
+                admission.settle(usage)
+                event["usage"] = {
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "estimated": usage.estimated,
+                }
+                event["account_id"] = account_id
+                row = (
+                    account_id,
+                    admission.window_start,
+                    admission.window_seconds,
+                    *usage.row(),
+                )
             if event["attempts"] and event["attempts"][-1].get("status") == "waiting":
                 event["attempts"][-1]["status"] = status
             event.update(
@@ -146,7 +178,13 @@ class Proxy:
                 elapsed_ms=round((time.monotonic() - started) * 1000),
                 http_status=code,
             )
-            await asyncio.to_thread(self.store.event, event)
+
+            def persist():
+                self.store.event(event)
+                if row is not None:
+                    self.store.record_usage(*row)
+
+            await asyncio.to_thread(persist)
 
         async def refuse(decision):
             status = decision.get("status", 503)
@@ -178,6 +216,32 @@ class Proxy:
 
         if not decision["candidates"]:
             return await refuse(decision)
+
+        if account_id:
+            # Account limits are admitted after decide and before any upstream
+            # send, then held across every attempt until finish settles them.
+            account = self.store.account_snapshot(account_id)
+            level = level_for(config, account["level_id"]) if account else None
+            if level is None:
+                await finish("denied", 403)
+                raise HTTPException(403, "Account access was removed")
+            outcome = self.limits.admit(
+                account_id, level, payload, decision, time.time()
+            )
+            if isinstance(outcome, Refusal):
+                event["limit"] = {
+                    "code": outcome.code,
+                    "retry_after": outcome.retry_after,
+                }
+                event["account_id"] = account_id
+                await finish("limited", 429)
+                return JSONResponse(
+                    outcome.body(event["id"]),
+                    status_code=429,
+                    headers=outcome.headers(),
+                )
+            admission = outcome
+            meter = UsageMeter(payload)
 
         attempted = set()
         while True:
@@ -247,6 +311,19 @@ class Proxy:
             for field, mapping in engine.value_mappings.items():
                 if isinstance(body.get(field), str):
                     body[field] = mapping.get(body[field], body[field])
+            if (
+                meter is not None
+                and body.get("stream")
+                and "stream_options" not in engine.unsupported_parameters
+            ):
+                # A key holder must not be able to force the estimate path, so
+                # a caller-supplied include_usage is overridden, not honoured.
+                options = body.get("stream_options")
+                body["stream_options"] = {
+                    **(options if isinstance(options, dict) else {}),
+                    "include_usage": True,
+                }
+                event["stream_options_injected"] = True
             path = (
                 "/completions"
                 if request.url.path.endswith("/completions")
@@ -327,7 +404,12 @@ class Proxy:
                         continue
 
                     return StreamingResponse(
-                        connection.relay(first, iterator, finish),
+                        connection.relay(
+                            first,
+                            iterator,
+                            finish,
+                            observe=meter.feed if meter is not None else None,
+                        ),
                         status_code=upstream.status_code,
                         media_type=upstream.headers.get(
                             "content-type", "text/event-stream"
@@ -340,6 +422,8 @@ class Proxy:
                     )
                 if content is None:
                     content = await read_limited(upstream, engine.max_response_bytes)
+                if meter is not None:
+                    meter.feed_json(content)
                 code = upstream.status_code
                 content_type = upstream.headers.get("content-type", "application/json")
                 if upstream.is_success:
@@ -351,6 +435,8 @@ class Proxy:
                 )
             except ResponseTooLarge:
                 await connection.release()
+                if meter is not None:
+                    meter.oversized(admission.reserve)
                 await finish("failed", 502)
                 return JSONResponse(
                     {

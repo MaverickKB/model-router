@@ -26,7 +26,7 @@ export function isActive(job: Job): boolean {
 }
 
 export function isError(job: Job): boolean {
-  return ["failed", "denied", "unavailable"].includes(job.status);
+  return ["failed", "denied", "unavailable", "limited"].includes(job.status);
 }
 
 export function failureReason(job: Job): string {

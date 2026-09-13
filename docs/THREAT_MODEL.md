@@ -44,6 +44,8 @@ Upstream TLS verification stays enabled. Use endpoints with certificates trusted
 
 Metadata and non-stream responses have size bounds. The service enforces per-engine admission within one process and stops upstream work when a caller disconnects. It does not provide a multi-process or multi-host admission coordinator. Streaming failover stops once output has reached the client.
 
+Account token budgets and concurrency limits share that single-process admission model; a multi-process deployment enforces each process's share independently. A budget bounds concurrent overshoot by reservation rather than eliminating it: an in-flight request can exceed its reservation by the difference between its actual completion and the caller's `max_tokens` (else the route default, else 1024), and a level's concurrency limit bounds how many such requests exist. A key holder cannot opt out of usage reporting; the router overrides a caller-supplied `include_usage: false` on upstream streamed requests. Usage windows and request history hold token counts and identifiers only. The bounded stream tail kept to read the final usage chunk is process memory discarded with the request, and estimates count bytes and chunk markers without decoding content.
+
 ## Evidence boundary
 
 Controlled tests cover tunnel-shaped authentication, migration, session persistence, invalid keys, registration refusal, bounded parsing, policy exclusion, response limits, concurrency, actual socket cancellation, scanner XML errors and UI interactions. They do not establish exhaustive hostile-input resistance, privileged platform behavior, LAN completeness, production load capacity, or cloud-account compatibility.

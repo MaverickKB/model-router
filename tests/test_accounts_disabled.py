@@ -115,7 +115,39 @@ async def registered_device_grants_nothing(ctx: Disabled):
     assert caller["identity_basis"] == "shared_access" and caller["account_id"] is None
 
 
-SURFACES = [account_key_is_refused_before_lookup, registered_device_grants_nothing]
+async def limits_are_never_consulted(ctx: Disabled):
+    limits = ctx.app.state.proxy.limits
+    admissions = []
+    original = limits.admit
+    limits.admit = lambda *args, **kwargs: (
+        admissions.append(args) or original(*args, **kwargs)
+    )
+    try:
+        for address, headers in (
+            ("192.0.2.50", {"Authorization": f"Bearer {ctx.key}"}),
+            (ctx.device["address"], {}),
+        ):
+            async with ctx.http(address, **headers) as http:
+                response = await http.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "private",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+            assert response.status_code == 401
+    finally:
+        limits.admit = original
+    assert admissions == []
+    assert ctx.store.usage_windows(ctx.account["id"]) == []
+    assert limits.ledger.windows == {}
+
+
+SURFACES = [
+    account_key_is_refused_before_lookup,
+    registered_device_grants_nothing,
+    limits_are_never_consulted,
+]
 
 
 @pytest.mark.asyncio

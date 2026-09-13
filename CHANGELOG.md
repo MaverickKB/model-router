@@ -5,6 +5,7 @@
 - Fresh installs leave operator sign-in off. An operator key is created only when the owner enables sign-in or sets `MODEL_ROUTER_ADMIN_TOKEN`.
 - Schema v5: account levels and account settings (disabled by default); account storage.
 - Account keys (`mru_`) authenticate as level-derived principals: exact level access, refused while accounts are disabled, re-derived before every attempt (a policy change between attempts is reported as a denial); account callers observed by id and grouped on the routing map.
+- Account token budgets and concurrency limits enforced before upstream send: fixed windows with in-flight reservation, 429 `rate_limit_exceeded` bodies with `Retry-After`, the `limited` request status, forced `stream_options.include_usage` on streamed requests, and metadata-only usage rows that survive restarts.
 
 ## 0.3.0
 
