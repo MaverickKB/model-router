@@ -9,7 +9,7 @@ import {
   Route as RouteIcon,
   X,
 } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, post, put } from "./api";
 import { timeLabel } from "./components";
 import { EngineEditor, newClient, newEngine, newRoute } from "./editors";
@@ -19,7 +19,7 @@ import {
   networkIsScanning,
 } from "./network/NetworkView";
 import "./styles.css";
-import type { Client, Config, Engine, Job, Route } from "./types";
+import type { Client, Config, Engine, Job, ReleaseStatus, Route } from "./types";
 import { useRouterState } from "./useRouterState";
 import { ActivityRail } from "./views/ActivityRail";
 import { ClientsView } from "./views/ClientsView";
@@ -48,6 +48,7 @@ export function App() {
     [endpoints, setEndpoints] = useState(false);
   const [token, setToken] = useState(""),
     [unlocking, setUnlocking] = useState(false);
+  const [release, setRelease] = useState<ReleaseStatus | null>(null);
   const workspace = useRef<HTMLDivElement>(null);
   const [curve, setCurve] = useState("");
   async function action(fn: () => Promise<unknown>) {
@@ -117,6 +118,20 @@ export function App() {
       workspace.current?.removeEventListener("scroll", update, true);
     };
   }, [hover, state, tab]);
+  useEffect(() => {
+    if (!state?.config.updates.check_enabled) return;
+    let ignore = false;
+    void api<ReleaseStatus>("/api/v1/updates")
+      .then((value) => {
+        if (!ignore) setRelease(value);
+      })
+      .catch(() => {
+        if (!ignore) setRelease(null);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [state?.config.updates.check_enabled]);
   if (locked)
     return (
       <div className="unlock">
@@ -274,6 +289,25 @@ export function App() {
             onClick={() => selectTab("Settings", "Access")}
           >
             Review access
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
+      {release?.available && (
+        <div className="setup-banner" role="status">
+          <div>
+            <strong>Update {release.latest}</strong>
+            <span>
+              {release.notes
+                ? release.notes.split("\n")[0]
+                : "A newer GitHub release is available."}
+            </span>
+          </div>
+          <button
+            className="subtle"
+            onClick={() => selectTab("Settings", "Updates")}
+          >
+            Review update
             <ChevronRight size={14} />
           </button>
         </div>

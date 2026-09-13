@@ -4,8 +4,9 @@ import { DiscoveryEditor } from "../editors/DiscoveryEditor";
 import type { Config } from "../types";
 import { AccessSettings } from "./AccessSettings";
 import { AccountsSettings } from "./AccountsSettings";
+import { UpdatesSettings } from "./UpdatesSettings";
 
-export const SECTIONS = ["Access", "Accounts", "Discovery"] as const;
+export const SECTIONS = ["Access", "Accounts", "Discovery", "Updates"] as const;
 export type Section = (typeof SECTIONS)[number];
 
 export function SettingsPage({
@@ -114,6 +115,14 @@ export function SettingsPage({
           save={save}
           focusTargets={focusDiscoveryTargets}
         />
+      </div>
+      <div
+        role="tabpanel"
+        id="settings-panel-Updates"
+        aria-labelledby="settings-tab-Updates"
+        hidden={section !== "Updates"}
+      >
+        <UpdatesSettings config={config} save={save} />
       </div>
     </section>
   );

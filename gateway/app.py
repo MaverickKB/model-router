@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +33,7 @@ from .schema import Configuration, Engine
 from .security.body_limit import BodyLimit
 from .store import Conflict, Store
 from .topology import route_map
+from .updates import Updates
 
 
 def create_app(state_dir: str | None = None, background=True, transport=None):
@@ -46,6 +48,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     discovery = DiscoveryService(store, http)
     proxy = Proxy(store, discovery, http, identity)
     portal = PortalIdentity(store, identity)
+    updates = Updates(http)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -83,6 +86,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     )
     app.state.proxy = proxy
     app.state.portal = portal
+    app.state.updates = updates
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""
@@ -201,6 +205,32 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     @management.post("/operator/key")
     async def rotate_operator_key(request: Request):
         return await identity.rotate_key(request)
+
+    @management.get("/updates")
+    async def update_status(request: Request, refresh: bool = False):
+        await identity.require_operator(request)
+        return await updates.status(store.config(), refresh=refresh)
+
+    @management.post("/updates/apply")
+    async def apply_update(request: Request):
+        await identity.require_operator(request, True)
+        body = await request.json()
+        tag = str(body.get("tag") or "")
+        try:
+            result = await updates.apply(store.config(), tag)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except subprocess.CalledProcessError as exc:
+            raise HTTPException(
+                500, exc.stderr.strip() or "The update command failed"
+            ) from exc
+
+        async def restart():
+            await asyncio.sleep(0.4)
+            updates.restart()
+
+        asyncio.create_task(restart())
+        return result
 
     @management.put("/config")
     async def configure(config: Configuration, request: Request):

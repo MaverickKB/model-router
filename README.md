@@ -40,6 +40,8 @@ A merge preserves the surviving engine's model policy and limits. It requires bo
 
 ## Access is optional
 
+**Settings > Updates** can check the GitHub repository for a newer published release and show its notes. Nothing is installed until the operator clicks **Install update**. Turn the check off if this install should not contact GitHub.
+
 **Settings > Access** controls operator sign-in and the optional default policy for unkeyed callers. Fresh installs start with sign-in off. The owner turns it on when they want to protect management access. Caller-key requirements belong to each route, so local and cloud routes can be mixed in one installation without a global access switch.
 
 When operator sign-in is off, configured trusted source networks can manage the console through its canonical URL or loopback tunnel. Same-origin checks still protect browser writes. `MODEL_ROUTER_PUBLIC_URL` declares the canonical external URL. Keep sign-in enabled when exposing an administrative listener beyond trusted operators.

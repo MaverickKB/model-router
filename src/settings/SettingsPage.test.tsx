@@ -71,12 +71,17 @@ describe("Saved settings and inherited choices", () => {
       "true",
     );
     await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Updates" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.keyboard("{ArrowRight}");
     expect(screen.getByRole("tab", { name: "Access" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
     await user.keyboard("{ArrowLeft}");
-    expect(screen.getByRole("tab", { name: "Discovery" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Updates" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
