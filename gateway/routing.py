@@ -35,27 +35,41 @@ def requirements(payload: dict) -> set[str]:
     return required
 
 
-def client_reason(client: Client, engine: EngineView, model: ModelView) -> str:
+def client_engine_reason(client: Client, engine: EngineView) -> str:
     if not client.enabled:
         return "Client is disabled"
     if engine["kind"] == "cloud" and not client.allow_cloud:
         return "Cloud access is not allowed for this client"
     if client.engine_ids and engine["id"] not in client.engine_ids:
         return "Engine is outside the client's allowlist"
+    return ""
+
+
+def client_reason(client: Client, engine: EngineView, model: ModelView) -> str:
+    reason = client_engine_reason(client, engine)
+    if reason:
+        return reason
     if not matches(model["id"], client.model_patterns):
         return "Model is outside the client's allowlist"
     return ""
 
 
-def selector_reason(selector: Selector, engine: EngineView, model: ModelView) -> str:
+def selector_engine_reason(selector: Selector, engine: EngineView) -> str:
     if selector.kind != "any" and engine["kind"] != selector.kind:
         return f"This policy selects {selector.kind} engines"
     if selector.engine_ids and engine["id"] not in selector.engine_ids:
         return "Engine is outside this route's selection"
-    if not matches(model["id"], selector.model_patterns):
-        return "Model does not match this route"
     if selector.tags and not set(selector.tags).issubset(engine["tags"]):
         return "Engine does not have the required tags"
+    return ""
+
+
+def selector_reason(selector: Selector, engine: EngineView, model: ModelView) -> str:
+    reason = selector_engine_reason(selector, engine)
+    if reason:
+        return reason
+    if not matches(model["id"], selector.model_patterns):
+        return "Model does not match this route"
     return ""
 
 
@@ -74,6 +88,8 @@ def decide(
     candidates: list[Candidate] = []
     required = requirements(payload)
     permission_blocked = False
+    missing_capabilities: set[str] = set()
+    other_blocker = False
     if not client.enabled:
         return {
             "candidates": [],
@@ -118,6 +134,14 @@ def decide(
     for tier, selector in tiers:
         for engine in engines:
             if engine["status"] != "available":
+                # An unavailable permitted catalog may recover with a capable
+                # model. Do not classify that uncertainty as a request error.
+                if (
+                    engine["enabled"]
+                    and not client_engine_reason(client, engine)
+                    and not selector_engine_reason(selector, engine)
+                ):
+                    other_blocker = True
                 rejected.append(
                     {
                         "engine_id": engine["id"],
@@ -139,11 +163,13 @@ def decide(
                 if not route and model["id"] != requested:
                     reason = "Direct model requests require an exact model ID"
                 if not reason and not required.issubset(model["capabilities"]):
+                    missing_capabilities.update(required - set(model["capabilities"]))
                     reason = "Missing capability: " + ", ".join(
                         sorted(required - set(model["capabilities"]))
                     )
                 unsupported = set(payload) & set(engine["unsupported_parameters"])
                 if not reason and unsupported:
+                    other_blocker = True
                     reason = (
                         "Engine does not support the client's explicit option: "
                         + ", ".join(sorted(unsupported))
@@ -153,6 +179,7 @@ def decide(
                     and consider_capacity
                     and engine["inflight"] >= engine["max_inflight"]
                 ):
+                    other_blocker = True
                     reason = "Engine concurrency limit reached"
                 if reason:
                     rejected.append(
@@ -203,6 +230,24 @@ def decide(
         if key not in seen:
             seen.add(key)
             unique.append(candidate)
+    failure: dict = {}
+    if not unique:
+        if not route and permission_blocked:
+            failure = {
+                "status": 403,
+                "error": "Client permissions exclude the matching models",
+            }
+        elif missing_capabilities and not other_blocker:
+            # Only requirements of this request enter the public error. Engine
+            # and model identities remain in operator-only rejection details.
+            failure = {
+                "status": 400,
+                "error": "No permitted destination is configured for the required capabilities: "
+                + ", ".join(sorted(missing_capabilities))
+                + ". Check the engine capability settings.",
+                "error_type": "invalid_request_error",
+                "error_code": "unsupported_capability",
+            }
     return {
         "route": route.name if route else requested,
         "client": client.name,
@@ -211,11 +256,7 @@ def decide(
         "rejections": rejected,
         "defaults": route.defaults if route else {},
         "revision": config.revision,
-        **(
-            {"status": 403, "error": "Client permissions exclude the matching models"}
-            if not route and not unique and permission_blocked
-            else {}
-        ),
+        **failure,
     }
 
 

@@ -1,9 +1,12 @@
 import json
+import sqlite3
+import time
 
 import httpx
 import pytest
 
 from gateway.app import create_app
+from gateway.caller_records import caller_id
 from gateway.schema import Client, Configuration, Security
 from gateway.store import Store
 from gateway.topology import route_map
@@ -303,3 +306,227 @@ async def test_console_preview_is_not_attributed_to_agent(tmp_path):
     )
     assert event["caller"]["id"] == caller["id"]
     assert "Do not retain this text" not in json.dumps([caller, event])
+
+
+@pytest.mark.asyncio
+async def test_one_observation_survives_authentication_and_software_changes(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    shared = Client(name="Default permission policy")
+    keyed = Client(name="Named key policy")
+    config = app.state.store.save(
+        Configuration(
+            clients=[shared, keyed],
+            security=Security(
+                operator_auth_enabled=False, anonymous_client_id=shared.id
+            ),
+        )
+    )
+    key = app.state.store.issue_key(keyed.id)
+    identifier = None
+    first_seen = None
+    for index, authorization in enumerate(
+        (None, "Bearer placeholder", f"Bearer {key}", f"Bearer {key}")
+    ):
+        if index == 3:
+            app.state.store.revoke_keys(keyed.id)
+        headers = {
+            "User-Agent": f"ExampleAgent/{index + 1}.0",
+            "X-Router-Caller": "Writing agent",
+        }
+        if authorization:
+            headers["Authorization"] = authorization
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=app, client=("192.0.2.50", 52000 + index)
+            ),
+            base_url="http://router.test",
+        ) as client:
+            assert (await client.get("/v1/models", headers=headers)).status_code == 200
+        records = app.state.store.callers()
+        assert len(records) == 1
+        caller = records[0]
+        identifier = identifier or caller["id"]
+        first_seen = first_seen or caller["first_seen"]
+        assert caller["id"] == identifier
+        assert caller["first_seen"] == first_seen
+        assert caller["request_count"] == index + 1
+        assert caller["software"] == f"ExampleAgent/{index + 1}.0"
+        assert caller["source_port"] == 52000 + index
+        if index == 2:
+            assert caller["policy_id"] == keyed.id
+            assert caller["identity_basis"] == "api_key"
+            assert caller["name"] == keyed.name
+        elif index in (1, 3):
+            assert caller["policy_id"] is None
+            assert caller["identity_basis"] == "unassigned"
+            assert caller["name"] == "Writing agent"
+    reopened = Store(str(tmp_path))
+    assert reopened.callers() == records
+    assert reopened.config() == config
+    assert records[0]["recent_source_ports"] == [52000, 52001, 52002, 52003]
+    assert key not in json.dumps(records)
+
+
+@pytest.mark.asyncio
+async def test_distinct_reported_applications_and_software_remain_distinct(tmp_path):
+    app = create_app(str(tmp_path), background=False)
+    app.state.store.save(Configuration(security=Security(operator_auth_enabled=False)))
+    for label, software in (
+        ("Writing", "ExampleAgent/1"),
+        ("Coding", "ExampleAgent/1"),
+        ("Writing", "DifferentAgent/1"),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("192.0.2.51", 52010)),
+            base_url="http://router.test",
+        ) as client:
+            assert (
+                await client.get(
+                    "/v1/models",
+                    headers={"User-Agent": software, "X-Router-Caller": label},
+                )
+            ).status_code == 200
+    assert len(app.state.store.callers()) == 3
+
+
+def legacy_caller(identifier, seen, *, basis, policy_id, count, port, version="1.0"):
+    return {
+        "id": identifier,
+        "source_address": "192.0.2.52",
+        "software": f"python-requests/{version}",
+        "reported_name": "",
+        "name": "Policy name" if policy_id else "Unidentified caller",
+        "identity_basis": basis,
+        "policy_id": policy_id,
+        "first_seen": seen - 10,
+        "last_seen": seen,
+        "request_count": count,
+        "source_port": port,
+    }
+
+
+def test_existing_auth_dependent_rows_merge_once_without_rewriting_events(tmp_path):
+    store = Store(str(tmp_path))
+    now = time.time()
+    old = legacy_caller(
+        "old-shared",
+        now - 30,
+        basis="shared_access",
+        policy_id="shared",
+        count=3,
+        port=52020,
+    )
+    keyed = legacy_caller(
+        "old-keyed", now - 20, basis="api_key", policy_id="keyed", count=4, port=52021
+    )
+    latest = legacy_caller(
+        "old-invalid",
+        now - 10,
+        basis="unassigned",
+        policy_id=None,
+        count=2,
+        port=52022,
+        version="2.0",
+    )
+    other = dict(latest, id="different-source", source_address="192.0.2.53")
+    keyed["recent_source_ports"] = [52020, 52021]
+    event = {"id": "historical", "ts": now, "caller": old}
+    store.event(event)
+    with store.db:
+        store.db.executemany(
+            "INSERT INTO callers VALUES (?, ?, ?)",
+            [
+                (row["id"], row["last_seen"], json.dumps(row))
+                for row in (old, keyed, latest, other)
+            ],
+        )
+    config_before = store.db.execute("SELECT body FROM config").fetchall()
+    reopened = Store(str(tmp_path))
+    records = reopened.callers()
+    assert len(records) == 2
+    merged = next(row for row in records if row["source_address"] == "192.0.2.52")
+    assert merged["id"] == caller_id(latest)
+    assert merged["first_seen"] == old["first_seen"]
+    assert merged["last_seen"] == latest["last_seen"]
+    assert merged["request_count"] == 9
+    assert merged["recent_source_ports"] == [52020, 52021, 52022]
+    assert merged["identity_basis"] == "unassigned"
+    assert merged["policy_id"] is None
+    assert merged["name"] == "Unidentified caller"
+    assert merged["software"] == "python-requests/2.0"
+    assert reopened.events() == [event]
+    assert reopened.db.execute("SELECT body FROM config").fetchall() == config_before
+    assert Store(str(tmp_path)).callers() == records
+
+
+def test_caller_migration_rolls_back_as_one_transaction(tmp_path):
+    store = Store(str(tmp_path))
+    row = legacy_caller(
+        "legacy-id",
+        time.time(),
+        basis="shared_access",
+        policy_id=None,
+        count=1,
+        port=52023,
+    )
+    with store.db:
+        store.db.execute(
+            "INSERT INTO callers VALUES (?, ?, ?)",
+            (row["id"], row["last_seen"], json.dumps(row)),
+        )
+        store.db.execute(
+            "CREATE TRIGGER migration_failure BEFORE INSERT ON callers BEGIN SELECT RAISE(ABORT, 'disk failure'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="disk failure"):
+        Store(str(tmp_path))
+    assert store.callers() == [row]
+
+
+def test_late_observation_preserves_latest_auth_and_its_own_event_evidence(tmp_path):
+    store = Store(str(tmp_path))
+    now = time.time()
+    keyed = legacy_caller(
+        "unused", now - 10, basis="api_key", policy_id="old-key", count=1, port=52024
+    )
+    unkeyed = legacy_caller(
+        "unused", now, basis="unassigned", policy_id=None, count=1, port=52025
+    )
+    for row in (keyed, unkeyed):
+        row["id"] = caller_id(row)
+    store.observe_caller(unkeyed)
+    store.observe_caller(keyed)
+    stored = store.callers()[0]
+    assert stored["identity_basis"] == "unassigned"
+    assert stored["policy_id"] is None
+    assert stored["name"] == "Unidentified caller"
+    assert stored["request_count"] == 2
+    assert stored["recent_source_ports"] == [52024, 52025]
+    assert keyed["identity_basis"] == "api_key"
+    assert keyed["policy_id"] == "old-key"
+
+
+@pytest.mark.parametrize(
+    "older,newer",
+    [
+        ("python-requests/2.31.0", "python-requests/2.33.0"),
+        ("OpenAI/Python 1.54.0", "OpenAI/Python 2.24.0"),
+        ("ExampleAgent/1.0", "ExampleAgent/2.0"),
+    ],
+)
+def test_caller_software_upgrades_keep_identity(older, newer):
+    row = {"source_address": "192.0.2.54", "reported_name": "", "software": older}
+    assert caller_id(row) == caller_id(dict(row, software=newer))
+    assert caller_id(row) == caller_id(
+        dict(row, identity_hints={"stainless_os": "updated"})
+    )
+
+
+def test_composite_application_strings_do_not_merge_on_the_shared_library():
+    row = {
+        "source_address": "192.0.2.54",
+        "reported_name": "",
+        "software": "WritingApp/1.0 python-requests/2.0",
+    }
+    assert caller_id(row) != caller_id(
+        dict(row, software="CodingApp/1.0 python-requests/2.0")
+    )
