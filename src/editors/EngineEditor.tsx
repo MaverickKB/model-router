@@ -83,7 +83,7 @@ export function EngineEditor({
       if (key)
         await api(`/api/v1/engines/${draft.id}/credential`, {
           method: "PUT",
-          body: JSON.stringify({ key }),
+          body: JSON.stringify({ key, type: draft.credential_type }),
         });
       await post(`/api/v1/engines/${draft.id}/refresh`);
       if (draft.kind === "cloud" && draft.model_patterns.length === 0) {
@@ -283,18 +283,32 @@ export function EngineEditor({
         <Field
           label={
             exists
-              ? "Replace provider key (optional)"
-              : "Provider key (if required)"
+              ? "Replace provider credential (optional)"
+              : "Provider credential (if required)"
           }
           hint="Stored on the router. Never shared with callers."
         >
+          <Select
+            value={draft.credential_type}
+            onChange={(value) =>
+              set({ ...draft, credential_type: value as Engine["credential_type"] })
+            }
+          >
+            <option value="static">API key</option>
+            <option value="xai_oauth">xAI / Grok OAuth</option>
+            <option value="codex_oauth">Codex OAuth</option>
+          </Select>
           <input
             type="password"
             autoComplete="new-password"
             value={key}
             onChange={(e) => setKey(e.target.value)}
             placeholder={
-              exists ? "Leave blank to keep the saved key" : "Provider API key"
+              draft.credential_type === "static"
+                ? exists
+                  ? "Leave blank to keep the saved key"
+                  : "Provider API key"
+                : "OAuth refresh token"
             }
           />
         </Field>

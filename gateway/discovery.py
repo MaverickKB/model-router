@@ -14,6 +14,7 @@ from .contracts import EngineStatus, EngineView, ModelView
 from .network.announcements import listen
 from .network.protocols import is_gateway_catalog, unavailable_reason
 from .network.report import read_json, read_report
+from .oauth import OAuthSession
 from .routing import matches
 from .schema import Engine
 from .store import Conflict, Store
@@ -61,6 +62,7 @@ class DiscoveryService:
     def __init__(self, store: Store, http: httpx.AsyncClient):
         self.store = store
         self.http = http
+        self.oauth = OAuthSession()
         self.observations: dict[str, Observation] = {}
         self.scan_lock = asyncio.Lock()
         self.probe_limit = asyncio.Semaphore(12)
@@ -74,13 +76,24 @@ class DiscoveryService:
     def observation(self, engine_id: str) -> Observation:
         return self.observations.setdefault(engine_id, Observation(engine_id))
 
-    def headers(self, engine: Engine) -> dict[str, str]:
+    async def headers(self, engine: Engine) -> dict[str, str]:
         key = self.store.secret(engine.id)
-        return {"Authorization": f"Bearer {key}"} if key else {}
+        if not key:
+            return {}
+        if engine.credential_type != "static":
+            token, rotated = await self.oauth.access_token(
+                engine.credential_type, key, self.http
+            )
+            if rotated:
+                await asyncio.to_thread(self.store.set_secret, engine.id, rotated)
+            return {"Authorization": f"Bearer {token}"}
+        return {"Authorization": f"Bearer {key}"}
 
     async def probe(self, engine: Engine) -> list[ModelView]:
         body = await CATALOG_ADAPTERS[engine.catalog_protocol].read(
-            self.http, engine.base_url, self.headers(engine)
+            self.http,
+            engine.base_url,
+            await self.headers(engine),
         )
         if engine.source in {
             "network",
