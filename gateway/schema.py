@@ -80,6 +80,7 @@ class Engine(NamedRecord):
     )
     failure_cooldown_seconds: float = Field(default=15, ge=0, le=300)
     rate_limit_cooldown_seconds: float = Field(default=5, ge=0, le=300)
+    credential_type: Literal["static", "xai_oauth", "codex_oauth"] = "static"
 
     @model_validator(mode="after")
     def cloud_selection_is_explicit(self):

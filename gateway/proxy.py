@@ -365,16 +365,15 @@ class Proxy:
                 )
                 try:
                     await asyncio.to_thread(self.store.event, event)
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Accept-Encoding": "identity",
-                        **self.discovery.headers(engine),
-                    }
                     req = self.http.build_request(
                         "POST",
                         engine.base_url + path,
                         json=body,
-                        headers=headers,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept-Encoding": "identity",
+                            **await self.discovery.headers(engine),
+                        },
                         timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
                     )
                     upstream = connection.response = await self.http.send(

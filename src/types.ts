@@ -34,6 +34,7 @@ export interface Engine {
   max_response_bytes: number;
   failure_cooldown_seconds: number;
   rate_limit_cooldown_seconds: number;
+  credential_type: "static" | "xai_oauth" | "codex_oauth";
 }
 export interface EngineView extends Engine {
   models: Model[];

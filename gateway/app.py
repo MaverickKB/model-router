@@ -267,12 +267,21 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         engine = next((e for e in store.config().engines if e.id == engine_id), None)
         if not engine:
             raise HTTPException(404, "Engine does not exist")
-        value = str((await request.json()).get("key", ""))
+        body = await request.json()
+        value = str(body.get("key", ""))
         if "\n" in value or "\r" in value:
             raise HTTPException(422, "Credential must be one line")
+        kind = body.get("type", "static")
+        if kind not in {"static", "xai_oauth", "codex_oauth"}:
+            raise HTTPException(422, "Unknown credential type")
+        if engine.credential_type != kind:
+            old = store.config()
+            engine = next(e for e in old.engines if e.id == engine_id)
+            engine.credential_type = kind
+            await asyncio.to_thread(store.save, old)
         await asyncio.to_thread(store.set_secret, engine_id, value)
         await discovery.refresh_engine(engine)
-        return {"has_credential": bool(value)}
+        return {"has_credential": bool(value), "credential_type": kind}
 
     @management.post("/engines/merge")
     async def merge_engines(body: MergeEngines, request: Request):

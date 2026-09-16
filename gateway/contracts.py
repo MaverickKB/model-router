@@ -51,6 +51,7 @@ class EngineView(TypedDict):
     rate_limit_cooldown_seconds: float
     models: list[ModelView]
     has_credential: bool
+    credential_type: str
     status: EngineStatus
     checked_at: float
     observed_at: float

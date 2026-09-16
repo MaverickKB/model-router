@@ -41,6 +41,7 @@ export const newEngine = (): Engine => ({
   max_response_bytes: 8388608,
   failure_cooldown_seconds: 15,
   rate_limit_cooldown_seconds: 5,
+  credential_type: "static",
 });
 export const newRoute = (): Route => ({
   id: newId(),
