@@ -28,6 +28,8 @@ import { JobDialog } from "./views/JobDialog";
 import { RoutesView } from "./views/RoutesView";
 
 import { EngineCard } from "./EngineCard";
+import { rowsForEngine } from "./performance-format";
+import { usePerformance } from "./usePerformance";
 import { SettingsPage, type Section } from "./settings/SettingsPage";
 import { MergeEnginesDialog } from "./editors/MergeEnginesDialog";
 import { engineUrls } from "./engine-addresses";
@@ -43,6 +45,7 @@ export function App() {
     [route, setRoute] = useState<Route | null>(null),
     [client, setClient] = useState<Client | null>(null);
   const [merging, setMerging] = useState<Engine | null>(null);
+  const [performanceHours, setPerformanceHours] = useState(24);
   const [job, setJob] = useState<Job | null>(null),
     [hover, setHover] = useState<Job | null>(null),
     [endpoints, setEndpoints] = useState(false);
@@ -51,6 +54,15 @@ export function App() {
   const [release, setRelease] = useState<ReleaseStatus | null>(null);
   const workspace = useRef<HTMLDivElement>(null);
   const [curve, setCurve] = useState("");
+  // Reload performance whenever the newest request appears or finishes.
+  const newestEvent = state?.events?.[0];
+  let performanceKey = "";
+  if (newestEvent) performanceKey = `${newestEvent.id}:${newestEvent.status}`;
+  const performance = usePerformance(
+    performanceHours,
+    tab === "Overview" && state !== null && !locked,
+    performanceKey,
+  );
   async function action(fn: () => Promise<unknown>) {
     try {
       await fn();
@@ -390,6 +402,16 @@ export function App() {
                   <EngineCard
                     key={e.id}
                     engine={e}
+                    performance={{
+                      rows: rowsForEngine(
+                        performance.summary,
+                        performanceHours,
+                        e.id,
+                      ),
+                      hours: performanceHours,
+                      error: performance.error,
+                      onHours: setPerformanceHours,
+                    }}
                     onMerge={() => setMerging(e)}
                     onEdit={() =>
                       setEngine(config.engines.find((x) => x.id === e.id)!)

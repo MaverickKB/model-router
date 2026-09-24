@@ -245,6 +245,47 @@ export interface Job {
     estimated: boolean;
   };
   limit?: { code: string; retry_after: number | null };
+  performance?: RequestPerformance;
+}
+/** Timing of the attempt that served a completed request. */
+export interface RequestPerformance {
+  stream: boolean;
+  upstream_ms: number;
+  first_chunk_ms: number | null;
+  generation_ms: number | null;
+  completion_tokens: number;
+  tokens_estimated: boolean;
+  tokens_per_second: number | null;
+}
+/** One engine and model from GET /api/v1/performance. */
+export interface PerformanceRow {
+  engine_id: string;
+  engine: string;
+  model: string;
+  in_catalog: boolean | null;
+  served: number;
+  failed: number;
+  failure_rate: number | null;
+  first_seen: number;
+  last_seen: number;
+  stream: {
+    samples: number;
+    first_chunk_ms_p50: number | null;
+    first_chunk_ms_p95: number | null;
+    tokens_per_second_p50: number | null;
+    estimated_samples: number;
+  };
+  non_stream: {
+    samples: number;
+    upstream_ms_p50: number | null;
+    upstream_ms_p95: number | null;
+  };
+}
+export interface PerformanceSummary {
+  window_hours: number;
+  since: number;
+  generated_at: number;
+  rows: PerformanceRow[];
 }
 export interface State {
   setup_required: boolean;
