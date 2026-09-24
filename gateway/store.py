@@ -487,6 +487,17 @@ class Store:
             )
             self.db.commit()
 
+    def events_since(self, since: float) -> list[dict]:
+        """Request history from ``since`` onward, oldest first, as recorded."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT body FROM events WHERE ts >= ? ORDER BY ts", (since,)
+            ).fetchall()
+        events = []
+        for row in rows:
+            events.append(json.loads(row[0]))
+        return events
+
     def events(self, limit=100) -> list[dict]:
         with self.lock:
             labels = self.caller_source_names()

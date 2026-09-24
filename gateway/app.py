@@ -27,6 +27,7 @@ from .identity import Identity
 from .network.collector import Collector
 from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
+from .performance import summarize
 from .proxy import Proxy
 from .routing import client_reason, decide, route_requires_caller_key
 from .schema import Configuration, Engine
@@ -124,6 +125,41 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     @app.exception_handler(Conflict)
     async def conflict_handler(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @management.get("/performance")
+    async def performance(request: Request, hours: int = Query(24, ge=1, le=168)):
+        # Request history is kept for seven days, so a longer window would
+        # silently report less than it names.
+        await identity.require_operator(request)
+        now = time.time()
+        since = now - hours * 3600
+        names = {}
+        for engine in store.config().engines:
+            names[engine.id] = engine.name
+        catalogs = {}
+        for view in discovery.views():
+            # A failed probe clears the catalog; only a known catalog can say
+            # that a model was replaced.
+            if view["status"] != "available" and not view["models"]:
+                continue
+            model_ids = set()
+            for model in view["models"]:
+                model_ids.add(model["id"])
+            catalogs[view["id"]] = model_ids
+
+        def read_and_summarize():
+            # A seven-day window can hold many requests; reading and grouping
+            # them happens on a worker thread so proxied requests keep moving.
+            events = store.events_since(since)
+            return summarize(events, names, catalogs)
+
+        rows = await asyncio.to_thread(read_and_summarize)
+        return {
+            "window_hours": hours,
+            "since": since,
+            "generated_at": now,
+            "rows": rows,
+        }
 
     @management.get("/state")
     async def state(request: Request):
