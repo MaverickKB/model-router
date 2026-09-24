@@ -1,9 +1,12 @@
 """Operators compare engines and model replacements from request history."""
 
+import threading
+
 import httpx
 import pytest
 from test_gateway import send, setup  # noqa: F401  (pytest fixture)
 
+import gateway.app
 from gateway.performance import percentile, summarize
 
 
@@ -202,3 +205,20 @@ async def test_performance_api_requires_the_operator(setup):  # noqa: F811 (pyte
     ) as anonymous:
         result = await anonymous.get("/api/v1/performance")
     assert result.status_code == 401
+
+
+async def test_performance_summary_runs_off_the_event_loop(setup, monkeypatch):  # noqa: F811 (pytest fixture)
+    _, http, *_ = setup
+    loop_thread = threading.get_ident()
+    threads = []
+
+    def recording_summarize(events, names, catalogs):
+        threads.append(threading.get_ident())
+        return summarize(events, names, catalogs)
+
+    monkeypatch.setattr(gateway.app, "summarize", recording_summarize)
+    assert (await send(http)).status_code == 200
+    result = await http.get("/api/v1/performance")
+    assert result.status_code == 200
+    assert len(threads) == 1
+    assert threads[0] != loop_thread
