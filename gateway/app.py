@@ -133,7 +133,6 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         await identity.require_operator(request)
         now = time.time()
         since = now - hours * 3600
-        events = await asyncio.to_thread(store.events_since, since)
         names = {}
         for engine in store.config().engines:
             names[engine.id] = engine.name
@@ -147,11 +146,19 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             for model in view["models"]:
                 model_ids.add(model["id"])
             catalogs[view["id"]] = model_ids
+
+        def read_and_summarize():
+            # A seven-day window can hold many requests; reading and grouping
+            # them happens on a worker thread so proxied requests keep moving.
+            events = store.events_since(since)
+            return summarize(events, names, catalogs)
+
+        rows = await asyncio.to_thread(read_and_summarize)
         return {
             "window_hours": hours,
             "since": since,
             "generated_at": now,
-            "rows": summarize(events, names, catalogs),
+            "rows": rows,
         }
 
     @management.get("/state")
