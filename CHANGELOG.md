@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Completed requests record the serving attempt's timing and output size in request history: upstream time, time to the first streamed chunk, generation time, completion tokens (reported or estimated) and tokens per second for streams. No content is stored and no request is altered to measure it.
+
 ## 0.3.0-beta.1
 
 Initial public beta. Not a production guarantee.
