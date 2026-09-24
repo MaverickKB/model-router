@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from test_transport import serving
@@ -314,3 +315,104 @@ async def test_failed_requests_record_no_performance(tmp_path):
             event = app.state.store.events()[0]
             assert event["status"] == "failed"
             assert "performance" not in event
+
+
+def mock_engine_app(tmp_path, handle):
+    app = create_app(
+        str(tmp_path), background=False, transport=httpx.MockTransport(handle)
+    )
+    engine = Engine(name="Mock engine", base_url="http://engine.test/v1")
+    app.state.store.save(
+        Configuration(engines=[engine], discovery=Discovery(enabled=False, mdns=False))
+    )
+    return app
+
+
+def asgi_client(app):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 5200)),
+        base_url="http://localhost",
+    )
+
+
+async def test_deeply_nested_upstream_json_is_relayed_not_failed(tmp_path):
+    # Deep enough to exceed the JSON parser's recursion limit on 3.12.
+    depth = 60000
+    nested = b'{"choices":[],"extra":' + b"[" * depth + b"]" * depth + b"}"
+    # The stream meter parses only a 32 KB tail. This depth still fits in that
+    # tail and exceeds Python 3.11's default recursion limit.
+    tail_depth = 15000
+    usage_line = b'data: {"usage":' + b"[" * tail_depth + b"]" * tail_depth + b"}\n\n"
+
+    async def handle(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "deep"}]})
+        if json.loads(request.content).get("stream"):
+            body = chunk("one") + usage_line.decode() + "data: [DONE]\n\n"
+            return httpx.Response(
+                200,
+                content=body.encode(),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200, content=nested, headers={"content-type": "application/json"}
+        )
+
+    app = mock_engine_app(tmp_path, handle)
+    await app.state.discovery.refresh()
+    payload = {"model": "auto", "messages": [{"role": "user", "content": "x"}]}
+    async with asgi_client(app) as http:
+        plain = await http.post("/v1/chat/completions", json=payload)
+        assert plain.status_code == 200
+        assert plain.content == nested
+        event = app.state.store.events()[0]
+        assert event["status"] == "completed"
+        assert event["performance"]["tokens_estimated"] is True
+
+        streamed = await http.post(
+            "/v1/chat/completions", json={**payload, "stream": True}
+        )
+        assert streamed.status_code == 200
+        event = app.state.store.events()[0]
+        assert event["status"] == "completed"
+        assert event["performance"]["tokens_estimated"] is True
+
+
+async def test_cancellation_during_the_completed_write_drops_performance(
+    tmp_path, monkeypatch
+):
+    async def handle(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "m"}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    app = mock_engine_app(tmp_path, handle)
+    await app.state.discovery.refresh()
+    store = app.state.store
+    original_event = store.event
+    interrupted = []
+
+    def cancel_first_completed_write(event):
+        if event.get("status") == "completed" and not interrupted:
+            interrupted.append(True)
+            raise asyncio.CancelledError
+        original_event(event)
+
+    monkeypatch.setattr(store, "event", cancel_first_completed_write)
+    async with asgi_client(app) as http:
+        # The cancellation propagates out of the handler by design.
+        with pytest.raises(asyncio.CancelledError):
+            await http.post(
+                "/v1/chat/completions",
+                json={"model": "auto", "messages": [{"role": "user", "content": "x"}]},
+            )
+    assert interrupted
+    event = store.events()[0]
+    assert event["status"] == "cancelled"
+    assert "performance" not in event
