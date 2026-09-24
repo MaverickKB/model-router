@@ -44,6 +44,10 @@ Name each API once. Engine settings holds the editable name, preferred request U
 
 A merge preserves the surviving engine's model policy and limits. It requires both engines to have finished active requests. Requests use the preferred URL; aliases do not count as extra capacity or independent backups.
 
+## Compare engines after a change
+
+Each completed request records how the engine that served it performed: time to the first streamed chunk, stream generation rate in tokens per second, non-stream response time, and completion tokens (reported by the engine or estimated from chunks). `GET /api/v1/performance?hours=24` groups the last 1 to 168 hours of request history by engine and model, with served and failed attempt counts, median and 95th-percentile timings, and whether the model is still in the engine's catalog. A replaced model keeps its own row beside its replacement, so a model or hardware swap can be judged from its numbers. Only timing and counts are stored, never prompts or responses.
+
 ## Access is optional
 
 **Settings > Updates** reads public GitHub releases for this repository. No GitHub account or token is required. Checking never installs. **Install update** is one explicit click: it refuses a dirty tree, checks out the published tag, rebuilds, and restarts. Turn the check off if this install should not contact GitHub.

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Completed requests record the serving attempt's timing and output size in request history: upstream time, time to the first streamed chunk, generation time, completion tokens (reported or estimated) and tokens per second for streams. No content is stored and no request is altered to measure it.
+- `GET /api/v1/performance?hours=N` summarizes request history per engine and model: served and failed attempts, median and 95th-percentile first-chunk and response times, median stream tokens per second, and whether the model is still in the engine's catalog.
 
 ## 0.3.0-beta.1
 
