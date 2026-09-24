@@ -175,6 +175,9 @@ class Proxy:
                     admission.window_seconds,
                     *usage.row(),
                 )
+            # finish can run again when cancellation lands during the first
+            # write, so the stored metrics always follow the final status.
+            event.pop("performance", None)
             if status == "completed":
                 performance = timing.summary(usage)
                 if performance is not None:

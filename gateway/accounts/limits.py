@@ -313,7 +313,9 @@ class UsageMeter:
         self.body_seen = True
         try:
             document = json.loads(content)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # Deeply nested JSON is valid for the client; counting it is
+            # optional, so the meter falls back to an estimate.
             return
         self.reported = _usage_counts(document)
         if self.reported is not None or not isinstance(document, dict):
@@ -342,7 +344,7 @@ class UsageMeter:
                 continue
             try:
                 counts = _usage_counts(json.loads(line[5:].strip()))
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if counts is not None:
                 return counts
