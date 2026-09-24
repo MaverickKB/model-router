@@ -3,9 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { newEngine } from "./editors/defaults";
-import { requestTimingLabel } from "./performance-format";
+import {
+  performanceRefreshKey,
+  requestTimingLabel,
+} from "./performance-format";
 import { fixtureConfig, mockJsonFetch } from "./test-fixtures";
-import type { EngineView, PerformanceRow } from "./types";
+import type { EngineView, PerformanceRow, State } from "./types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -219,4 +222,53 @@ it("describes one request's served timing", () => {
       tokens_per_second: null,
     }),
   ).toBe("Engine response 2.5 s · 12 completion tokens");
+});
+
+function keyState(
+  events: { id: string; status: string }[],
+  models: string[],
+  checkedAt: number,
+): State {
+  return {
+    events,
+    engines: [
+      {
+        id: "engine-1",
+        status: "available",
+        checked_at: checkedAt,
+        models: models.map((id) => ({ id, capabilities: [] })),
+      },
+    ],
+  } as unknown as State;
+}
+
+it("reloads performance when an older request finishes behind a newer one", () => {
+  const before = keyState(
+    [
+      { id: "b", status: "routing" },
+      { id: "a", status: "running" },
+    ],
+    ["m"],
+    1,
+  );
+  const after = keyState(
+    [
+      { id: "b", status: "routing" },
+      { id: "a", status: "completed" },
+    ],
+    ["m"],
+    1,
+  );
+  expect(performanceRefreshKey(after)).not.toBe(performanceRefreshKey(before));
+});
+
+it("reloads performance when an engine catalog changes but not on an idle poll", () => {
+  const events = [{ id: "a", status: "completed" }];
+  const original = keyState(events, ["old-model"], 1);
+  const polled = keyState(events, ["old-model"], 2);
+  const replaced = keyState(events, ["new-model"], 3);
+  expect(performanceRefreshKey(polled)).toBe(performanceRefreshKey(original));
+  expect(performanceRefreshKey(replaced)).not.toBe(
+    performanceRefreshKey(original),
+  );
 });

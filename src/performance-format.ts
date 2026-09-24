@@ -2,6 +2,7 @@ import type {
   PerformanceRow,
   PerformanceSummary,
   RequestPerformance,
+  State,
 } from "./types";
 
 export const PERFORMANCE_WINDOWS = [
@@ -64,4 +65,25 @@ export function requestTimingLabel(performance: RequestPerformance) {
   }
   parts.push(tokens);
   return parts.join(" · ");
+}
+
+/**
+ * Changes whenever the performance summary could change: any loaded
+ * request's status, or any engine's status or model list. Catalog check
+ * times are left out so the idle state poll never triggers a reload.
+ */
+export function performanceRefreshKey(state: State | null) {
+  if (state === null) return "";
+  const parts: string[] = [];
+  for (const event of state.events ?? []) {
+    parts.push(`${event.id}:${event.status}`);
+  }
+  for (const engine of state.engines ?? []) {
+    const modelIds: string[] = [];
+    for (const model of engine.models) {
+      modelIds.push(model.id);
+    }
+    parts.push(`${engine.id}:${engine.status}:${modelIds.join(",")}`);
+  }
+  return parts.join("|");
 }
