@@ -126,3 +126,11 @@ Tests use controlled HTTP services, loopback sockets and scanner-process fixture
 ## Contributing
 
 Issues and pull requests are welcome. Start with the focused tests for the area you change, then run the complete verification commands above. Keep endpoint addresses, provider credentials and runtime state in local configuration; do not commit them.
+
+
+## Optional extras
+Nothing here is required. The router runs unchanged without any of it.
+- [Origin policy](docs/ORIGIN_POLICY.md): per-origin privacy marking, metadata stripping, route/path allowlists and a maintenance gate. Off unless a policy file exists.
+- [Example origin policy](examples/origin_policy.example.json): placeholder values to copy.
+- [Tag resolvers](gateway/origin_resolvers.py): static-CIDR default, optional Tailscale plugin, or your own callable.
+- [Gate toggle script](scripts/origin-gate.sh): POSIX `sh` helper to turn a maintenance flag file on or off.

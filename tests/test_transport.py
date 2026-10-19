@@ -213,13 +213,21 @@ async def test_real_http_model_swap_cloud_fallback_stream_and_cancel(tmp_path):
                 while app.state.discovery.observation(local.id).inflight:
                     await asyncio.sleep(0.05)
             assert app.state.store.events()[0]["status"] == "cancelled"
+            previous_request = app.state.store.events()[0]["id"]
             async with httpx.AsyncClient(
                 base_url=url, headers={"Authorization": f"Bearer {key}"}, timeout=0.25
             ) as impatient:
                 with pytest.raises(httpx.ReadTimeout):
                     await impatient.post("/v1/chat/completions", json=payload)
             async with asyncio.timeout(3):
-                while app.state.discovery.observation(local.id).inflight:
+                # HTTP disconnect delivery is asynchronous. Wait for this
+                # request's terminal history, including cancellation before
+                # it has acquired an engine admission slot.
+                while (
+                    app.state.discovery.observation(local.id).inflight
+                    or app.state.store.events()[0]["id"] == previous_request
+                    or app.state.store.events()[0]["status"] != "cancelled"
+                ):
                     await asyncio.sleep(0.05)
             assert app.state.store.events()[0]["status"] == "cancelled"
             state["mode"] = "break"

@@ -259,7 +259,7 @@ it("reports failures only for failed outcomes and does not blame selected-model 
 });
 
 it("classifies active and error states without treating cancellation as either", () => {
-  for (const status of ["running", "routing", "waiting"])
+  for (const status of ["running", "routing", "waiting", "recovering"])
     expect(isActive(request(status, { status }))).toBe(true);
   for (const status of ["failed", "denied", "unavailable"])
     expect(isError(request(status, { status }))).toBe(true);

@@ -416,6 +416,7 @@ code {
   box-shadow: 0 0 7px #a5de1510;
 }
 .status-dot.running,
+.status-dot.recovering,
 .status-dot.routing {
   background: #4fafff;
 }

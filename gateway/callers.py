@@ -110,7 +110,7 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
         "first_seen": observed_at,
         "request_count": 1,
         "last_seen": observed_at,
-        "last_method": request.method,
+        "last_method": getattr(request, "method", "WEBSOCKET"),
         "last_path": request.url.path,
     }
     authentication_error = getattr(request.state, "authentication_error", None)

@@ -179,7 +179,7 @@ async def test_pristine_install_is_configurable_before_auth_then_uses_session(tm
         assert (await public.get("/api/v1/state")).status_code == 401
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, client=("192.168.1.10", 1)),
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.10", 1)),
         base_url=origin,
         headers={"Origin": origin},
     ) as browser:

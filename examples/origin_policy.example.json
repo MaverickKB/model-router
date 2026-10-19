@@ -1,0 +1,39 @@
+{
+  "_comment": "Example only. Copy to <state>/origin_policy.json (or set MODEL_ROUTER_ORIGIN_POLICY) and replace placeholders. Omit the file to disable origin policy entirely.",
+  "private_header": "X-Router-Origin-Private",
+  "origin_name_header": false,
+  "tag_resolver": null,
+  "origins": [
+    {
+      "name": "example-private-client",
+      "source_networks": [
+        "192.0.2.10/32"
+      ],
+      "source_tags": [],
+      "private": true,
+      "allowed_routes": [
+        "auto"
+      ],
+      "allowed_paths": [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/models"
+      ],
+      "strip_prefixes": [
+        "example_trace_"
+      ],
+      "strip_keys": [
+        "capture"
+      ],
+      "maintenance": false,
+      "maintenance_flag": null,
+      "maintenance_message": "This service is down for maintenance. Please try again later."
+    }
+  ],
+  "static_tags": {
+    "tag:example": [
+      "192.0.2.0/28"
+    ]
+  },
+  "_resolver_note": "tag_resolver: null|static|tailscale|module:callable. static_tags alone enables the built-in static CIDR resolver."
+}

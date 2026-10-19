@@ -1,5 +1,58 @@
 """Recognize OpenAI SSE completion without retaining response payloads."""
 
+import json
+
+
+class StreamProgress:
+    """Remember only whether a caller received output that must never replay."""
+
+    def __init__(self):
+        self.has_output = False
+        self.line = bytearray()
+
+    def feed(self, chunk):
+        for value in chunk:
+            if self.has_output:
+                return
+            if value in (10, 13):
+                line = bytes(self.line).strip()
+                self.line.clear()
+                if not line.startswith(b"data:"):
+                    continue
+                data = line[5:].strip()
+                if data == b"[DONE]":
+                    continue
+                try:
+                    document = json.loads(data)
+                except ValueError:
+                    self.has_output = True
+                    return
+                if not isinstance(document, dict):
+                    self.has_output = True
+                    return
+                choices = document.get("choices") or []
+                if not isinstance(choices, list):
+                    self.has_output = True
+                    return
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        self.has_output = True
+                        return
+                    delta = choice.get("delta") or {}
+                    if not isinstance(delta, dict):
+                        self.has_output = True
+                        return
+                    for name, content in delta.items():
+                        if name != "role" and content:
+                            self.has_output = True
+                    if choice.get("text") or choice.get("finish_reason"):
+                        self.has_output = True
+            elif len(self.line) < 65536:
+                self.line.append(value)
+            else:
+                # An oversized event is conservatively treated as delivered.
+                self.has_output = True
+
 
 class CompletionMarker:
     """A terminal event has exactly one data field containing ``[DONE]``."""

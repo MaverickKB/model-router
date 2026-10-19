@@ -10,6 +10,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { Dialog } from "../components";
 import { sourceTimeLabel } from "../source-time";
+import { isRequestActive } from "../request-status";
 import {
   callerClientLabel,
   callerDisplayName,
@@ -95,7 +96,7 @@ export function RoutesMap({
   const active = [
     ...new Map(
       jobs
-        .filter((job) => ["running", "routing", "waiting"].includes(job.status))
+        .filter((job) => isRequestActive(job.status))
         .map((job) => [job.id, job]),
     ).values(),
   ];
