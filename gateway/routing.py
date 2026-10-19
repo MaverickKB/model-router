@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
+from urllib.parse import urlsplit
 
 from .contracts import Candidate, Decision, EngineView, ModelView, Rejection
 from .schema import Client, Configuration, Route, Selector
@@ -16,6 +17,8 @@ def route_requires_caller_key(route: Route) -> bool:
 
 
 def requirements(payload: dict) -> set[str]:
+    if "questions" in payload:
+        return {"decision"}
     required = {"text"}
     if payload.get("stream"):
         required.add("streaming")
@@ -59,6 +62,16 @@ def selector_engine_reason(selector: Selector, engine: EngineView) -> str:
         return f"This policy selects {selector.kind} engines"
     if selector.engine_ids and engine["id"] not in selector.engine_ids:
         return "Engine is outside this route's selection"
+    if selector.hosts:
+        addresses = [engine["base_url"], *engine.get("aliases", [])]
+        matched = False
+        for address in addresses:
+            hostname = (urlsplit(address).hostname or "").lower().rstrip(".")
+            if hostname in selector.hosts:
+                matched = True
+                break
+        if not matched:
+            return "Engine is outside this route's serving hosts"
     if selector.tags and not set(selector.tags).issubset(engine["tags"]):
         return "Engine does not have the required tags"
     return ""
@@ -94,6 +107,7 @@ def decide(
     *,
     consider_capacity: bool = True,
     caller_key_present: bool = True,
+    required_capabilities: set[str] | None = None,
 ) -> Decision:
     requested = str(payload.get("model", ""))
     route = next((r for r in config.routes if r.name == requested), None)
@@ -102,7 +116,7 @@ def decide(
     )
     rejected: list[Rejection] = []
     candidates: list[Candidate] = []
-    required = requirements(payload)
+    required = requirements(payload) if required_capabilities is None else set(required_capabilities)
     permission_blocked = False
     missing_capabilities: set[str] = set()
     other_blocker = False

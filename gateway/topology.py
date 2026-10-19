@@ -5,7 +5,7 @@ import ipaddress
 from .accounts.principal import derive_principal, level_for
 from .contracts import EngineView
 from .request_policy import resolve_unkeyed_policy
-from .routing import decide, matches, selector_reason
+from .routing import decide, matches, selector_engine_reason, selector_reason
 from .schema import Client, Configuration, Route
 
 
@@ -171,11 +171,7 @@ def route_map(
             if selector is None:
                 continue
             for engine in engines:
-                if selector.kind != "any" and engine["kind"] != selector.kind:
-                    continue
-                if selector.engine_ids and engine["id"] not in selector.engine_ids:
-                    continue
-                if not set(selector.tags).issubset(engine["tags"]):
+                if selector_engine_reason(selector, engine):
                     continue
                 models = [
                     model["id"]

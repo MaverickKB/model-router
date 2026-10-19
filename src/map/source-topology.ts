@@ -1,5 +1,6 @@
 import type { CallerSource } from "../caller-sources";
 import type { CallerRoute, Job, RouteMap } from "../types";
+import { isRequestActive } from "../request-status";
 
 export type SourceAccess = {
   state: "ready" | "mixed" | "blocked" | "unknown";
@@ -71,7 +72,7 @@ export function activeJobsForSource(
       jobs
         .filter(
           (job) =>
-            ["running", "routing", "waiting"].includes(job.status) &&
+            isRequestActive(job.status) &&
             Boolean(job.caller) &&
             (job.caller!.source_key
               ? job.caller!.source_key === source.key

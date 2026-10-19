@@ -217,9 +217,20 @@ class Store:
         }
 
     def publish_discovery_policy(self):
+        policy = self._config.discovery.model_dump()
+        hosts = []
+        for route in self._config.routes:
+            if not route.enabled:
+                continue
+            for selector in (route.primary, route.fallback):
+                if selector:
+                    for host in selector.hosts:
+                        if host not in hosts:
+                            hosts.append(host)
+        policy["follow_hosts"] = hosts
         write_json(
             self.discovery_directory / "policy.json",
-            self._config.discovery.model_dump(),
+            policy,
         )
 
     def operator_verifier(self) -> str:
@@ -496,6 +507,9 @@ class Store:
                 "SELECT body FROM events ORDER BY ts DESC LIMIT ?", (limit,)
             ):
                 event = json.loads(row[0])
+                private = getattr(self, "private_event_filter", None)
+                if private is not None and private(event):
+                    continue
                 caller = event.get("caller")
                 if isinstance(caller, dict):
                     event["caller"] = self._apply_caller_source_name(

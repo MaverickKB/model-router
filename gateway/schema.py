@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -43,14 +44,30 @@ class ModelSettings(Record):
     context_length: int | None = Field(default=None, ge=1)
 
 
+class NativeOwnerSettings(Record):
+    expected_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_binary_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    owner_unit: str = Field(pattern=r"^[A-Za-z0-9@_.-]{1,100}\.service$")
+    max_input_tokens: int = Field(default=2048, ge=1, le=2048)
+    producer_credential_path: str | None = None
+
+    @field_validator("producer_credential_path")
+    @classmethod
+    def private_path(cls, value):
+        if value is not None and (not Path(value).is_absolute() or ".." in Path(value).parts or "\x00" in value):
+            raise ValueError("Producer credential must be an absolute private file path")
+        return value
+
+
 class Engine(NamedRecord):
     id: str = Field(default_factory=identifier)
     name: str = Field(min_length=1, max_length=100)
     base_url: str
     aliases: list[str] = Field(default_factory=list)
     kind: Literal["local", "cloud"] = "local"
-    protocol: Literal["openai"] = "openai"
+    protocol: Literal["openai", "systemone", "xai_tts", "jevos_native"] = "openai"
     catalog_protocol: str = "openai"
+    native_owner: NativeOwnerSettings | None = None
     # Discovery may suggest a host-derived label. Operators keep ownership of
     # manually edited names, so later scans cannot overwrite them.
     name_source: Literal["operator", "discovered"] = "operator"
@@ -75,6 +92,7 @@ class Engine(NamedRecord):
 
     timeout_seconds: float = Field(default=300, ge=1, le=3600)
     max_inflight: int = Field(default=32, ge=1, le=10000)
+    foreground_reserved_slots: int = Field(default=0, ge=0, le=10000)
     max_response_bytes: int = Field(
         default=8 * 1024 * 1024, ge=1024, le=512 * 1024 * 1024
     )
@@ -83,9 +101,55 @@ class Engine(NamedRecord):
     credential_type: Literal["static", "xai_oauth", "codex_oauth"] = "static"
 
     @model_validator(mode="after")
+    def foreground_reservation_fits_capacity(self):
+        if self.foreground_reserved_slots > self.max_inflight:
+            raise ValueError("foreground_reserved_slots must not exceed max_inflight")
+        return self
+
+    @model_validator(mode="after")
     def cloud_selection_is_explicit(self):
         if self.kind == "cloud" and "model_patterns" not in self.model_fields_set:
             self.model_patterns = []
+        return self
+
+    @model_validator(mode="after")
+    def systemone_transport_matches_catalog(self):
+        if self.protocol == "systemone":
+            self.catalog_protocol = "systemone"
+        elif self.catalog_protocol == "systemone":
+            self.protocol = "systemone"
+        return self
+
+    @model_validator(mode="after")
+    def pure_speech_transport(self):
+        if self.protocol == "xai_tts" or self.catalog_protocol == "xai_tts":
+            if self.kind != "cloud" or self.credential_type != "static" or self.base_url != "https://api.x.ai/v1":
+                raise ValueError("xAI TTS requires the exact cloud endpoint and static protected credentials")
+            self.protocol = self.catalog_protocol = "xai_tts"
+            self.capabilities = ["speech", "streaming"]
+            if any(set(v.capabilities) - {"speech", "streaming"} for v in self.model_settings.values()):
+                raise ValueError("Speech model overrides cannot advertise chat capabilities")
+        return self
+
+    @model_validator(mode="after")
+    def native_decision_transport(self):
+        if self.protocol == "jevos_native" or self.catalog_protocol == "jevos_native":
+            self.protocol = self.catalog_protocol = "jevos_native"
+            url = urlsplit(self.base_url)
+            try:
+                local = ipaddress.ip_address(url.hostname).is_loopback
+            except ValueError:
+                local = False
+            if (self.kind != "local" or url.scheme != "http" or not local or not url.port
+                    or url.path or self.aliases or self.native_owner is None
+                    or self.max_inflight != 1 or self.timeout_seconds > 10
+                    or self.max_response_bytes > 4096 or self.value_mappings
+                    or self.credential_type != "static"
+                    or any(set(v.capabilities) != {"decision"} for v in self.model_settings.values())):
+                raise ValueError("Native JevOS requires one bounded private local owner")
+            self.capabilities = ["decision"]
+        elif self.native_owner is not None:
+            raise ValueError("Native owner settings require native transport")
         return self
 
     @field_validator("value_mappings")
@@ -158,8 +222,27 @@ class Engine(NamedRecord):
 class Selector(Record):
     kind: Literal["local", "cloud", "any"] = "local"
     engine_ids: list[str] = Field(default_factory=list)
+    hosts: list[str] = Field(default_factory=list)
     model_patterns: list[str] = Field(default_factory=lambda: ["*"])
     tags: list[str] = Field(default_factory=list)
+
+    @field_validator("hosts")
+    @classmethod
+    def serving_hosts(cls, values):
+        result = []
+        for value in values:
+            value = value.strip().lower().rstrip(".")
+            if not value or any(char.isspace() or char in "/@?#" for char in value):
+                raise ValueError("Use individual serving hostnames or IP addresses")
+            if value not in result:
+                result.append(value)
+        return result
+
+    @model_validator(mode="after")
+    def host_selection_is_local(self):
+        if self.hosts and self.kind != "local":
+            raise ValueError("Automatic host discovery requires local engines")
+        return self
 
 
 class Route(NamedRecord):
@@ -177,6 +260,8 @@ class Route(NamedRecord):
     # operator/session settings below.
     require_caller_key: bool = False
     defaults: dict = Field(default_factory=dict)
+    # None keeps recovery open until the caller disconnects. Zero disables it.
+    recovery_seconds: float | None = Field(default=0, ge=0, le=3600)
 
     @field_validator("defaults")
     @classmethod
