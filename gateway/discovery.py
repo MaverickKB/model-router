@@ -192,8 +192,10 @@ class DiscoveryService:
                     "context_length": context
                     if type(context) is int and context > 0
                     else None,
-                    "enabled": (override.enabled if override else True)
-                    and matches(model_id, engine.model_patterns)
+                    # Routable iff the host advertises it, the engine's patterns
+                    # allow it, and the host has not declared it unavailable.
+                    # No operator flag participates.
+                    "enabled": matches(model_id, engine.model_patterns)
                     and not unavailable_reason(row),
                     **(
                         {"loaded": row["loaded"]}
