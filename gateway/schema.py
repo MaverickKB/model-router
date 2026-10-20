@@ -39,7 +39,16 @@ def identifier() -> str:
 
 
 class ModelSettings(Record):
-    enabled: bool = True
+    """Operator metadata about a model the host actually advertises.
+
+    There is deliberately no `enabled` field. Whether a model is routable is
+    decided by the host's own catalog and the engine's `model_patterns` -- never
+    by an operator flag that can disagree with the metal. A flag that hides a
+    resident model is how an alias ghost survived on the Sparks: the name was
+    reachable, the operator had marked it off, and nothing tied the two facts
+    together.
+    """
+
     capabilities: list[str] = Field(default_factory=lambda: ["text", "streaming"])
     context_length: int | None = Field(default=None, ge=1)
 

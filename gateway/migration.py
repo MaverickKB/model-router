@@ -44,5 +44,16 @@ def configuration(raw: dict) -> dict:
         value.setdefault("account_levels", [])
         value["upgraded_from_schema"] = value.get("upgraded_from_schema", version)
         value["schema_version"] = 5
+    # A stored `enabled` on a model override is dropped rather than honoured.
+    # Routability belongs to the host's catalog and the engine's model_patterns.
+    # Keeping the key would fail validation (ModelSettings forbids extras) and
+    # honouring it would let a config flag disagree with what the metal serves.
+    for engine in value.get("engines", []) or []:
+        settings = engine.get("model_settings")
+        if not isinstance(settings, dict):
+            continue
+        for override in settings.values():
+            if isinstance(override, dict):
+                override.pop("enabled", None)
     value.pop("compatibility", None)
     return value
