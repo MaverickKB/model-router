@@ -6,7 +6,6 @@ export interface Model {
   context_length: number | null;
 }
 export interface ModelSettings {
-  enabled: boolean;
   capabilities: string[];
   context_length: number | null;
 }

@@ -197,7 +197,12 @@ def decide(
                     permission_blocked = True
                 reason = permission or selection
                 if not model.get("enabled", True):
-                    reason = "Model is disabled by the operator"
+                    # Discovery derives this bit from the host, never from an
+                    # operator flag. Name which of the two causes it was.
+                    if matches(model["id"], engine["model_patterns"]):
+                        reason = "Host reports this model unavailable"
+                    else:
+                        reason = "Model is outside this engine's model patterns"
                 if not route and model["id"] != requested:
                     reason = "Direct model requests require an exact model ID"
                 if not reason and not required.issubset(model["capabilities"]):

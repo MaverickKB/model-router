@@ -368,3 +368,49 @@ def test_ready_paths_keep_model_permissions_separate_for_each_engine_tier(
         "primary",
         "fallback",
     }
+
+
+def test_a_stored_model_override_round_trips_without_the_retired_flag():
+    """The UI writes only capabilities and context; the save must not 422.
+
+    `ModelSettings` forbids extras, so a leftover `enabled` key in the editor
+    payload failed validation on save. This pins the shape the editor sends.
+    """
+    import pydantic
+    from gateway.schema import ModelSettings
+
+    saved = ModelSettings(capabilities=["text", "streaming"], context_length=4096)
+    assert saved.capabilities == ["text", "streaming"]
+    assert saved.context_length == 4096
+    assert "enabled" not in ModelSettings.model_fields
+    with pytest.raises(pydantic.ValidationError):
+        ModelSettings(enabled=True, capabilities=["text"])
+
+
+def test_an_unroutable_model_names_the_host_not_an_operator():
+    """The reason must describe where the bit came from, not blame a person."""
+    policy = Client(name="Policy", allow_cloud=True, allow_direct_models=True)
+    config = Configuration(
+        clients=[policy],
+        routes=[Route(name="auto", fallback=Selector(kind="local", model_patterns=["*"]))],
+    )
+
+    host_says_unavailable = available_engine()
+    host_says_unavailable["models"] = [
+        {"id": "example-model", "capabilities": ["text"], "enabled": False}
+    ]
+    outside_patterns = available_engine()
+    outside_patterns["model_patterns"] = ["other-*"]
+    outside_patterns["models"] = [
+        {"id": "example-model", "capabilities": ["text"], "enabled": False}
+    ]
+
+    host = decide(config, [host_says_unavailable], policy, {"model": "auto"})
+    patterns = decide(config, [outside_patterns], policy, {"model": "auto"})
+
+    reasons = [r["reason"] for r in host["rejections"]]
+    assert any("Host reports this model unavailable" in r for r in reasons)
+    reasons = [r["reason"] for r in patterns["rejections"]]
+    assert any("outside this engine's model patterns" in r for r in reasons)
+    for decision in (host, patterns):
+        assert all("operator" not in r["reason"] for r in decision["rejections"])
