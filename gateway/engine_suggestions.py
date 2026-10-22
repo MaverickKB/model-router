@@ -187,13 +187,14 @@ def _catalog_fingerprint(engine: dict) -> tuple | None:
     models = engine.get("models") or []
     if not models:
         return None
+    # Deliberately excludes the derived `enabled` bit: it tracks host health,
+    # so a transient blip would hide two endpoints advertising one catalog.
     return tuple(
         sorted(
             (
                 str(model.get("id")),
                 tuple(sorted(str(cap) for cap in (model.get("capabilities") or []))),
                 model.get("context_length"),
-                model.get("enabled", True),
             )
             for model in models
         )

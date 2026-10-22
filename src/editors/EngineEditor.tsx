@@ -7,7 +7,6 @@ import {
   Field,
   ListInput,
   Select,
-  Switch,
   toggle,
 } from "../components";
 import { requireUnchanged } from "../editor-state";
@@ -442,11 +441,12 @@ export function EngineEditor({
           <details className="advanced">
             <summary>Individual models</summary>
             <p className="hint">
-              Override a model's capabilities or exclude it from routing.
+              Override a model's capabilities. Whether a model is routable is
+              read from the host's own catalog and this engine's model patterns,
+              so there is no operator switch to hide one.
             </p>
             {models.map((m) => {
               const settings = draft.model_settings[m.id] || {
-                enabled: true,
                 capabilities: m.capabilities,
                 context_length: m.context_length,
               };
@@ -454,19 +454,9 @@ export function EngineEditor({
                 <div className="model-override" key={m.id}>
                   <div>
                     <strong>{m.id}</strong>
-                    <Switch
-                      label={`Allow ${m.id}`}
-                      checked={settings.enabled}
-                      onChange={() =>
-                        set({
-                          ...draft,
-                          model_settings: {
-                            ...draft.model_settings,
-                            [m.id]: { ...settings, enabled: !settings.enabled },
-                          },
-                        })
-                      }
-                    />
+                    <span className="tag">
+                      {m.enabled === false ? "Not routable" : "Routable"}
+                    </span>
                   </div>
                   <div className="choice-line">
                     {["text", "tools", "vision", "streaming"].map((cap) => (
