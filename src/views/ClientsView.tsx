@@ -1,6 +1,8 @@
+import { sourceAgentLabel } from "../source-display";
+import { sourceEvidenceLabel } from "../caller-identity";
 import { useState } from "react";
 import { CallerSourceDetails, groupCallerSources } from "../caller-sources";
-import { sourceTimeLabel } from "../source-time";
+import { sourceTimeLabel, sourceAgeLabel } from "../source-time";
 import { ArrowLeft, Plus, Users } from "lucide-react";
 import { ClientEditor, newClient } from "../editors";
 import type { Client, Config, EngineView, ObservedCaller } from "../types";
@@ -27,7 +29,7 @@ export function ClientsView({
   onRenameSource?: (sourceKey: string, name: string) => Promise<void>;
 }) {
   const [selectedSource, selectSource] = useState<string | null>(null);
-  const sources = groupCallerSources(callers);
+  const sources = groupCallerSources(callers, clients);
   const source = sources.find((entry) => entry.key === selectedSource);
   return (
     <div
@@ -62,7 +64,14 @@ export function ClientsView({
             <span>
               <strong>
                 {entry.displayName || "Source address unavailable"}
+                {sourceAgentLabel(entry.callers) &&
+                  sourceAgentLabel(entry.callers) !== entry.displayName &&
+                  ` · ${sourceAgentLabel(entry.callers)}`}
               </strong>
+              <small>
+                {entry.addresses.join(", ")} ·{" "}
+                {sourceEvidenceLabel(entry.callers)}
+              </small>
               <small>
                 {entry.labelSource === "operator"
                   ? "Named source"
@@ -70,8 +79,13 @@ export function ClientsView({
                     ? "Reported hostname"
                     : entry.labelSource === "discovered_hostname"
                       ? "Discovered hostname"
-                    : "Address-bound"}{" "}
-                · Last seen {sourceTimeLabel(entry.lastSeen)}
+                      : entry.displayName !== entry.address
+                        ? "Display name hint"
+                        : "Unrecognized source"}{" "}
+                ·{" "}
+                <b title={sourceTimeLabel(entry.lastSeen)}>
+                  Last seen {sourceAgeLabel(entry.lastSeen)}
+                </b>
               </small>
             </span>
           </button>

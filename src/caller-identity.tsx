@@ -1,3 +1,4 @@
+import { sourceFriendlyName, sourceAgentLabel } from "./source-display";
 import { Fragment } from "react";
 import type { ObservedCaller, Client } from "./types";
 import { timeLabel } from "./components";
@@ -66,7 +67,10 @@ export function callerClientLabel(caller: ObservedCaller) {
   return parsed?.family || caller.software || "No client metadata";
 }
 
-export function callerDisplayName(caller: ObservedCaller) {
+export function callerDisplayName(
+  caller: ObservedCaller,
+  clients: Client[] = [],
+) {
   // Account callers are named by the router from the account and key, even
   // when the transport is a generic library.
   if (
@@ -77,7 +81,11 @@ export function callerDisplayName(caller: ObservedCaller) {
   )
     return caller.name;
   if (caller.reported_name) return caller.reported_name;
-  return caller.source_address || "Source address unavailable";
+  return (
+    sourceFriendlyName(caller, clients) ||
+    caller.source_address ||
+    "Source address unavailable"
+  );
 }
 
 export function callerSummary(caller: ObservedCaller) {
@@ -249,4 +257,14 @@ export function PermissionPolicyIdentity({
       )}
     </section>
   );
+}
+
+export function sourceEvidenceLabel(callers: ObservedCaller[]): string {
+  const labels = new Set<string>();
+  if (!sourceAgentLabel(callers)) labels.add("No agent identity reported");
+  for (const caller of callers) {
+    if (caller.client_family) labels.add(caller.client_family);
+    labels.add(QUALITY_LABELS[caller.identity_quality || "transport_only"]);
+  }
+  return [...labels].join(" · ");
 }
