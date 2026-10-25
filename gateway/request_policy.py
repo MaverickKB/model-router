@@ -56,8 +56,8 @@ def resolve_unkeyed_policy(
         Client(
             name="Unkeyed connection",
             kind="shared",
-            route_names=[route.name for route in config.routes],
-            allow_cloud=True,
+            route_names=[],
+            allow_cloud=False,
         ),
         "shared_access",
     )

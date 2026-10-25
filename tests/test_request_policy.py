@@ -32,6 +32,26 @@ def observation(policy_id=None, basis="unassigned", **extra):
     }
 
 
+def test_synthesized_unkeyed_policy_denies_routes_and_cloud():
+    config = Configuration(
+        clients=[
+            Client(
+                name="Other network",
+                allow_network_auth=True,
+                source_networks=["192.0.2.0/24"],
+            )
+        ],
+        security=Security(anonymous_client_id=None),
+        routes=[Route(name="local"), Route(name="cloud")],
+    )
+
+    client, basis = resolve_unkeyed_policy(config, "198.51.100.10")
+
+    assert client.route_names == []
+    assert client.allow_cloud is False
+    assert basis == "shared_access"
+
+
 def test_source_override_requires_opt_in_and_precedes_default_by_specificity():
     default = Client(name="Default", route_names=["default"])
     wide = Client(
@@ -101,7 +121,9 @@ async def test_placeholder_request_and_map_use_same_saved_permission_policy(
 def test_observed_policy_path_requires_actual_key_evidence_for_gated_route(basis):
     policy = Client(name="Policy", route_names=["private"])
     config = Configuration(
-        clients=[policy], routes=[Route(name="private", require_caller_key=True)]
+        clients=[policy],
+        security=Security(anonymous_client_id=policy.id),
+        routes=[Route(name="private", require_caller_key=True)],
     )
     topology = route_map(config, [available_engine()], [observation(policy.id, basis)])
     edge = topology["caller_routes"][0]
@@ -328,7 +350,8 @@ def test_unkeyed_transient_access_has_no_invented_policy_id():
     edge = topology["caller_routes"][0]
     assert edge["caller_id"] == caller["id"]
     assert edge["policy_id"] is None
-    assert edge["ready_engines"]
+    assert edge["ready_engines"] == []
+    assert "allowlist" in edge["reason"]
     assert topology["policies"] == []
     assert topology["policy_routes"] == []
 
