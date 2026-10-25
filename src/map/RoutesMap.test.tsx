@@ -292,7 +292,9 @@ it("keeps engine-specific access partial even when every source client can use t
   });
   const { container } = render(<RoutesMap {...props} />);
   expect(
-    container.querySelector(`[data-edge-id="source:addr:192.0.2.40-${route.id}"]`),
+    container.querySelector(
+      `[data-edge-id="source:addr:192.0.2.40-${route.id}"]`,
+    ),
   ).toHaveClass("ready");
   await userEvent
     .setup()
@@ -612,7 +614,9 @@ it("renders an Accounts group for account callers without looking them up as cli
     within(screen.getByLabelText("Observed sources")).getAllByRole("button"),
   ).toHaveLength(1);
   expect(
-    container.querySelector(`[data-edge-id="source:addr:192.0.2.40-${route.id}"]`),
+    container.querySelector(
+      `[data-edge-id="source:addr:192.0.2.40-${route.id}"]`,
+    ),
   ).toHaveClass("ready");
   const user = userEvent.setup();
   await user.click(screen.getByText("Accounts", { selector: "summary" }));
@@ -625,5 +629,25 @@ it("renders an Accounts group for account callers without looking them up as cli
   expect(screen.getByText("Basic")).toBeVisible();
   expect(screen.getByText("writing: Eligible text path")).toBeVisible();
   expect(container).not.toHaveTextContent("Policy no longer configured");
+  expect(props.save).not.toHaveBeenCalled();
+});
+
+it("shows reported host and agent names with source age and secondary address on Routes", () => {
+  const caller = observation("named-host", {
+    source_address: "100.114.203.45",
+    source_hostname: "Kenneth’s MacBook Pro",
+    reported_name: "cairn-probe",
+    last_seen: Date.now() / 1000 - 3 * 86400,
+  });
+  const { props } = fixture([caller]);
+  render(<RoutesMap {...props} />);
+  const card = screen.getByRole("button", {
+    name: "Select source Kenneth’s MacBook Pro · cairn-probe",
+  });
+  expect(card.querySelector("strong")).toHaveTextContent(
+    "Kenneth’s MacBook Pro · cairn-probe",
+  );
+  expect(card).toHaveTextContent("100.114.203.45");
+  expect(card).toHaveTextContent("Last seen 3 days ago");
   expect(props.save).not.toHaveBeenCalled();
 });
