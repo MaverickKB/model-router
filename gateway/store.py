@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .caller_records import caller_id, merge_observations
-from .caller_sources import ensure_source_identity, normalized_address
+from .caller_sources import UNNAMED_CALLER, ensure_source_identity, normalized_address
 from .caller_sources import source_identity as caller_source_identity
 from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
@@ -697,6 +697,12 @@ class Store:
             caller["source_label"] = hostname
             caller["source_label_source"] = "discovered_hostname"
             caller["source_hostname"] = hostname
+        # The row's own name is written when the caller is first seen, before any
+        # lookup has run, so an unnamed row keeps a placeholder forever. Fill it
+        # here, on the read path, from the same cache the label uses. A caller who
+        # reports a name of their own keeps it; only the placeholder is replaced.
+        if caller.get("name") == UNNAMED_CALLER and hostname:
+            caller["name"] = hostname
         return caller
 
     # Accounts. Rows never carry verifiers; the request path reads caches only.

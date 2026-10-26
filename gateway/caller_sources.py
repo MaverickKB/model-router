@@ -26,6 +26,11 @@ def normalized_address(value: str) -> str:
         return value.strip() or "Unknown source"
 
 
+# The name a caller row carries until something can actually name it. Written at
+# observation time, replaced on the read path once a lookup succeeds.
+UNNAMED_CALLER = "Unidentified caller"
+
+
 def normalized_hostname(value: str) -> str:
     hostname = value.strip().rstrip(".").casefold()
     if not hostname or len(hostname) > 253 or not _HOSTNAME.match(hostname):
