@@ -350,6 +350,13 @@ class Discovery(Record):
     packets_per_second: int = Field(default=1500, ge=10, le=10000)
     auto_register: bool = False
     mdns: bool = False
+    # How long a source stays visible after its last request, and the hard
+    # ceiling on stored caller rows. Both were literals in store.py, so the
+    # caller view was governed by values no operator could see or change.
+    # Defaults reproduce the old behaviour exactly: nothing changes until an
+    # operator edits them.
+    caller_retention_days: int = Field(default=7, ge=1, le=365)
+    caller_row_limit: int = Field(default=1000, ge=10, le=100000)
     ignored_urls: list[str] = Field(default_factory=list)
 
     @field_validator("port_range")

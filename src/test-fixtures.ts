@@ -23,6 +23,8 @@ export function fixtureConfig(): Config {
       http_ports: [11434, 8888, 8000],
       include_loopback: false,
       max_addresses: 4096,
+      caller_retention_days: 7,
+      caller_row_limit: 1000,
       network_interval_seconds: 1800,
       packets_per_second: 1500,
       interval_seconds: 60,

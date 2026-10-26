@@ -229,3 +229,101 @@ async def test_the_served_state_puts_the_recent_row_first(tmp_path):
 
     served = [row["id"] for row in payload["observed_callers"]]
     assert served == ["zzz-fresh", "aaa-stale"]
+
+
+# 4. the two values that govern this view are settings, not literals.
+#
+# Ken, 2026-10-26: "there are settings that are governing this view and i have
+# no controls for them in the Settings UI either." He was right: how long a
+# departed source stayed on the page, and the hard ceiling on stored rows, were
+# both literals in store.py. Nobody could see them, let alone change them.
+#
+# These tests fail if either value goes back to being hardcoded, because they
+# set a non-default and require the read path and the prune to honour it.
+
+
+def test_retention_days_decides_how_long_a_departed_source_stays_visible(tmp_path):
+    store = cold_store(tmp_path, fake_runner({}))
+    now = time.time()
+    insert_caller(
+        store,
+        "gone-days-ago",
+        {
+            "seen": now - 3 * 86400,
+            "last_seen": now - 3 * 86400,
+            "source_address": "192.0.2.77",
+            "source_key": "addr:192.0.2.77",
+        },
+    )
+
+    # Default of 7 days: a 3-day-old source is still listed.
+    assert [r["id"] for r in store.callers()] == ["gone-days-ago"]
+
+    # Lower it to 2 days and the same row leaves the view, with no code change.
+    config = store.config()
+    config.discovery.caller_retention_days = 2
+    store.save(config)
+    assert store.callers() == []
+
+
+def test_retention_days_drives_the_prune_not_just_the_read(tmp_path):
+    """The page and the stored rows must not disagree about the window."""
+    store = cold_store(tmp_path, fake_runner({}))
+    now = time.time()
+    insert_caller(
+        store,
+        "departed",
+        {
+            "seen": now - 3 * 86400,
+            "last_seen": now - 3 * 86400,
+            "source_address": "192.0.2.78",
+            "source_key": "addr:192.0.2.78",
+        },
+    )
+    config = store.config()
+    config.discovery.caller_retention_days = 2
+    store.save(config)
+    # A new observation runs the prune under the configured window. The
+    # aggregate fields are what observe_caller carries forward from the prior
+    # row, so supply them the way a real observation does.
+    store.observe_caller(
+        {
+            "id": "fresh",
+            "seen": now,
+            "last_seen": now,
+            "source_address": "192.0.2.79",
+            "source_key": "addr:192.0.2.79",
+            "first_seen": now,
+            "request_count": 1,
+            "recent_source_ports": [],
+            "recent_source_addresses": ["192.0.2.79"],
+        }
+    )
+    stored = [row[0] for row in store.db.execute("SELECT id FROM callers")]
+    assert "departed" not in stored
+    assert "fresh" in stored
+
+
+def test_row_limit_is_a_setting_and_caps_the_listed_rows(tmp_path):
+    store = cold_store(tmp_path, fake_runner({}))
+    now = time.time()
+    for index in range(12):
+        insert_caller(
+            store,
+            "row-%02d" % index,
+            {
+                "seen": now - index,
+                "last_seen": now - index,
+                "source_address": "192.0.2.%d" % (100 + index),
+                "source_key": "addr:192.0.2.%d" % (100 + index),
+            },
+        )
+    assert len(store.callers()) == 12
+
+    config = store.config()
+    config.discovery.caller_row_limit = 5
+    store.save(config)
+    rows = store.callers()
+    assert len(rows) == 5
+    # The five most recent survive; the cap trims the tail, never the head.
+    assert [r["id"] for r in rows] == ["row-00", "row-01", "row-02", "row-03", "row-04"]
