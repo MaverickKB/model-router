@@ -204,7 +204,7 @@ it("retains the unknown-credential explanation inside the source request metadat
   expect(screen.getByText(/Route settings determine access/)).toBeVisible();
 });
 
-it("orders sources by address and their metadata by recency without changing observation records", () => {
+it("orders sources by recency and their metadata by recency without changing observation records", () => {
   const callers = [
     observation("later-address", { source_address: "192.0.2.31" }),
     observation("older", { last_seen: 20 }),
@@ -213,16 +213,22 @@ it("orders sources by address and their metadata by recency without changing obs
   ];
   const original = structuredClone(callers);
   const grouped = groupCallerSources(callers);
+  // Recency, not address. 192.0.2.31 was seen more recently than 192.0.2.30,
+  // so it leads. Ordering by address put an unnamed numeric row from a host
+  // that left days ago above the machines actually calling.
   expect(grouped.map((source) => source.address)).toEqual([
-    "192.0.2.30",
     "192.0.2.31",
+    "192.0.2.30",
   ]);
-  expect(grouped[0].callers.map((caller) => caller.id)).toEqual([
+  // Name the source rather than indexing by position: the list now leads with
+  // whichever source was seen most recently, so position is not identity.
+  const oldest = grouped.find((source) => source.address === "192.0.2.30")!;
+  expect(oldest.callers.map((caller) => caller.id)).toEqual([
     "latest-a",
     "latest-b",
     "older",
   ]);
-  expect(grouped[0].lastSeen).toBe(30);
+  expect(oldest.lastSeen).toBe(30);
   expect(callers).toEqual(original);
 });
 

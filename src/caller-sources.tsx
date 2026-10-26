@@ -76,9 +76,17 @@ export function groupCallerSources(
     );
     displaySource(source, clients);
   }
+  // Most recently seen first. This list answers "who is touching the router
+  // right now", so recency outranks the name; the name only breaks a tie so
+  // two sources seen in the same second stay in a stable order. Alphabetical
+  // order was the fault: a numeric address sorts before any name, so one
+  // unnamed row from a host that left days ago parked itself at the top for
+  // good, while the boxes actually calling were pushed below the fold.
   return [...sources.values()].sort(
     (a, b) =>
-      a.displayName.localeCompare(b.displayName) || a.key.localeCompare(b.key),
+      b.lastSeen - a.lastSeen ||
+      a.displayName.localeCompare(b.displayName) ||
+      a.key.localeCompare(b.key),
   );
 }
 
