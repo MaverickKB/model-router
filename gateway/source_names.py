@@ -5,14 +5,21 @@ answer "who is this address", and none of them asks the caller to volunteer
 anything:
 
  1. the tailnet node table   -- ``tailscale status --json``, one call for all peers
- 2. mDNS                     -- ``avahi-resolve-address``, one call per address
- 3. the router's engine table -- an address the operator already named here
+ 2. reverse DNS              -- ``getent hosts``, one call per address
+ 3. mDNS                     -- ``avahi-resolve-address``, one call per address
+ 4. the router's engine table -- an address the operator already named here
 
 Precedence is machine identity first: a hostname from the tailnet or mDNS names
 the machine, while an engine name names a role and could mislead on a caller row
 that is not the engine itself. An operator-set source label still outranks all
 three, and a caller's own reported hostname outranks a resolved one; those
 rules already live in ``store._apply_caller_source_name``.
+
+Reverse DNS is asked before mDNS because the router's own hostname lives there
+and nowhere else: ``192.0.2.75`` resolves to ``router-host`` through NSS while
+avahi answers nothing for it, which left the router unable to name itself. DNS
+is only consulted for private and CGNAT addresses, because a public address
+reverse-resolves to an ISP's generic pointer, and that is worse than a blank.
 
 A resolved name is presentation evidence only. It never grants access and never
 becomes a source key. Resolution runs on a background refresh and answers from a
@@ -34,6 +41,7 @@ from .caller_sources import normalized_address, normalized_hostname
 TTL = float(os.environ.get("MODEL_ROUTER_SOURCE_NAME_TTL", "120"))
 TAILSCALE_BIN = os.environ.get("MODEL_ROUTER_TAILSCALE_BIN", "tailscale")
 AVAHI_BIN = os.environ.get("MODEL_ROUTER_AVAHI_BIN", "avahi-resolve-address")
+GETENT_BIN = os.environ.get("MODEL_ROUTER_GETENT_BIN", "getent")
 TIMEOUT = 2.0
 LOOPBACK = {"127.0.0.1", "::1"}
 
@@ -81,6 +89,23 @@ def tailnet_names(runner=run) -> dict[str, str]:
     for peer in (document.get("Peer") or {}).values():
         add(peer)
     return names
+
+
+def dns_name(address: str, runner=run) -> str:
+    """Address -> hostname via reverse DNS (NSS). '' when nothing authoritative answers."""
+    try:
+        output = runner([GETENT_BIN, "hosts", address]).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    for line in output.splitlines():
+        parts = line.split()
+        # getent prints "<address> <name> [aliases...]"
+        if len(parts) >= 2 and parts[0] == address:
+            name = normalized_hostname(parts[1])
+            # A pointer back at the address itself carries no name.
+            if name and name != address:
+                return name
+    return ""
 
 
 def mdns_name(address: str, runner=run) -> str:
@@ -177,6 +202,8 @@ class SourceNames:
             if not address or address in LOOPBACK:
                 continue
             name = tailnet.get(address, "")
+            if not name and private_v4(address):
+                name = dns_name(address, self.runner)
             if not name and private_v4(address):
                 name = mdns_name(address, self.runner)
             if not name:

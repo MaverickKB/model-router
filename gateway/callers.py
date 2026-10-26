@@ -6,6 +6,7 @@ import time
 from fastapi import Request
 
 from .caller_records import caller_id, client_profile
+from .caller_sources import UNNAMED_CALLER
 from .schema import Client
 from .store import Store
 
@@ -86,7 +87,7 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
     elif basis in {"account_key", "registered_device"} and principal_label:
         name = principal_label
     else:
-        name = reported_name or "Unidentified caller"
+        name = reported_name or UNNAMED_CALLER
     caller = {
         "policy_id": policy.id if policy else None,
         "account_id": account_id,
