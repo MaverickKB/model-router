@@ -19,6 +19,7 @@ from .caller_sources import source_identity as caller_source_identity
 from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
 from .network.caller_evidence import DiscoveryCallerEvidence
+from .source_names import SourceNames
 from .network.report import write_json
 from .schema import Configuration
 from .security.credentials import CredentialCipher, digest, verify
@@ -93,6 +94,9 @@ class Store:
         self._caller_source_evidence = DiscoveryCallerEvidence(
             self.discovery_directory
         )
+        # Address -> name from the tailnet, mDNS and this router's engine table.
+        # Reads answer from a cache; refresh() is called off the request path.
+        self.source_names = SourceNames()
         self.db = sqlite3.connect(path, check_same_thread=False)
         os.chmod(path, 0o600)
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -646,6 +650,23 @@ class Store:
             if evidence["hostname"] and evidence["hostname"] != address.casefold()
         }
 
+    def recent_source_addresses(self, window_seconds: float = 7 * 86400) -> list[str]:
+        """Distinct source addresses worth resolving. Reads only; no lookups."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT body FROM callers WHERE seen >= ? LIMIT 1000",
+                (time.time() - window_seconds,),
+            )
+            addresses = set()
+            for (body,) in rows:
+                try:
+                    address = json.loads(body).get("source_address")
+                except ValueError:
+                    continue
+                if address:
+                    addresses.add(str(address))
+            return sorted(addresses)
+
     def callers(self) -> list[dict]:
         with self.lock:
             labels = self.caller_source_names()
@@ -668,8 +689,11 @@ class Store:
             caller["source_label"] = label
             caller["source_label_source"] = "operator"
             return caller
-        hostname = hostnames.get(normalized_address(str(caller.get("source_address", ""))))
-        if hostname and caller.get("source_label_source") == "address":
+        if caller.get("source_label_source") != "address":
+            return caller
+        address = normalized_address(str(caller.get("source_address", "")))
+        hostname = hostnames.get(address) or self.source_names.name(address)
+        if hostname:
             caller["source_label"] = hostname
             caller["source_label_source"] = "discovered_hostname"
             caller["source_hostname"] = hostname

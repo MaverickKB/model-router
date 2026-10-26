@@ -58,6 +58,38 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     portal = PortalIdentity(store, identity)
     updates = Updates(http)
 
+    async def refresh_source_names(store):
+        """Keep the address -> name cache warm, off the request path.
+
+        Every caller row and every scanned host reads this cache. Refreshing it
+        here means a lookup can never stall a request, and a slow or absent
+        lookup source degrades to an honest blank instead of a hung router.
+
+        Only the lookup itself is guarded. A bug in the assembly above is left
+        to surface, because a refresher that dies quietly would leave the cache
+        cold and every row an address again, with nothing to show for it.
+        """
+        while True:
+            engines = [
+                {"base_url": engine.base_url, "name": engine.name}
+                for engine in store.config().engines
+            ]
+            store.source_names.set_engines(engines)
+            addresses = set(await asyncio.to_thread(store.recent_source_addresses))
+            addresses.update(
+                str(host.get("address") or "")
+                for host in (
+                    read_report(store.discovery_directory).get("hosts") or []
+                )
+                if host.get("status") == "up"
+            )
+            if addresses:
+                try:
+                    await asyncio.to_thread(store.source_names.refresh, addresses)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    pass
+            await asyncio.sleep(store.source_names.ttl / 2)
+
     @asynccontextmanager
     async def lifespan(app):
         await asyncio.to_thread(store.interrupt_unfinished)
@@ -65,6 +97,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
         tasks = []
         if background:
             tasks.append(asyncio.create_task(discovery.run()))
+            tasks.append(asyncio.create_task(refresh_source_names(store)))
             if (
                 os.environ.get("MODEL_ROUTER_DISCOVERY_WORKER", "embedded")
                 == "embedded"
@@ -167,7 +200,11 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
             ],
             "config": config.model_dump(),
             "network": await asyncio.to_thread(
-                network_view, store.discovery_directory, engines, limit=0
+                network_view,
+                store.discovery_directory,
+                engines,
+                limit=0,
+                resolved_names=store.source_names.names,
             ),
             "engines": engines,
             "engine_merge_suggestions": suggestions(engines),
@@ -221,6 +258,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
             limit=limit,
             query=query,
             category=category,
+            resolved_names=store.source_names.names,
         )
 
     @management.post("/login")
