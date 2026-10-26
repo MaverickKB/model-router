@@ -189,9 +189,17 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
         await identity.require_operator(request)
         config = store.config()
         engines = discovery.views()
+        # Most recent first. Two callers often tie on both name and address --
+        # one host running several clients -- so last_seen breaks the tie before
+        # the id does, or a row days stale can sit above one seen a minute ago.
         connections = sorted(
             await asyncio.to_thread(store.callers),
-            key=lambda c: (c["name"], c["source_address"], c["id"]),
+            key=lambda c: (
+                -float(c.get("last_seen") or 0),
+                c["name"],
+                c["source_address"],
+                c["id"],
+            ),
         )
         return {
             "setup_required": store.setup_required,
