@@ -585,11 +585,14 @@ class Store:
                 "INSERT OR REPLACE INTO callers VALUES (?, ?, ?)",
                 (stored["id"], stored["last_seen"], json.dumps(stored)),
             )
+            discovery = self._config.discovery
             self.db.execute(
-                "DELETE FROM callers WHERE seen < ?", (time.time() - 7 * 86400,)
+                "DELETE FROM callers WHERE seen < ?",
+                (time.time() - discovery.caller_retention_days * 86400,),
             )
             self.db.execute(
-                "DELETE FROM callers WHERE id NOT IN (SELECT id FROM callers ORDER BY seen DESC LIMIT 1000)"
+                "DELETE FROM callers WHERE id NOT IN (SELECT id FROM callers ORDER BY seen DESC LIMIT ?)",
+                (discovery.caller_row_limit,),
             )
 
     def set_caller_source_name(self, source_key: str, name: str) -> dict:
@@ -650,12 +653,15 @@ class Store:
             if evidence["hostname"] and evidence["hostname"] != address.casefold()
         }
 
-    def recent_source_addresses(self, window_seconds: float = 7 * 86400) -> list[str]:
+    def recent_source_addresses(self, window_seconds: float | None = None) -> list[str]:
         """Distinct source addresses worth resolving. Reads only; no lookups."""
+        discovery = self._config.discovery
+        if window_seconds is None:
+            window_seconds = discovery.caller_retention_days * 86400
         with self.lock:
             rows = self.db.execute(
-                "SELECT body FROM callers WHERE seen >= ? LIMIT 1000",
-                (time.time() - window_seconds,),
+                "SELECT body FROM callers WHERE seen >= ? LIMIT ?",
+                (time.time() - window_seconds, discovery.caller_row_limit),
             )
             addresses = set()
             for (body,) in rows:
@@ -672,9 +678,13 @@ class Store:
             labels = self.caller_source_names()
             hostnames = self.discovered_source_hostnames()
             records = []
+            discovery = self._config.discovery
             for row in self.db.execute(
-                "SELECT body FROM callers WHERE seen >= ? ORDER BY seen DESC LIMIT 1000",
-                (time.time() - 7 * 86400,),
+                "SELECT body FROM callers WHERE seen >= ? ORDER BY seen DESC LIMIT ?",
+                (
+                    time.time() - discovery.caller_retention_days * 86400,
+                    discovery.caller_row_limit,
+                ),
             ):
                 caller = ensure_source_identity(json.loads(row[0]))
                 records.append(self._apply_caller_source_name(caller, labels, hostnames))

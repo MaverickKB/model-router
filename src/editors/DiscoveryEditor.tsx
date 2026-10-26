@@ -149,6 +149,36 @@ export function DiscoveryEditor({
           }
         />
       </Field>
+      <div className="field-pair">
+        <Field
+          label="Caller retention (days)"
+          hint="How long a source stays on the Clients page after its last request. Lowering this removes departed hosts from the list."
+        >
+          <input
+            type="number"
+            min="1"
+            max="365"
+            value={draft.caller_retention_days}
+            onChange={(e) =>
+              set({ ...draft, caller_retention_days: Number(e.target.value) })
+            }
+          />
+        </Field>
+        <Field
+          label="Maximum caller rows"
+          hint="The hard ceiling on stored caller rows. The most recent are kept and older rows are trimmed first."
+        >
+          <input
+            type="number"
+            min="10"
+            max="100000"
+            value={draft.caller_row_limit}
+            onChange={(e) =>
+              set({ ...draft, caller_row_limit: Number(e.target.value) })
+            }
+          />
+        </Field>
+      </div>
       <div className="setting-row">
         <div>
           <strong>Register discovered engines</strong>
