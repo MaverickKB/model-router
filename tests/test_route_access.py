@@ -5,6 +5,7 @@ import pytest
 
 from gateway.app import create_app
 from gateway.migration import configuration as migrate_configuration
+from gateway.routing import decide
 from gateway.schema import Client, Configuration, Engine, Route, Security, Selector
 from gateway.store import Store
 
@@ -21,7 +22,8 @@ class Endpoint:
 
 
 @pytest.mark.asyncio
-async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path):
+@pytest.mark.parametrize("shared_access", [False, True])
+async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path, shared_access):
     app = create_app(
         str(tmp_path), background=False, transport=httpx.MockTransport(Endpoint())
     )
@@ -31,6 +33,10 @@ async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path)
         base_url="https://cloud.test/v1",
         kind="cloud",
         model_patterns=["*"],
+    )
+    shared = Client(
+        name="Shared access", route_names=["free", "cloud-free", "private"],
+        allow_cloud=True,
     )
     app.state.store.save(
         Configuration(
@@ -52,7 +58,11 @@ async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path)
                     require_caller_key=True,
                 ),
             ],
-            security=Security(operator_auth_enabled=False),
+            clients=[shared] if shared_access else [],
+            security=Security(
+                operator_auth_enabled=False,
+                anonymous_client_id=shared.id if shared_access else None,
+            ),
         )
     )
     await app.state.discovery.refresh()
@@ -66,10 +76,8 @@ async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path)
     ):
         catalog = await client.get("/v1/models")
         assert catalog.status_code == 200
-        assert {item["id"] for item in catalog.json()["data"]} == {
-            "free",
-            "cloud-free",
-        }
+        expected_routes = {"free", "cloud-free"} if shared_access else set()
+        assert {item["id"] for item in catalog.json()["data"]} == expected_routes
         allowed = await client.post(
             "/v1/chat/completions",
             json={"model": "free", "messages": [{"role": "user", "content": "hi"}]},
@@ -85,12 +93,19 @@ async def test_unkeyed_callers_are_observed_and_filtered_by_route_gate(tmp_path)
             "/v1/chat/completions",
             json={"model": "private", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert allowed.status_code == 200
-    assert cloud_allowed.status_code == 200
-    assert denied.status_code == 401
+    if shared_access:
+        assert allowed.status_code == 200
+        assert cloud_allowed.status_code == 200
+        assert denied.status_code == 401
+        assert denied.json()["error"]["message"] == "A caller key is required for this route"
+    else:
+        for response in (allowed, cloud_allowed, denied):
+            assert response.status_code == 403
+            assert response.json()["error"]["message"] == "Route is outside the client's allowlist"
     callers = Store(str(tmp_path)).callers()
     assert len(callers) == 1
-    assert callers[0]["policy_id"] is None
+    expected_policy_id = shared.id if shared_access else None
+    assert callers[0]["policy_id"] == expected_policy_id
     assert callers[0]["source_address"] == "192.0.2.20"
     assert callers[0]["identity_basis"] == "shared_access"
 
@@ -321,6 +336,80 @@ async def test_bearer_scheme_is_case_insensitive_for_valid_keys(tmp_path):
     ) as client:
         response = await client.get("/v1/models")
     assert {item["id"] for item in response.json()["data"]} == {"private"}
+
+
+@pytest.mark.asyncio
+async def test_route_permission_refusal_is_403_not_recovery(tmp_path):
+    app = create_app(
+        str(tmp_path), background=False, transport=httpx.MockTransport(Endpoint())
+    )
+    engine = Engine(name="Local endpoint", base_url="http://model.test/v1")
+    caller = Client(
+        name="Model-restricted caller",
+        route_names=["free"],
+        model_patterns=["allowed-*"],
+    )
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[Route(name="free", primary=Selector(engine_ids=[engine.id]))],
+            clients=[caller],
+            security=Security(operator_auth_enabled=False),
+        )
+    )
+    await app.state.discovery.refresh()
+    decision = decide(
+        app.state.store.config(),
+        app.state.discovery.views(),
+        caller,
+        {"model": "free", "messages": []},
+    )
+    assert decision["candidates"] == []
+    assert decision["status"] == 403
+    assert decision["error"] == "Client permissions exclude the matching models"
+
+
+@pytest.mark.asyncio
+async def test_ordered_route_without_engine_ids_follows_engine_config_order(tmp_path):
+    async def endpoint(request):
+        if request.url.path.endswith("/models"):
+            model = "z-model" if request.url.host == "engine-z.test" else "a-model"
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        return httpx.Response(404)
+
+    app = create_app(
+        str(tmp_path), background=False, transport=httpx.MockTransport(endpoint)
+    )
+    first_engine = Engine(
+        id="ffffffff-ffff-4fff-8fff-ffffffffffff",
+        name="Z engine",
+        base_url="http://engine-z.test/v1",
+    )
+    second_engine = Engine(
+        id="00000000-0000-4000-8000-000000000000",
+        name="A engine",
+        base_url="http://engine-a.test/v1",
+    )
+    caller = Client(name="Ordered caller", route_names=["free"])
+    app.state.store.save(
+        Configuration(
+            engines=[first_engine, second_engine],
+            routes=[Route(name="free", primary=Selector(), strategy="ordered")],
+            clients=[caller],
+            security=Security(operator_auth_enabled=False),
+        )
+    )
+    await app.state.discovery.refresh()
+    decision = decide(
+        app.state.store.config(),
+        app.state.discovery.views(),
+        caller,
+        {"model": "free", "messages": []},
+    )
+    assert [candidate["model"] for candidate in decision["candidates"]] == [
+        "z-model",
+        "a-model",
+    ]
 
 
 def test_pre_route_gate_config_materializes_legacy_global_policy():

@@ -303,6 +303,29 @@ class Client(NamedRecord):
     allow_network_auth: bool = False
     source_networks: list[str] = Field(default_factory=list)
 
+    @field_validator("source_networks")
+    @classmethod
+    def usable_source_networks(cls, values):
+        """Keep only parsable CIDR strings.
+
+        These values are matched against every unkeyed connection, so one
+        unparsable entry must not make all of them fail. Historic configurations
+        may already contain bad entries, so they are dropped rather than
+        rejected on load.
+        """
+        result = []
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            text = value.strip()
+            try:
+                ipaddress.ip_network(text, strict=False)
+            except ValueError:
+                continue
+            if text not in result:
+                result.append(text)
+        return result
+
 
 class TokenBudget(Record):
     max_tokens: int = Field(ge=1, le=10_000_000_000)

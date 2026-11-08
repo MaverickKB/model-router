@@ -15,6 +15,7 @@ deployment-specific values belong here.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import time
@@ -78,6 +79,16 @@ class OAuthSession:
     def __init__(self) -> None:
         self._tokens: dict[tuple[str, str], tuple[str, float]] = {}
         self._token_urls: dict[str, str] = {}
+        self._refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+    def _refresh_lock(self, provider: str, refresh_token: str) -> asyncio.Lock:
+        """One refresh at a time per token; a rotating token cannot be replayed."""
+        key = (provider, refresh_token)
+        lock = self._refresh_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._refresh_locks[key] = lock
+        return lock
 
     async def _resolve_token_url(self, provider: str, http: httpx.AsyncClient) -> str:
         if provider == "xai_oauth":
@@ -105,6 +116,17 @@ class OAuthSession:
         cached, expires_at = self._tokens.get((provider, refresh_token), ("", 0.0))
         if cached and time.time() < expires_at:
             return cached, None
+        lock = self._refresh_lock(provider, refresh_token)
+        async with lock:
+            # A queued caller finds the token the first caller already refreshed.
+            cached, expires_at = self._tokens.get((provider, refresh_token), ("", 0.0))
+            if cached and time.time() < expires_at:
+                return cached, None
+            return await self._refresh(provider, refresh_token, http)
+
+    async def _refresh(
+        self, provider: str, refresh_token: str, http: httpx.AsyncClient
+    ) -> tuple[str, str | None]:
         url = await self._resolve_token_url(provider, http)
         response = await http.post(
             url,

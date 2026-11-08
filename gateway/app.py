@@ -524,7 +524,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                     for c in decision["candidates"]
                 ):
                     serving = "systemone-native"
-            if route.name == "cairn_voice":
+            speech_route = route.name == "cairn_voice"
+            if speech_route:
                 decision = speech_decision(config, views, client, request, consider_capacity=False)
                 serving = "speech"
             recovering_alias = (
@@ -533,7 +534,10 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 and decision.get("status") not in {401, 403}
             )
             if recovering_alias and not decision["candidates"]:
-                serving = "chat"
+                # A speech route has no chat fallback; keep declaring speech and
+                # report it unavailable rather than advertising a chat row.
+                if not speech_route:
+                    serving = "chat"
             if decision["candidates"] or recovering_alias:
                 row = {
                     "id": route.name,
@@ -545,6 +549,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                     row["serving"] = serving
                 if recovering_alias:
                     row["available"] = bool(decision["candidates"])
+                if speech_route and not decision["candidates"]:
+                    row["available"] = False
                 selected_engines = set()
                 contexts = []
                 capacity = 0
@@ -596,6 +602,10 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     async def register(request: Request):
         if store.config().security.operator_auth_enabled:
             await identity.require_operator(request, True)
+        elif not identity.origin_allowed(request):
+            # The same browser-origin test as every other state-changing
+            # management POST, applied even when operator auth is off.
+            raise HTTPException(403, "Settings require a same-origin operator request")
         identity.registration_limit.take(
             request.client.host if request.client else "unknown"
         )

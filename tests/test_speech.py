@@ -397,7 +397,7 @@ async def test_alignment_text_and_audio_boundaries(tmp_path, monkeypatch):
     )
     app, engine, _caller, key, provider, _calls = await make_router(tmp_path, provider)
     ws, _ = await connected(app, key)
-    await ws.send({"type": "text.delta", "delta": "x" * 2048})
+    await ws.send({"type": "text.delta", "delta": "x" * speech.MAX_TEXT})
     await ws.send({"type": "text.done"})
     chunks = [base64.b64decode((await ws.next())["delta"]) for _ in range(2)]
     assert b"".join(chunks) == PCM and all(len(c) % 2 == 0 for c in chunks)
@@ -899,3 +899,53 @@ async def test_non_string_control_type_is_client_fault_without_provider_cooldown
         + caplog.text
     )
     assert WORDS not in retained and FAKE_SECRET not in retained and key not in retained
+
+
+async def test_text_limit_is_derived_from_the_audio_and_time_budget(tmp_path):
+    # 15 spoken characters per second of 24 kHz s16le mono, less the provider
+    # connect and close time that shares the same overall deadline.
+    assert speech.SPEECH_SECONDS == speech.OVERALL_SECONDS - speech.SETUP_SECONDS
+    assert speech.MAX_TEXT == speech.CHARS_PER_SECOND * speech.SPEECH_SECONDS
+    assert speech.MAX_TEXT < 2048
+    spoken_bytes = (
+        speech.MAX_TEXT
+        / speech.CHARS_PER_SECOND
+        * speech.SAMPLE_RATE
+        * speech.SAMPLE_BYTES
+    )
+    assert spoken_bytes <= speech.MAX_PCM
+    assert speech.MAX_TEXT / speech.CHARS_PER_SECOND <= speech.SPEECH_SECONDS
+
+    app, _engine, _caller, key, _provider, _calls = await make_router(tmp_path)
+    ws, _ = await connected(app, key)
+    await ws.send({"type": "text.delta", "delta": "x" * (speech.MAX_TEXT + 1)})
+    assert await ws.next() == {
+        "type": "error",
+        "code": "text_limit",
+        "partial": False,
+        "heard": False,
+    }
+    await ws.close()
+
+
+async def test_unavailable_speech_route_is_advertised_as_speech_not_chat(tmp_path):
+    app, _engine, _caller, key, _provider, _calls = await make_router(tmp_path)
+    config = app.state.store.config()
+    for route in config.routes:
+        if route.name == "cairn_voice":
+            # A recovering alias (auto-discovered local host) with no speech
+            # candidate: the row must stay a speech row and say it is unavailable.
+            route.recovery_seconds = 30
+            route.primary = Selector(kind="local", hosts=["local.test"])
+    app.state.store.save(config)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+            base_url="http://router.test",
+            headers={"Authorization": f"Bearer {key}"},
+        ) as http:
+            answer = await http.get("/v1/models")
+    rows = {row["id"]: row for row in answer.json()["data"]}
+    assert answer.status_code == 200
+    assert rows["cairn_voice"]["serving"] == "speech"
+    assert rows["cairn_voice"]["available"] is False

@@ -14,7 +14,7 @@ from pydantic import Field, field_validator
 from ..routing import decide, matches
 from ..schema import AccountLevel, Configuration, Record
 from ..store import Store
-from .devices import canonical_address, shadowing
+from .devices import PEER_RULE, canonical_address, peer_bound, shadowing
 from .limits import AccountLimits
 from .principal import derive_principal, level_for
 
@@ -469,6 +469,9 @@ def portal_router(store: Store, identity, portal, discovery, proxy) -> APIRouter
             address = canonical_address(body.address)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
+        peer = request.client.host if request.client else None
+        if not peer_bound(address, peer):
+            raise HTTPException(422, PEER_RULE)
         try:
             device = await asyncio.to_thread(
                 store.register_device, account["id"], address, body.name

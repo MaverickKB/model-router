@@ -370,19 +370,13 @@ async def test_collector_finds_changed_port_and_resumes_a_real_request(tmp_path)
             await old_server.__aexit__(None, None, None)
 
 
-async def test_stream_recovers_before_output_without_sending_error_events(tmp_path):
+async def test_stream_that_emitted_bytes_is_not_replayed_after_interruption(tmp_path):
     calls = 0
 
     class Stream(httpx.AsyncByteStream):
-        def __init__(self, fail):
-            self.fail = fail
-
         async def __aiter__(self):
             yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
-            if self.fail:
-                raise httpx.ReadTimeout("injected idle stream")
-            yield b'data: {"choices":[{"delta":{"content":"recovered"},"finish_reason":"stop"}]}\n\n'
-            yield b'data: [DONE]\n\n'
+            raise httpx.ReadTimeout("interrupted after the first frame")
 
     async def upstream(request):
         nonlocal calls
@@ -390,17 +384,59 @@ async def test_stream_recovers_before_output_without_sending_error_events(tmp_pa
             return httpx.Response(200, json={"data": [{"id": "current-model"}]})
         if request.url.path.endswith("/chat/completions"):
             calls += 1
-            return httpx.Response(200, stream=Stream(calls == 1), headers={"Content-Type": "text/event-stream"})
+            return httpx.Response(200, stream=Stream(), headers={"Content-Type": "text/event-stream"})
         return httpx.Response(404)
 
     app, engine, _, http = await router(tmp_path, upstream, managed=True)
     async with app.router.lifespan_context(app), http:
         response = await http.post("/v1/chat/completions", json={"model": "auto", "messages": [], "stream": True})
         assert response.status_code == 200
-        assert "recovered" in response.text
-        assert "[DONE]" in response.text
-        assert "event: error" not in response.text
-        assert calls == 2
-        assert len(app.state.store.events()) == 1
-        assert app.state.store.events()[0]["status"] == "completed"
+        assert response.text.count('"role":"assistant"') == 1
+        assert "Upstream stream interrupted" in response.text
+        assert "[DONE]" not in response.text
+        assert calls == 1
+        event = app.state.store.events()[0]
+        assert event["status"] == "failed"
+        assert event["http_status"] == 502
         assert app.state.discovery.observation(engine.id).inflight == 0
+
+
+async def test_stream_request_with_json_upstream_body_returns_bounded_json(tmp_path):
+    async def upstream(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "current-model"}]})
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(
+                200,
+                json={"model": "current-model", "choices": [{"message": {"content": "bounded"}}]},
+                headers={"Content-Type": "application/json"},
+            )
+        return httpx.Response(404)
+
+    app, _, _, http = await router(tmp_path, upstream)
+    async with app.router.lifespan_context(app), http:
+        response = await http.post("/v1/chat/completions", json={"model": "auto", "messages": [], "stream": True})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json()["choices"][0]["message"]["content"] == "bounded"
+        assert "data:" not in response.text
+        assert "[DONE]" not in response.text
+
+
+async def test_recovery_stream_refusal_is_an_sse_error_without_done(tmp_path):
+    async def upstream(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "current-model"}]})
+        return httpx.Response(404)
+
+    app, _, _, http = await router(tmp_path, upstream, managed=True)
+    config = app.state.store.config()
+    config.routes[0].primary = Selector(hosts=["192.0.2.99"])
+    config.routes[0].recovery_seconds = 0.01
+    app.state.store.save(config)
+    async with app.router.lifespan_context(app), http:
+        response = await http.post("/v1/chat/completions", json={"model": "auto", "messages": [], "stream": True})
+        assert response.status_code == 200
+        assert response.text.startswith('data: {"error"')
+        assert "No allowed, available model matches this request" in response.text
+        assert "[DONE]" not in response.text

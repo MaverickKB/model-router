@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
+from gateway.accounts.devices import LOOPBACK_RULE, PEER_RULE, PUBLIC_RULE
 from gateway.accounts.limits import window_start
 from gateway.app import create_app
 from gateway.schema import (
@@ -87,10 +88,10 @@ class Setup:
         )
 
     @asynccontextmanager
-    async def portal(self, username="alice"):
+    async def portal(self, username="alice", address="127.0.0.1"):
         """A portal session for an activated account, signed in through the API."""
         http = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=self.app, client=("127.0.0.1", 1)),
+            transport=httpx.ASGITransport(app=self.app, client=(address, 1)),
             base_url=ORIGIN,
             headers={"Origin": ORIGIN},
         )
@@ -494,9 +495,14 @@ async def test_device_address_must_be_single_literal_and_globally_unique(tmp_pat
         loopback = await portal.post(
             "/api/v1/portal/devices", json={"address": "::1", "name": "host"}
         )
-        assert loopback.status_code == 201
-        assert loopback.json()["device"]["shadowed"] is False
-        for n in range(8):
+        assert loopback.status_code == 422
+        assert loopback.json()["detail"] == LOOPBACK_RULE
+        public = await portal.post(
+            "/api/v1/portal/devices", json={"address": "8.8.8.8", "name": "far"}
+        )
+        assert public.status_code == 422
+        assert public.json()["detail"] == PUBLIC_RULE
+        for n in range(9):
             more = await portal.post(
                 "/api/v1/portal/devices",
                 json={"address": f"198.51.100.{n}", "name": f"d{n}"},
@@ -511,6 +517,30 @@ async def test_device_address_must_be_single_literal_and_globally_unique(tmp_pat
         )
     assert len(setup.store.devices_for(bob["id"])) == 10
     assert len(setup.store.devices_for(setup.account["id"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_device_address_must_match_a_non_loopback_session_peer(tmp_path):
+    setup = await build(tmp_path)
+    bob = setup.add_account("bob", "Bob")
+    async with setup.portal("bob", address="192.0.2.31") as portal:
+        own = await portal.post(
+            "/api/v1/portal/devices", json={"address": "192.0.2.31", "name": "desk"}
+        )
+        assert own.status_code == 201, own.text
+        neighbour = await portal.post(
+            "/api/v1/portal/devices", json={"address": "192.0.2.32", "name": "other"}
+        )
+        assert neighbour.status_code == 422
+        assert neighbour.json()["detail"] == PEER_RULE
+    # A local portal session may still enroll any private address it can see.
+    async with setup.portal("bob") as portal:
+        local = await portal.post(
+            "/api/v1/portal/devices", json={"address": "192.0.2.33", "name": "local"}
+        )
+        assert local.status_code == 201, local.text
+    addresses = {device["address"] for device in setup.store.devices_for(bob["id"])}
+    assert addresses == {"192.0.2.31", "192.0.2.33"}
 
 
 @pytest.mark.asyncio
