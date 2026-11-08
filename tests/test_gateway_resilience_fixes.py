@@ -4,6 +4,7 @@ import asyncio
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from gateway.discovery import DiscoveryService, _machine
 from gateway.engine_identity import MergeEngines, merged_configuration
@@ -104,6 +105,20 @@ def test_bad_cidr_entries_are_skipped_for_unkeyed_policy():
 
     outside, _ = resolve_unkeyed_policy(config, "198.51.100.10")
     assert outside.name == "Unkeyed connection"
+
+
+def test_all_invalid_source_networks_are_rejected():
+    with pytest.raises(ValidationError, match="no usable network"):
+        Client(name="Default", source_networks=["not-a-network", "also-bad"])
+
+
+def test_one_valid_source_network_survives_beside_invalid_entries():
+    client = Client(
+        name="Default",
+        source_networks=["192.0.2.10/32", "not-a-network"],
+    )
+
+    assert client.source_networks == ["192.0.2.10/32"]
 
 
 def test_client_source_networks_drop_unparsable_entries():

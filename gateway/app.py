@@ -28,7 +28,7 @@ from .network.collector import Collector
 from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
 from .origin_policy import OriginPolicy
-from .proxy import Proxy
+from .proxy import Proxy, require_origin_route
 from .systemone_native import NativeOwner
 from .adapters.jevos_native import MAX_BODY as NATIVE_BODY_LIMIT
 from .routing import client_reason, decide, matches, route_requires_caller_key
@@ -688,6 +688,11 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
         if isinstance(questions, dict):
             if len(raw) > NATIVE_BODY_LIMIT:
                 raise HTTPException(413, "Native request exceeds 8 KiB")
+            # Native dispatch resolves its route from payload["model"] exactly
+            # as the proxy does, so the origin allowlist must gate it here too.
+            route_name = payload.get("model")
+            if isinstance(route_name, str) and route_name:
+                require_origin_route(request, route_name)
             return await native.dispatch(request, payload, client)
         if not isinstance(questions, list) or not questions:
             raise HTTPException(400, "questions must be a nonempty array")

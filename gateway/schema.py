@@ -306,12 +306,13 @@ class Client(NamedRecord):
     @field_validator("source_networks")
     @classmethod
     def usable_source_networks(cls, values):
-        """Keep only parsable CIDR strings.
+        """Keep only parsable CIDR strings, and never turn a bad list into open access.
 
-        These values are matched against every unkeyed connection, so one
-        unparsable entry must not make all of them fail. Historic configurations
-        may already contain bad entries, so they are dropped rather than
-        rejected on load.
+        These values are matched against every unkeyed connection, so historic
+        configurations with a stray bad entry keep working and that entry is
+        dropped. A non-empty list where every entry is unusable would otherwise
+        become an empty list, which reads as unrestricted; reject it on load
+        instead so the failure stays closed.
         """
         result = []
         for value in values:
@@ -324,6 +325,11 @@ class Client(NamedRecord):
                 continue
             if text not in result:
                 result.append(text)
+        if values and not result:
+            raise ValueError(
+                "source_networks contains no usable network; "
+                "remove or fix the invalid entries"
+            )
         return result
 
 

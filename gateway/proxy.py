@@ -24,12 +24,32 @@ from .store import Store
 from .stream_protocol import CompletionMarker, StreamProgress
 
 
+# One recovery loop can reject admission thousands of times; keep recent
+# evidence only, and count every rejection separately.
+ADMISSION_REJECTIONS_KEPT = 50
+
+
 class ResponseTooLarge(Exception):
     pass
 
 
 class RecoverableStreamError(Exception):
     """The upstream failed before any answer, reasoning, or tool output."""
+
+
+def require_origin_route(request: Request, route_name: str):
+    origin = getattr(request.state, "origin", None)
+    if origin is None:
+        return
+    if origin.route_allowed(route_name):
+        return
+    allowed = ", ".join(repr(r) for r in origin.allowed_routes or [])
+    raise HTTPException(
+        403,
+        f"This origin may only use these routes: {allowed}"
+        if allowed
+        else "No routes are available to this origin",
+    )
 
 
 def validate_payload(payload):
@@ -170,14 +190,7 @@ class Proxy:
         validate_payload(payload)
         origin = getattr(request.state, "origin", None)
         if origin is not None:
-            if not origin.route_allowed(payload["model"].strip()):
-                allowed = ", ".join(repr(r) for r in origin.allowed_routes or [])
-                raise HTTPException(
-                    403,
-                    f"This origin may only use these routes: {allowed}"
-                    if allowed
-                    else "No routes are available to this origin",
-                )
+            require_origin_route(request, payload["model"].strip())
             origin.sanitize(payload)
         config = self.store.config()
         route = next((route for route in config.routes if route.name == payload["model"]), None)
@@ -477,7 +490,8 @@ class Proxy:
                         >= max_inflight - engine.foreground_reserved_slots
                         else "engine_busy"
                     )
-                    event.setdefault("admission_rejections", []).append(
+                    rejections = event.setdefault("admission_rejections", [])
+                    rejections.append(
                         {
                             "engine_id": engine.id,
                             "code": code,
@@ -488,6 +502,11 @@ class Proxy:
                             "foreground_reserved_slots": engine.foreground_reserved_slots,
                         }
                     )
+                    event["admission_rejections_total"] = (
+                        event.get("admission_rejections_total", 0) + 1
+                    )
+                    if len(rejections) > ADMISSION_REJECTIONS_KEPT:
+                        del rejections[0]
                     continue
                 attempt = {**candidate, "status": "waiting"}
                 attempts = event["attempts"]
