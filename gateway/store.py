@@ -270,6 +270,11 @@ class Store:
 
     def save_operator_session(self, key: str, expires: float):
         with self.lock:
+            # Expired rows are dropped here so the table follows live sessions
+            # while the process runs, not only when a reader asks for them.
+            self.db.execute(
+                "DELETE FROM operator_sessions WHERE expires <= ?", (time.time(),)
+            )
             self.db.execute(
                 "INSERT OR REPLACE INTO operator_sessions VALUES (?, ?)", (key, expires)
             )
@@ -1035,6 +1040,10 @@ class Store:
 
     def save_portal_session(self, digest: str, account_id: str, expires: float):
         with self.lock, self.db:
+            # Same sweep as operator sessions: a saved table is a live-session table.
+            self.db.execute(
+                "DELETE FROM portal_sessions WHERE expires <= ?", (time.time(),)
+            )
             self.db.execute(
                 "INSERT OR REPLACE INTO portal_sessions VALUES (?, ?, ?, ?)",
                 (digest, account_id, expires, time.time()),

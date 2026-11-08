@@ -272,6 +272,9 @@ def suggestions(
 
             lh, rh = _hostname(left), _hostname(right)
             if lh and lh == rh:
+                if lo[0] == ro[0]:
+                    # One machine, two ports: distinct services, not one API.
+                    continue
                 result.append(
                     _finding(
                         "merge",

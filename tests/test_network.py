@@ -503,9 +503,12 @@ async def test_relay_provenance_is_visible_and_never_auto_registered(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_native_runtime_missing_metadata_preserves_operator_capability_declaration(
-    tmp_path,
-):
+async def test_native_runtime_missing_metadata_declares_no_capabilities(tmp_path):
+    """A runtime that states no capabilities is not filled in from config.
+
+    Neither engine defaults nor the operator's declared list can be proven for
+    a host that never reported one, so the row declares none.
+    """
     from gateway.schema import Engine
 
     async def handler(request):
@@ -527,7 +530,7 @@ async def test_native_runtime_missing_metadata_preserves_operator_capability_dec
         capabilities=["embeddings"],
     )
     models = await app.state.discovery.probe(engine)
-    assert models[0]["capabilities"] == ["embeddings"]
+    assert models[0]["capabilities"] == []
     assert not models[0]["loaded"]
     await _close_app(app)
 

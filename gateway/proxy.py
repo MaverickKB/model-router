@@ -560,7 +560,9 @@ class Proxy:
                         "x-router-model": candidate["model"],
                         "x-router-request": event["id"],
                     }
-                    if payload.get("stream") and upstream.is_success:
+                    response_content_type = upstream.headers.get("content-type", "")
+                    is_event_stream = "text/event-stream" in response_content_type.lower()
+                    if payload.get("stream") and upstream.is_success and is_event_stream:
                         # Content-Encoding is not forwarded. Relay decoded bytes,
                         # including when an upstream compresses its event stream.
                         iterator = upstream.aiter_bytes()
@@ -589,9 +591,7 @@ class Proxy:
                                 recoverable=recovery_enabled,
                             ),
                             status_code=upstream.status_code,
-                            media_type=upstream.headers.get(
-                                "content-type", "text/event-stream"
-                            ),
+                            media_type=response_content_type,
                             headers={
                                 **receipt,
                                 "Cache-Control": "no-cache",
@@ -733,6 +733,7 @@ class Proxy:
         pending = None
         iterator = None
         response = None
+        emitted = False
         try:
             while True:
                 pending = asyncio.create_task(self.dispatch(request, payload, client))
@@ -743,7 +744,12 @@ class Proxy:
                 response = pending.result()
                 pending = None
                 if not isinstance(response, StreamingResponse):
-                    yield b"data: " + response.body + b"\n\ndata: [DONE]\n\n"
+                    # A refusal is an error event, not an empty completion, so
+                    # it must not carry the [DONE] terminator.
+                    if response.status_code >= 400:
+                        yield b"data: " + response.body + b"\n\n"
+                    else:
+                        yield b"data: " + response.body + b"\n\ndata: [DONE]\n\n"
                     return
                 iterator = response.body_iterator
                 try:
@@ -758,9 +764,19 @@ class Proxy:
                         if chunk is None:
                             return
                         yield chunk
+                        emitted = True
                 except RecoverableStreamError as error:
                     event = request.state.router_event
                     event["attempts"][-1]["error_type"] = str(error)
+                    if emitted:
+                        # Bytes already reached the caller, so this attempt
+                        # cannot be replayed. Close with an interruption frame.
+                        event["attempts"][-1].update(status="failed", http_status=502)
+                        event.update(status="failed", http_status=502,
+                                     elapsed_ms=round((time.monotonic() - request.state.router_started) * 1000))
+                        await asyncio.to_thread(self.store.event, event)
+                        yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted"}}\n\n'
+                        return
                     route = next((route for route in self.store.config().routes if route.name == payload["model"]), None)
                     if not route or not route.enabled or route.recovery_seconds == 0:
                         raise

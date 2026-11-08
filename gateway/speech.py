@@ -28,12 +28,22 @@ from .adapters.xai_tts import (
 from .proxy import InflightRequest
 from .routing import decide
 
-MAX_TEXT = 2048
 MAX_CONTROLS = 128
 MAX_OUTPUT_PCM = 12288
 CONNECT_SECONDS = 5
 FIRST_AUDIO_SECONDS = 10
 OVERALL_SECONDS = 60
+# One spoken second is 24000 frames of one s16le sample each, and the text
+# budget is measured in characters spoken per second. The provider connect and
+# close steps run inside the same overall deadline, so they cannot be spent on
+# audio; without that reserve a maximum-length utterance is cut off mid-audio.
+SAMPLE_RATE = 24000
+SAMPLE_BYTES = 2
+CHARS_PER_SECOND = 15
+SETUP_SECONDS = 6
+AUDIO_SECONDS = MAX_PCM // (SAMPLE_RATE * SAMPLE_BYTES)
+SPEECH_SECONDS = min(AUDIO_SECONDS, OVERALL_SECONDS - SETUP_SECONDS)
+MAX_TEXT = SPEECH_SECONDS * CHARS_PER_SECOND
 CLOSE_SECONDS = 1
 PROVIDER_CLOSE_SECONDS = 2.5
 PROVIDER_GRACE_SECONDS = 1.5

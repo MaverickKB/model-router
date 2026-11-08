@@ -7,6 +7,9 @@ import ipaddress
 from ..schema import Configuration
 
 ADDRESS_RULE = "Enter one IPv4 or IPv6 address"
+LOOPBACK_RULE = "The router host itself cannot be registered as a device"
+PUBLIC_RULE = "Only addresses on this network can be registered"
+PEER_RULE = "A device address must match the address this browser connects from"
 
 
 def canonical_address(value: str) -> str:
@@ -21,16 +24,38 @@ def canonical_address(value: str) -> str:
         raise ValueError(ADDRESS_RULE)
     # An IPv4-mapped IPv6 literal names the same host as its IPv4 form.
     parsed = getattr(parsed, "ipv4_mapped", None) or parsed
-    # Loopback is a real peer (every process on the router host); it is checked
-    # first because ::1 also falls inside the IPv6 reserved block.
-    if not parsed.is_loopback and (
+    # A registration is a standing grant for whoever arrives from this address,
+    # so the router host itself and any internet-routable host are refused.
+    if parsed.is_loopback:
+        raise ValueError(LOOPBACK_RULE)
+    if (
         parsed.is_unspecified
         or parsed.is_multicast
         or parsed.is_reserved
         or parsed.is_link_local
     ):
         raise ValueError(ADDRESS_RULE)
+    if parsed.is_global:
+        raise ValueError(PUBLIC_RULE)
     return str(parsed)
+
+
+def peer_bound(address: str, peer: str | None) -> bool:
+    """A non-loopback portal session may only register its own address.
+
+    Loopback is the operator's own browser (or a local process); any other peer
+    proves its address with this request, so it cannot enroll a neighbour's.
+    """
+    if not peer:
+        return True
+    try:
+        parsed = ipaddress.ip_address(str(peer).strip())
+    except ValueError:
+        return False
+    if parsed.is_loopback:
+        return True
+    parsed = getattr(parsed, "ipv4_mapped", None) or parsed
+    return address == str(parsed)
 
 
 def shadowing(config: Configuration, address: str) -> list[dict]:

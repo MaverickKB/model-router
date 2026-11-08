@@ -7,6 +7,15 @@ from pydantic import Field
 from .schema import Configuration, Engine, Record
 
 
+def _union(first: list[str], second: list[str]) -> list[str]:
+    """Preserve order, drop repeats."""
+    result = []
+    for value in [*first, *second]:
+        if value not in result:
+            result.append(value)
+    return result
+
+
 class MergeEngines(Record):
     revision: int = Field(ge=0)
     source_id: str
@@ -33,12 +42,20 @@ def merged_configuration(config: Configuration, merge: MergeEngines) -> Configur
     ]
     kept = next(engine for engine in result["engines"] if engine["id"] == target.id)
     kept.update(base_url=preferred, aliases=[url for url in urls if url != preferred])
+    kept["tags"] = _union(kept["tags"], source.tags)
+    kept_members = _union(kept["members"], source.members)
+    kept["members"] = [
+        value for value in kept_members if value not in {target.id, source.id}
+    ]
 
     def relink(ids):
         return list(
             dict.fromkeys(target.id if value == source.id else value for value in ids)
         )
 
+    for engine in result["engines"]:
+        if engine["id"] != target.id:
+            engine["members"] = relink(engine["members"])
     for route in result["routes"]:
         for selector in [route["primary"], route["fallback"]]:
             if selector is not None:

@@ -169,6 +169,10 @@ def decide(
         # A raw model name is exact, even when it contains glob characters.
         # Saved selector patterns apply to routes; the loop below checks IDs.
         tiers = [("primary", Selector(kind="any"))]
+    strategy = route.strategy if route else "least_busy"
+    engine_positions = {}
+    for position, configured_engine in enumerate(config.engines):
+        engine_positions[configured_engine.id] = position
     for tier, selector in tiers:
         for engine in engines:
             if engine["status"] != "available":
@@ -235,11 +239,12 @@ def decide(
                         }
                     )
                 else:
-                    order = (
-                        selector.engine_ids.index(engine["id"])
-                        if engine["id"] in selector.engine_ids
-                        else 0
-                    )
+                    selector_position = 0
+                    if engine["id"] in selector.engine_ids:
+                        selector_position = selector.engine_ids.index(engine["id"])
+                    order = selector_position
+                    if strategy == "ordered" and not selector.engine_ids:
+                        order = engine_positions.get(engine["id"], len(engine_positions))
                     candidates.append(
                         {
                             "engine_id": engine["id"],
@@ -256,7 +261,6 @@ def decide(
                             "reason": f"{tier.capitalize()} policy matched; client permissions and required capabilities passed",
                         }
                     )
-    strategy = route.strategy if route else "least_busy"
     candidates.sort(
         key=lambda c: (
             c["tier"] == "fallback",
@@ -275,7 +279,10 @@ def decide(
             unique.append(candidate)
     failure: dict = {}
     if not unique:
-        if not route and permission_blocked:
+        permission_refusal_applies = True
+        if route:
+            permission_refusal_applies = not other_blocker and not missing_capabilities
+        if permission_blocked and permission_refusal_applies:
             failure = {
                 "status": 403,
                 "error": "Client permissions exclude the matching models",

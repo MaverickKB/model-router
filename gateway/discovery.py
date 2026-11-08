@@ -59,7 +59,12 @@ def _machine(url: str) -> tuple[str, int] | None:
         host = str(ipaddress.ip_address(host))
     except ValueError:
         return None
-    return (host, parts.port or (443 if parts.scheme == "https" else 80))
+    try:
+        port = parts.port
+    except ValueError:
+        # A malformed port on an IP literal must not end the refresh loop.
+        return None
+    return (host, port or (443 if parts.scheme == "https" else 80))
 
 
 def _existing_engine(config, url: str):
@@ -157,13 +162,6 @@ class DiscoveryService:
             model_id = row["id"]
             override = engine.model_settings.get(model_id)
             capabilities = list(engine.capabilities)
-            # A host-following OpenAI route forwards standard request features
-            # when the catalog omits declarations. Explicit model metadata below
-            # remains authoritative, including declarations that disable them.
-            if self.follows_host(engine) and "text" in capabilities:
-                for capability in ("tools", "vision"):
-                    if capability not in capabilities:
-                        capabilities.append(capability)
             stated = row.get("capabilities")
             if isinstance(stated, dict):
                 capabilities = [k for k in capabilities if stated.get(k) is not False]
@@ -577,7 +575,11 @@ class DiscoveryService:
                     mdns_task.cancel()
                     await asyncio.gather(mdns_task, return_exceptions=True)
                     self.mdns_candidates.clear()
-                await self.refresh()
+                try:
+                    await self.refresh()
+                except (OSError, ValueError, RuntimeError, TypeError) as error:
+                    # One malformed discovery report must not stop every later poll.
+                    self.scan_error = str(error)
                 if (
                     config.discovery.enabled
                     and time.time() - self.last_scan
