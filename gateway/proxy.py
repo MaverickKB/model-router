@@ -702,6 +702,9 @@ class Proxy:
 
     async def dispatch_connected(self, request: Request, payload: dict, client: Client):
         validate_payload(payload)
+        # The streaming branch below commits to an SSE response before dispatch
+        # runs, so authorization refusals must resolve here to keep a 403 a 403.
+        require_origin_route(request, payload["model"].strip())
         route = next((route for route in self.store.config().routes if route.name == payload.get("model")), None)
         preflight = decide(self.store.config(), self.discovery.views(), client, payload,
                            caller_key_present=getattr(request.state, "caller_key_present", True))
@@ -807,13 +810,14 @@ class Proxy:
                         event.update(status="failed", http_status=504,
                                      elapsed_ms=round((time.monotonic() - request.state.router_started) * 1000))
                         await asyncio.to_thread(self.store.event, event)
-                        yield b'data: {"error":{"message":"Serving endpoint is still recovering"}}\n\ndata: [DONE]\n\n'
+                        yield b'data: {"error":{"message":"Serving endpoint is still recovering"}}\n\n'
                         return
                     await asyncio.sleep(1)
                     await self.discovery.refresh_route(payload["model"])
         except HTTPException as error:
             body = json.dumps({"error": {"message": str(error.detail), "status": error.status_code}}).encode()
-            yield b"data: " + body + b"\n\ndata: [DONE]\n\n"
+            # A refusal is an error event; it must not carry the success terminator.
+            yield b"data: " + body + b"\n\n"
         finally:
             with CancelScope(shield=True):
                 if pending is not None:

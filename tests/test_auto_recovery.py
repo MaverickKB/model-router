@@ -440,3 +440,28 @@ async def test_recovery_stream_refusal_is_an_sse_error_without_done(tmp_path):
         assert response.text.startswith('data: {"error"')
         assert "No allowed, available model matches this request" in response.text
         assert "[DONE]" not in response.text
+
+
+async def test_recovery_deadline_error_has_no_success_terminator(tmp_path):
+    class DyingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise httpx.ReadTimeout("no frames survive")
+            yield b""
+
+    async def upstream(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "current-model"}]})
+        return httpx.Response(
+            200, stream=DyingStream(), headers={"Content-Type": "text/event-stream"}
+        )
+
+    app, engine, client, http = await router(tmp_path, upstream, managed=True)
+    async with app.router.lifespan_context(app), http:
+        response = await http.post(
+            "/v1/chat/completions", json={"model": "auto", "messages": [], "stream": True}
+        )
+        assert response.status_code == 200
+        # The refusal after the recovery window is an error event; it must
+        # never carry the success terminator.
+        assert "All permitted engines were unavailable" in response.text
+        assert "[DONE]" not in response.text
