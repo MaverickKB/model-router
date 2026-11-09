@@ -28,7 +28,7 @@ def tailscale_tags(address: str) -> list:
             out = subprocess.run([TAILSCALE_BIN, "whois", "--json", address],
                                  capture_output=True, timeout=2, check=True).stdout
             tags = list((json.loads(out).get("Node") or {}).get("Tags") or [])
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError):
             tags = []
     _CACHE[address] = (time.monotonic(), tags)
     return tags

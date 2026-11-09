@@ -8,7 +8,15 @@ from pydantic import ValidationError
 
 from gateway.adapters import jevos_native as wire
 from gateway.app import create_app
-from gateway.schema import Client, Configuration, Engine, NativeOwnerSettings, Route, Security, Selector
+from gateway.schema import (
+    Client,
+    Configuration,
+    Engine,
+    NativeOwnerSettings,
+    Route,
+    Security,
+    Selector,
+)
 from gateway.systemone_native import producer_headers
 
 FP, BIN = "a" * 64, "b" * 64
@@ -21,10 +29,10 @@ ANSWER = {"model": "fixture-native", "answers": {"address": {"type": "noul", "no
 
 
 def engine_args(base_url="http://127.0.0.1:18001"):
-    return dict(name="fixture native", base_url=base_url, protocol="jevos_native",
-                max_inflight=1, timeout_seconds=1, max_response_bytes=4096,
-                native_owner=NativeOwnerSettings(expected_fingerprint=FP, expected_binary_sha256=BIN,
-                                                 owner_unit="fixture-native.service"))
+    return {"name": "fixture native", "base_url": base_url, "protocol": "jevos_native",
+            "max_inflight": 1, "timeout_seconds": 1, "max_response_bytes": 4096,
+            "native_owner": NativeOwnerSettings(expected_fingerprint=FP, expected_binary_sha256=BIN,
+                                                owner_unit="fixture-native.service")}
 
 
 def configured(tmp_path, handler=None, base_url="http://127.0.0.1:18001", probe=None, exit_probe=None):
@@ -178,7 +186,7 @@ async def test_existing_auto_and_v1_are_unchanged_beside_native(tmp_path):
             return httpx.Response(200, json={"status": "ready", "model": "fixture-v1"}) if request.url.host == "v1.test" else httpx.Response(200, json={"data": [{"id": "fixture-auto"}]})
         posts.append((request.url.host, request.url.path, json.loads(request.content)))
         return httpx.Response(200, json={"fixture": request.url.host})
-    app, native = configured(tmp_path, transport)
+    app, _native = configured(tmp_path, transport)
     config = app.state.store.config()
     v1 = Engine(name="unchanged V1", base_url="http://v1.test", protocol="systemone", catalog_protocol="systemone")
     auto = Engine(name="unchanged local auto", base_url="http://auto.test/v1")

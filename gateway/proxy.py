@@ -11,8 +11,8 @@ import httpx
 from anyio import CancelScope
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from starlette.responses import Response
 from starlette.background import BackgroundTask
+from starlette.responses import Response
 
 from .accounts.limits import AccountLimits, Refusal, UsageMeter
 from .accounts.principal import level_for
@@ -22,7 +22,6 @@ from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
 from .stream_protocol import CompletionMarker, StreamProgress
-
 
 # One recovery loop can reject admission thousands of times; keep recent
 # evidence only, and count every rejection separately.
@@ -594,7 +593,7 @@ class Proxy:
                             await connection.release()
                             continue
 
-                        async def abandon_stream():
+                        async def abandon_stream(connection=connection):
                             if not connection.released:
                                 try:
                                     await finish("cancelled")

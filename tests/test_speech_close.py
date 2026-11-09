@@ -7,10 +7,11 @@ import struct
 import time
 
 import pytest
+from test_speech import Provider, Socket, connected, make_router
 from websockets.asyncio.client import connect as RealConnect
+
 from gateway import speech
 from gateway.adapters.xai_tts import connect_provider
-from test_speech import Provider,Socket,connected,make_router
 
 
 def frame(body, opcode=1):

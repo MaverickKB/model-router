@@ -400,6 +400,7 @@ def test_a_stored_model_override_round_trips_without_the_retired_flag():
     payload failed validation on save. This pins the shape the editor sends.
     """
     import pydantic
+
     from gateway.schema import ModelSettings
 
     saved = ModelSettings(capabilities=["text", "streaming"], context_length=4096)

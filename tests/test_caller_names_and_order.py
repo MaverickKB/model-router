@@ -1,9 +1,6 @@
 """A caller list has to answer three questions without the caller's help.
 
-Ken, 2026-10-26, reading the live Routes page: "last seen 4 days ago. right at
-the top and no clue who that is."
-
-Three separate faults were measured on the running router that day:
+Regression coverage for three caller-list faults:
 
  1. rows were sorted by ``(name, source_address, id)`` and every unkeyed row's
     name was the same placeholder, so the sort collapsed to address order and
@@ -233,10 +230,7 @@ async def test_the_served_state_puts_the_recent_row_first(tmp_path):
 
 # 4. the two values that govern this view are settings, not literals.
 #
-# Ken, 2026-10-26: "there are settings that are governing this view and i have
-# no controls for them in the Settings UI either." He was right: how long a
-# departed source stayed on the page, and the hard ceiling on stored rows, were
-# both literals in store.py. Nobody could see them, let alone change them.
+# Retention duration and the stored-row ceiling must remain configurable.
 #
 # These tests fail if either value goes back to being hardcoded, because they
 # set a non-default and require the read path and the prune to honour it.
@@ -310,12 +304,12 @@ def test_row_limit_is_a_setting_and_caps_the_listed_rows(tmp_path):
     for index in range(12):
         insert_caller(
             store,
-            "row-%02d" % index,
+            f"row-{index:02d}",
             {
                 "seen": now - index,
                 "last_seen": now - index,
-                "source_address": "192.0.2.%d" % (100 + index),
-                "source_key": "addr:192.0.2.%d" % (100 + index),
+                "source_address": f"192.0.2.{100 + index}",
+                "source_key": f"addr:192.0.2.{100 + index}",
             },
         )
     assert len(store.callers()) == 12

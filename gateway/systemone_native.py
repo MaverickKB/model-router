@@ -4,21 +4,27 @@ import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
 import sqlite3
 import stat
 import subprocess
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from anyio import CancelScope
 from fastapi import HTTPException
 from fastapi.responses import Response
-from anyio import CancelScope
 
 from .adapters.jevos_native import (
-    CONTRACT, MAX_BODY, MAX_REPLY, NativeFault, PROTOCOL,
-    read_health, request_body, response_body, server_timing,
+    CONTRACT,
+    MAX_REPLY,
+    PROTOCOL,
+    NativeFault,
+    read_health,
+    request_body,
+    response_body,
+    server_timing,
 )
 from .proxy import InflightRequest
 from .routing import decide
@@ -380,7 +386,7 @@ class NativeOwner:
                         await asyncio.wait_for(response.aclose(), .5)
                     except asyncio.CancelledError:
                         interrupted = True
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 - private close errors cannot change ownership.
                         pass  # Socket close proves nothing about scheduler ownership.
             event = {"id": job, "ts": time.time(), "engine_id": engine.id,
                      "model": body["model"], "protocol": PROTOCOL, "native_job_state": phase,
@@ -392,7 +398,7 @@ class NativeOwner:
                 await durable(self.store.event, event)
             except asyncio.CancelledError:
                 interrupted = True
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - history failure must preserve the reservation.
                 pass  # Singleton owns correctness; history is bounded secondary metadata.
             if interrupted:
                 raise asyncio.CancelledError
@@ -413,6 +419,7 @@ class NativeOwner:
 
 if __name__ == "__main__":
     import argparse
+
     from .store import Store
     parser = argparse.ArgumentParser(description="Reconcile a private native reservation after verified owner exit")
     parser.add_argument("--state", required=True)

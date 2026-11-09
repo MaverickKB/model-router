@@ -465,7 +465,15 @@ async def test_plain_catalog_respects_saved_capabilities_for_agent_requests(tmp_
         base_url="http://provider.test/v1",
         capabilities=["text", "streaming", "vision"],
     )
-    app.state.store.save(Configuration(engines=[engine], routes=[Route(name="work")]))
+    caller = Client(name="Agent fixture", route_names=["work"])
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[Route(name="work")],
+            clients=[caller],
+            security=Security(anonymous_client_id=caller.id),
+        )
+    )
     await app.state.discovery.refresh()
     payload = {
         "model": "work",

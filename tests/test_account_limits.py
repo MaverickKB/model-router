@@ -725,6 +725,9 @@ async def test_client_and_unkeyed_principals_are_never_limited_or_metered(
 ):
     harness = Client(name="Harness", route_names=["free", "private"])
     setup = await build(tmp_path, clients=[harness])
+    config = setup.store.config()
+    config.security.anonymous_client_id = harness.id
+    setup.store.save(config)
     client_key = setup.store.issue_key(harness.id)
     admissions = []
     original = setup.limits.admit

@@ -65,7 +65,7 @@ export function SavedAccess({
         <div>
           <dt>Caller keys</dt>
           <dd>
-            {`Each route chooses whether a key is required. All connections are observed. ${shared ? `Unkeyed callers without a source override use “${shared.name}” where the selected route permits them.` : "Without a selected default policy, unkeyed callers still appear in the inventory and can use only routes that permit them."} Supplied keys select their named policy and may be reused across callers.`}
+            {`Each route chooses whether a key is required. All connections are observed. ${shared ? `Unkeyed callers without a source override use “${shared.name}” where the selected route permits them.` : "Without a matching source or default policy, unkeyed callers still appear in the inventory but have no route access."} Supplied keys select their named policy and may be reused across callers.`}
           </dd>
         </div>
         <div>

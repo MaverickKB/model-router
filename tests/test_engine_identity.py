@@ -321,6 +321,8 @@ async def test_network_discovery_keeps_ip_transport_and_records_reported_hostnam
     tmp_path, monkeypatch
 ):
     def upstream(request):
+        if request.method == "GET" and str(request.url) == "http://192.0.2.10:51234/health":
+            return httpx.Response(404)
         assert str(request.url) == "http://192.0.2.10:51234/v1/models"
         return httpx.Response(
             200,

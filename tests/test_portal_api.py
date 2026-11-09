@@ -45,6 +45,8 @@ class Fleet:
         self.calls = 0
 
     async def handle(self, request):
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "local-model"}]})
         self.calls += 1

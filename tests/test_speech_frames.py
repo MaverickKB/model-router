@@ -4,11 +4,11 @@ import base64
 import json
 import time
 from uuid import uuid4
+
 import pytest
+from test_speech import WORDS, Provider, Socket, audio, connected, make_router
+
 from gateway import speech
-from gateway.adapters import xai_tts
-from cairn_sentinel.presence_rex import RexRenderer
-from test_speech import Provider, Socket, WORDS, audio, connected, make_router
 
 
 def provider_frame(pcm):
@@ -134,7 +134,43 @@ async def test_actual_asgi_cancel_during_rechunk_releases_and_discards(tmp_path)
     await app.state.proxy.http.aclose()
 
 
+async def test_actual_asgi_preserves_odd_provider_pcm_fragments(tmp_path):
+    pcm = b"".join((i % 65536).to_bytes(2, "little") for i in range(75576))
+    provider = Provider([provider_frame(pcm[:98305]), provider_frame(pcm[98305:]),
+                         {"type": "audio.done"}])
+    app, engine, _, key, provider, _ = await make_router(tmp_path, provider)
+    ws, _ = await connected(app, key)
+    await ws.send({"type": "text.delta", "delta": WORDS})
+    await ws.send({"type": "text.done"})
+    chunks = []
+    for _ in range(32):
+        frame = await ws.next()
+        assert len(json.dumps(frame).encode()) <= 65536
+        if frame["type"] == "audio.done":
+            assert frame["heard"] is False
+            break
+        assert frame["type"] == "audio.delta"
+        part = base64.b64decode(frame["delta"], validate=True)
+        assert 0 < len(part) <= 12288 and len(part) % 2 == 0
+        chunks.append(part)
+    else:
+        pytest.fail("Bounded delivery did not terminate")
+    assert b"".join(chunks) == pcm
+    await ws.close()
+    assert provider.closed == len(provider.calls) == 1
+    assert app.state.discovery.observation(engine.id).inflight == 0
+    await app.state.proxy.http.aclose()
+
+
 async def test_actual_rex_consumer_receives_identical_odd_provider_pcm(tmp_path):
+    # This consumer lives outside model-router and is not a runtime dependency.
+    # Keep its integration optional without skipping core router regressions.
+    try:
+        from cairn_sentinel.presence_rex import RexRenderer
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"cairn_sentinel", "cairn_sentinel.presence_rex"}:
+            raise
+        pytest.skip("Optional external cairn_sentinel Rex consumer is not installed")
     pcm = b"".join((i % 65536).to_bytes(2, "little") for i in range(75576))
     provider = Provider([provider_frame(pcm[:98305]), provider_frame(pcm[98305:]),
                          {"type": "audio.done"}])

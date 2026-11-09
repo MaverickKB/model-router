@@ -29,6 +29,8 @@ class Upstream:
         self.completions = 0
 
     async def handle(self, request):
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "local-model"}]})
         self.completions += 1
@@ -107,7 +109,7 @@ async def registered_device_grants_nothing(ctx: Disabled):
             "/v1/chat/completions",
             json={"model": "private", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert ctx.upstream.completions == 0
     caller = next(
         c for c in ctx.store.callers() if c["source_address"] == ctx.device["address"]
@@ -135,7 +137,7 @@ async def limits_are_never_consulted(ctx: Disabled):
                         "messages": [{"role": "user", "content": "hi"}],
                     },
                 )
-            assert response.status_code == 401
+            assert response.status_code == (401 if headers else 403)
     finally:
         limits.admit = original
     assert admissions == []
@@ -273,7 +275,7 @@ async def test_device_switch_alone_makes_devices_inert(tmp_path):
 
     async with ctx.http(ctx.device["address"]) as unkeyed:
         refused = await unkeyed.post("/v1/chat/completions", json=completion)
-    assert refused.status_code == 401 and ctx.upstream.completions == 0
+    assert refused.status_code == 403 and ctx.upstream.completions == 0
     caller = next(
         c for c in ctx.store.callers() if c["source_address"] == ctx.device["address"]
     )

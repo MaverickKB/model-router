@@ -5,7 +5,7 @@ import pytest
 
 from gateway.app import create_app
 from gateway.origin_policy import PRIVATE_HEADER, Origin, OriginPolicy
-from gateway.schema import Configuration, Engine
+from gateway.schema import Client, Configuration, Engine
 
 PRIVATE_IP = "192.0.2.66"   # TEST-NET-1, documentation range
 OTHER_IP = "192.0.2.10"
@@ -36,7 +36,17 @@ def make_app(tmp_path, seen):
 
     app = create_app(str(tmp_path / "state"), background=False,
                      transport=httpx.MockTransport(upstream))
-    app.state.store.save(Configuration(engines=[Engine(name="API", base_url="http://provider.test/v1")]))
+    caller = Client(
+        name="Origin-policy fixture",
+        route_names=["auto"],
+        allow_direct_models=True,
+        allow_network_auth=True,
+        source_networks=[f"{PRIVATE_IP}/32", f"{OTHER_IP}/32"],
+    )
+    app.state.store.save(Configuration(
+        engines=[Engine(name="API", base_url="http://provider.test/v1")],
+        clients=[caller],
+    ))
     return app
 
 
@@ -114,7 +124,7 @@ async def test_other_origin_may_pick_model(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("how", ["origin_flag", "global_flag", "config"])
 async def test_maintenance_gate_returns_503_and_never_forwards(tmp_path, monkeypatch, how):
-    policy, flag = write_policy(tmp_path, monkeypatch, maintenance=(how == "config"))
+    _policy, flag = write_policy(tmp_path, monkeypatch, maintenance=(how == "config"))
     if how == "origin_flag":
         flag.write_text("")
     if how == "global_flag":
@@ -224,7 +234,8 @@ def test_tag_resolver_off_by_default(tmp_path, monkeypatch):
 
 
 def test_pluggable_resolver_by_module_path(tmp_path, monkeypatch):
-    import sys, types
+    import sys
+    import types
     mod = types.ModuleType("fake_resolver_mod")
     mod.resolve = lambda a: ["tag:x"] if a == TAGGED_IP else []
     monkeypatch.setitem(sys.modules, "fake_resolver_mod", mod)
@@ -261,7 +272,9 @@ def test_origin_name_header_optional(tmp_path, monkeypatch):
     assert pol.upstream_headers(pol.classify(PRIVATE_IP)) == {PRIVATE_HEADER: "1"}
     p.write_text(json.dumps({"origins": [o], "origin_name_header": True,
                              "private_header": "X-Private"}))
-    import os; os.utime(p, (1, 1))
+    import os
+
+    os.utime(p, (1, 1))
     pol.reload()
     assert pol.upstream_headers(pol.classify(PRIVATE_IP)) == {"X-Private": "1", "X-Router-Origin": "n"}
 

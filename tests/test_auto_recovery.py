@@ -455,7 +455,7 @@ async def test_recovery_deadline_error_has_no_success_terminator(tmp_path):
             200, stream=DyingStream(), headers={"Content-Type": "text/event-stream"}
         )
 
-    app, engine, client, http = await router(tmp_path, upstream, managed=True)
+    app, _engine, _client, http = await router(tmp_path, upstream, managed=True)
     async with app.router.lifespan_context(app), http:
         response = await http.post(
             "/v1/chat/completions", json={"model": "auto", "messages": [], "stream": True}

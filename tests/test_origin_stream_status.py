@@ -50,12 +50,11 @@ def make_app(tmp_path, seen):
 
 async def post_from(app, ip, payload):
     await app.state.discovery.refresh()
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app, client=(ip, 1)),
-            base_url="http://router.test",
-        ) as http:
-            return await http.post("/v1/chat/completions", json=payload)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(ip, 1)),
+        base_url="http://router.test",
+    ) as http:
+        return await http.post("/v1/chat/completions", json=payload)
 
 
 @pytest.mark.asyncio

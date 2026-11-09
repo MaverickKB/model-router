@@ -938,13 +938,12 @@ async def test_unavailable_speech_route_is_advertised_as_speech_not_chat(tmp_pat
             route.recovery_seconds = 30
             route.primary = Selector(kind="local", hosts=["local.test"])
     app.state.store.save(config)
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
-            base_url="http://router.test",
-            headers={"Authorization": f"Bearer {key}"},
-        ) as http:
-            answer = await http.get("/v1/models")
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+        base_url="http://router.test",
+        headers={"Authorization": f"Bearer {key}"},
+    ) as http:
+        answer = await http.get("/v1/models")
     rows = {row["id"]: row for row in answer.json()["data"]}
     assert answer.status_code == 200
     assert rows["cairn_voice"]["serving"] == "speech"

@@ -20,6 +20,7 @@ from .accounts.api import admin_router, portal_router
 from .accounts.devices import warnings as device_warnings
 from .accounts.portal import PortalIdentity
 from .accounts.principal import derive_principal, level_for
+from .adapters.jevos_native import MAX_BODY as NATIVE_BODY_LIMIT
 from .discovery import DiscoveryService
 from .engine_identity import MergeEngines
 from .engine_suggestions import suggestions
@@ -29,13 +30,12 @@ from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
 from .origin_policy import OriginPolicy
 from .proxy import Proxy, require_origin_route
-from .systemone_native import NativeOwner
-from .adapters.jevos_native import MAX_BODY as NATIVE_BODY_LIMIT
 from .routing import client_reason, decide, matches, route_requires_caller_key
 from .schema import Configuration, Engine
 from .security.body_limit import BodyLimit
 from .speech import register_speech, speech_decision
 from .store import Conflict, Store
+from .systemone_native import NativeOwner
 from .topology import route_map
 from .updates import Updates
 
@@ -533,11 +533,10 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 and client.enabled and matches(route.name, client.route_names)
                 and decision.get("status") not in {401, 403}
             )
-            if recovering_alias and not decision["candidates"]:
+            if recovering_alias and not decision["candidates"] and not speech_route:
                 # A speech route has no chat fallback; keep declaring speech and
                 # report it unavailable rather than advertising a chat row.
-                if not speech_route:
-                    serving = "chat"
+                serving = "chat"
             if decision["candidates"] or recovering_alias:
                 row = {
                     "id": route.name,

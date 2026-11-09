@@ -60,7 +60,7 @@ def tailnet_names(runner=run) -> dict[str, str]:
     """IPv4 address -> node name for every peer on this tailnet, in one call.
 
     The node's DNS name is preferred because it is a hostname by construction and
-    survives validation; a display name like "Kenneth's MacBook Pro" is not one.
+    survives validation; a display name like "Example Laptop" is not one.
     """
     output = runner([TAILSCALE_BIN, "status", "--json"])
     if not output:
@@ -95,7 +95,7 @@ def dns_name(address: str, runner=run) -> str:
     """Address -> hostname via reverse DNS (NSS). '' when nothing authoritative answers."""
     try:
         output = runner([GETENT_BIN, "hosts", address]).decode("utf-8", "replace")
-    except Exception:
+    except Exception:  # noqa: BLE001 - injected lookup runners are best-effort metadata.
         return ""
     for line in output.splitlines():
         parts = line.split()

@@ -89,12 +89,11 @@ async def test_native_route_outside_origin_allowlist_is_forbidden(tmp_path, monk
     calls = []
     app = make_app(tmp_path, calls)
     await app.state.discovery.refresh()
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app, client=(NATIVE_IP, 1)),
-            base_url="http://router.test",
-        ) as http:
-            response = await http.post("/v1/systemone", json=NATIVE_PAYLOAD)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(NATIVE_IP, 1)),
+        base_url="http://router.test",
+    ) as http:
+        response = await http.post("/v1/systemone", json=NATIVE_PAYLOAD)
     assert response.status_code == 403
     assert response.json()["detail"] == "This origin may only use these routes: 'auto'"
     assert "/v1/systemone" not in calls
@@ -106,12 +105,11 @@ async def test_native_route_inside_origin_allowlist_reaches_native_checks(tmp_pa
     calls = []
     app = make_app(tmp_path, calls)
     await app.state.discovery.refresh()
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app, client=(NATIVE_IP, 1)),
-            base_url="http://router.test",
-        ) as http:
-            response = await http.post("/v1/systemone", json=NATIVE_PAYLOAD)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(NATIVE_IP, 1)),
+        base_url="http://router.test",
+    ) as http:
+        response = await http.post("/v1/systemone", json=NATIVE_PAYLOAD)
     assert response.status_code == 403
     assert response.json()["detail"] == "Native decision ingress is local only"
     assert "/v1/systemone" not in calls

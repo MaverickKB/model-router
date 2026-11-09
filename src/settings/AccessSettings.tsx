@@ -96,7 +96,7 @@ export function AccessSettings({
         )}
         <Field
           label="Default unkeyed policy (optional)"
-          hint="This policy is used when a caller has no key and no source-specific override. Route settings still decide whether each route accepts an unkeyed request."
+          hint="This policy is used when a caller has no key and no source-specific override. Without a matching source or default policy, unkeyed callers have no route access. The selected policy and route key requirement must both permit a request."
         >
           <Select
             value={draft.anonymous_client_id || ""}

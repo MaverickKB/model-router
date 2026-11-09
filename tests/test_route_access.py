@@ -180,7 +180,7 @@ async def test_one_key_policy_can_use_multiple_routes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invalid_key_uses_open_route_without_becoming_a_policy(tmp_path):
+async def test_invalid_key_has_no_routes_without_a_selected_policy(tmp_path):
     app = create_app(str(tmp_path), background=False)
     app.state.store.save(
         Configuration(
@@ -198,6 +198,7 @@ async def test_invalid_key_uses_open_route_without_becoming_a_policy(tmp_path):
     ):
         response = await client.get("/v1/models")
     assert response.status_code == 200
+    assert response.json()["data"] == []
     caller = Store(str(tmp_path)).callers()[0]
     assert caller["policy_id"] is None
     assert caller["identity_basis"] == "unassigned"

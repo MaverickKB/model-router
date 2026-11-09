@@ -15,7 +15,7 @@ def network_view(
     category="All addresses",
     resolved_names=None,
 ) -> dict:
-    resolved_names = resolved_names or (lambda: {})
+    resolved_names = resolved_names or (dict)
     report = read_report(root)
     by_url = {
         url: engine

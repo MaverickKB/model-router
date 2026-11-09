@@ -165,7 +165,9 @@ async def test_unkeyed_route_catalog_is_observable_without_a_source_policy(tmp_p
             base_url="http://localhost",
         ) as client,
     ):
-        assert (await client.get("/v1/models")).status_code == 200
+        response = await client.get("/v1/models")
+        assert response.status_code == 200
+        assert response.json()["data"] == []
 
 
 @pytest.mark.asyncio

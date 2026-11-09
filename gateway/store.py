@@ -19,10 +19,10 @@ from .caller_sources import source_identity as caller_source_identity
 from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
 from .network.caller_evidence import DiscoveryCallerEvidence
-from .source_names import SourceNames
 from .network.report import write_json
 from .schema import Configuration
 from .security.credentials import CredentialCipher, digest, verify
+from .source_names import SourceNames
 
 ACTIVATION_SECONDS = 72 * 3600
 MAX_ACCOUNT_KEYS = 20

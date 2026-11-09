@@ -143,7 +143,7 @@ describe("Saved settings and inherited choices", () => {
     await user.click(screen.getByRole("button", { name: "Save discovery" }));
     await within(discovery).findByText(/Automatic registration is on/);
     expect(discovery).toHaveTextContent("Automatic sweeps off");
-    expect(discovery).toHaveTextContent("No sweep ports receive HTTP requests");
+    expect(discovery).toHaveTextContent("Only approved ports (11434, 8888, 8000) receive HTTP");
     expect(saved.mock.calls[1][0].security.client_auth_enabled).toBe(true);
   });
 });

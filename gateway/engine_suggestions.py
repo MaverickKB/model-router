@@ -1,19 +1,5 @@
 """Reviewable duplicate-engine evidence. The address is identity, the name is a claim.
 
-Ken's rule, stated 2026-10-19:
-
-    "Names are unique and IP's are unique. they don't overlap."
-    "if the IPs are LAN and Tailscale - then they should be linked by Alias… but if
-     the IPs are same subnet, IP wins over Alias and we have a name error"
-    "when an alias is used, like 'Spark' but we have 2 of them with unique IPs on the
-     same subnet, that's a conflict. 'Spark1' and 'Spark2' does not conflict in Alias.
-     So, Alias can't win there. But, when Spark1 + LAN IP and Spark1 + Tailscale IP
-     are the same, that's not a name conflict in alias, that's a merge."
-    "a Spark1 + Wired LAN and a Spark1 + WiFi are also a merge, not a name conflict.
-     Hostname wins."
-    "be sure to give a manual override for that, such as a case when 1 machine might
-     have multiple IP addresses."
-
 The failure this replaces: the previous version built its key as (API path, port) and
 threw the host away. One machine written ``…:8888/v1`` and ``…:8888`` never matched,
 so a network scan appended a second record for the same box, and the detector
@@ -338,8 +324,8 @@ def suggestions(
                         right,
                         [
                             f"both addresses sit in the same subnet: {lo[0]}, {ro[0]}",
-                            f"the hostnames differ ({lh or 'none'} vs {rh or 'none'}), "
-                            "so the alias cannot win",
+                            (f"the hostnames differ ({lh or 'none'} vs {rh or 'none'}), "
+                             "so the alias cannot win"),
                         ]
                         + claims
                         + catalog_note,

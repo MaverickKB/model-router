@@ -3,9 +3,9 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from .jevos_native import read_catalog as read_jevos_native
 from .ollama import read_catalog as read_ollama
 from .openai import read_catalog as read_openai
-from .jevos_native import read_catalog as read_jevos_native
 from .systemone import read_catalog as read_systemone
 from .xai_tts import read_catalog as read_xai_tts
 

@@ -48,6 +48,8 @@ async def test_concurrent_admission_reserves_once_and_releases(tmp_path):
     requests = []
 
     async def handler(request):
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}]})
         requests.append(request.url.host)
@@ -80,6 +82,8 @@ async def test_wrong_endpoint_404_does_not_invent_model_removal_or_replay(tmp_pa
     calls = []
 
     async def handler(request):
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "still-advertised"}]})
         calls.append(request.url.host)
@@ -102,6 +106,8 @@ async def test_upstream_response_limit_and_configured_cooldown(tmp_path):
     mode = {"value": "oversize"}
 
     async def handler(request):
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}]})
         if request.url.host == "backup.test":

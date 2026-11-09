@@ -46,7 +46,7 @@ class Origin:
               "strip_keys", "maintenance", "maintenance_flag", "maintenance_message")
 
     @classmethod
-    def parse(cls, raw: dict) -> "Origin":
+    def parse(cls, raw: dict) -> Origin:
         o = cls(name=str(raw["name"]),
                 networks=[ipaddress.ip_network(n, strict=False)
                           for n in raw.get("source_networks", [])],
@@ -145,7 +145,7 @@ class OriginPolicy:
                     spec = "tailscale"
                 self.resolver = self._injected or load_resolver(spec, raw.get("static_tags"))
                 self.error = None
-            except Exception as exc:  # keep last good policy
+            except Exception as exc:  # noqa: BLE001 - optional resolver plugins may raise arbitrary errors.
                 self.error = f"{type(exc).__name__}: {exc}"
             self._mtime = mtime
             self._cache = {}
@@ -155,7 +155,7 @@ class OriginPolicy:
         if address not in cache:
             try:
                 cache[address] = set(self.resolver(address) or [])
-            except Exception:
+            except Exception:  # noqa: BLE001 - an optional resolver failure supplies no tags.
                 cache[address] = set()
             self._cache = cache
         return cache[address]

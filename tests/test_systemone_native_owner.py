@@ -1,18 +1,18 @@
 """Causal ownership against finite actual HTTP/SQLite; all inputs are inert fixtures."""
 import asyncio
-from contextlib import asynccontextmanager
 import json
 import os
 import sys
 import threading
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 from fastapi import HTTPException
-
-from gateway.systemone_native import NativeFault, exited, starttoken
-import gateway.systemone_native as owner_source
 from test_systemone_native import ANSWER, HEALTH, PAYLOAD, TIMING, configured, handler
+
+import gateway.systemone_native as owner_source
+from gateway.systemone_native import NativeFault, exited, starttoken
 
 
 class Backend:
@@ -47,7 +47,7 @@ class Backend:
                           f"Content-Type: application/json\r\nConnection: close\r\n{extra}\r\n").encode() + raw)
             await writer.drain()
             if head.startswith(b"POST "): self.finished.set()
-        except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
             writer.close(); await writer.wait_closed()
@@ -247,19 +247,21 @@ async def test_real_process_and_listener_exit_proof_is_positive_not_healthy(monk
 
 
 async def test_two_actual_router_owners_race_one_sqlite_singleton_no_hidden_queue(tmp_path):
-    async with backend() as fake, serving(tmp_path, fake) as (one, _, client1):
-        async with serving(tmp_path, fake) as (two, _, client2):
-            first = asyncio.create_task(client1.post("/v1/systemone", json=PAYLOAD))
-            second = asyncio.create_task(client2.post("/v1/systemone", json=PAYLOAD))
-            await asyncio.wait_for(fake.submitted.wait(), 1)
-            finished, _ = await asyncio.wait({first, second}, timeout=.5, return_when=asyncio.FIRST_COMPLETED)
-            assert len(finished) == 1 and finished.pop().result().status_code == 503
-            assert fake.posts == 1
-            fake.release.set()
-            assert sorted(r.status_code for r in await asyncio.gather(first, second)) == [200, 503]
-            row = one.state.native_owner._sql("read")
-            assert row == two.state.native_owner._sql("read") and row["phase"] == "completed"
-
+    async with (
+        backend() as fake,
+        serving(tmp_path, fake) as (one, _, client1),
+        serving(tmp_path, fake) as (two, _, client2),
+    ):
+        first = asyncio.create_task(client1.post("/v1/systemone", json=PAYLOAD))
+        second = asyncio.create_task(client2.post("/v1/systemone", json=PAYLOAD))
+        await asyncio.wait_for(fake.submitted.wait(), 1)
+        finished, _ = await asyncio.wait({first, second}, timeout=.5, return_when=asyncio.FIRST_COMPLETED)
+        assert len(finished) == 1 and finished.pop().result().status_code == 503
+        assert fake.posts == 1
+        fake.release.set()
+        assert sorted(r.status_code for r in await asyncio.gather(first, second)) == [200, 503]
+        row = one.state.native_owner._sql("read")
+        assert row == two.state.native_owner._sql("read") and row["phase"] == "completed"
 
 async def test_generation_change_after_response_remains_owned(tmp_path):
     calls = 0
