@@ -15,7 +15,8 @@ from .network.announcements import listen
 from .network.protocols import is_gateway_catalog, unavailable_reason
 from .network.report import read_json, read_report
 from .oauth import OAuthSession
-from .routing import matches
+from .routing import matches, selector_engine_reason
+from .runtime_metadata import serving_limits
 from .schema import Engine
 from .store import Conflict, Store
 
@@ -34,6 +35,49 @@ class Observation:
     circuit_until: float = 0
     last_success: float | None = None
     probe_generation: int = 0
+    background_inflight: int = 0
+    circuit_reason: str = ""
+    max_inflight: int | None = None
+
+
+def _machine(url: str) -> tuple[str, int] | None:
+    """The machine an endpoint names: (address, port). The path is not identity.
+
+    Discovery used to match an existing engine by exact URL string, so a scan that
+    reported http://192.0.2.91:8888/v1 never recognised the operator engine
+    already configured at http://192.0.2.91:8888 and appended a second record
+    for the same box. A hostname that is not an address proves nothing about which
+    machine it is, so it returns None and the caller falls back to exact matching.
+    """
+    if not url:
+        return None
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host or host == "localhost":
+        return None
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        # A malformed port on an IP literal must not end the refresh loop.
+        return None
+    return (host, port or (443 if parts.scheme == "https" else 80))
+
+
+def _existing_engine(config, url: str):
+    """Find the engine that already covers this endpoint, by machine not by string."""
+    key = _machine(url)
+    for engine in config.engines:
+        if key is None:
+            if url in engine.endpoint_urls:
+                return engine
+            continue
+        if any(_machine(endpoint) == key for endpoint in engine.endpoint_urls):
+            return engine
+    return None
 
 
 def _hostname_alias(base_url: str, hostname: str | None) -> str | None:
@@ -72,6 +116,7 @@ class DiscoveryService:
         self.scan_error = ""
         self.mdns_candidates: set[str] = set()
         self.pending: dict[str, dict] = {}
+        self.started_at = time.time()
 
     def observation(self, engine_id: str) -> Observation:
         return self.observations.setdefault(engine_id, Observation(engine_id))
@@ -127,7 +172,7 @@ class DiscoveryService:
                             k
                             for k, value in stated.items()
                             if value is True
-                            and k in {"text", "tools", "vision", "streaming"}
+                            and k in {"text", "tools", "vision", "streaming", "decision"}
                         ]
                     )
                 )
@@ -136,7 +181,7 @@ class DiscoveryService:
             if override:
                 capabilities = override.capabilities
             context = row.get("context_length") or row.get("max_model_len")
-            if override and override.context_length:
+            if override and override.context_length and not self.follows_host(engine):
                 context = override.context_length
             models.append(
                 {
@@ -145,8 +190,10 @@ class DiscoveryService:
                     "context_length": context
                     if type(context) is int and context > 0
                     else None,
-                    "enabled": (override.enabled if override else True)
-                    and matches(model_id, engine.model_patterns)
+                    # Routable iff the host advertises it, the engine's patterns
+                    # allow it, and the host has not declared it unavailable.
+                    # No operator flag participates.
+                    "enabled": matches(model_id, engine.model_patterns)
                     and not unavailable_reason(row),
                     **(
                         {"loaded": row["loaded"]}
@@ -177,16 +224,31 @@ class DiscoveryService:
         try:
             async with self.probe_limit:
                 models = await self.probe(engine)
+                limits = {}
+                if self.follows_host(engine):
+                    limits = await serving_limits(self.http, engine, await self.headers(engine))
             # A removed or edited endpoint cannot be restored by an older probe.
             if not current_probe():
                 return
             obs.models = models
+            for model in models:
+                if model["context_length"] is None:
+                    model["context_length"] = limits.get("context_length")
+            obs.max_inflight = limits.get("max_inflight")
             obs.observed_at = time.time()
             obs.status = "draining" if engine.draining else "available"
             obs.error = ""
+            if obs.circuit_reason == "transport":
+                obs.circuit_until = 0
+                obs.circuit_reason = ""
             obs.latency_ms = round((time.monotonic() - started) * 1000)
         except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError) as exc:
             if not current_probe():
+                return
+            # One failed poll does not invalidate a recent successful catalog.
+            # Its original timestamp still expires under the saved stale policy.
+            if (self.follows_host(engine) and obs.models
+                    and time.time() - obs.observed_at <= self.store.config().discovery.stale_seconds):
                 return
             obs.status = "offline"
             obs.models = []
@@ -240,10 +302,62 @@ class DiscoveryService:
                     "latency_ms": obs.latency_ms,
                     "error": obs.error,
                     "inflight": obs.inflight,
+                    "background_inflight": obs.background_inflight,
                     "last_success": obs.last_success,
+                    "max_inflight": obs.max_inflight or engine.max_inflight,
                 }
             )
         return result
+
+    def recovery_warnings(self) -> list[str]:
+        """One route notice after fifteen minutes without serving evidence."""
+        warnings = []
+        engines = self.views()
+        overdue = set()
+        for event in self.store.events():
+            since = event.get("recovering_since")
+            if (since and time.time() - since >= 900
+                    and event["status"] in {"routing", "recovering", "waiting", "running"}):
+                overdue.add(event["requested"])
+        for route in self.store.config().routes:
+            if not route.enabled or route.recovery_seconds == 0 or not route.primary.hosts:
+                continue
+            latest = self.started_at
+            available = False
+            for engine in engines:
+                if not engine["enabled"] or selector_engine_reason(route.primary, engine):
+                    continue
+                latest = max(latest, engine["observed_at"])
+                if engine["status"] == "available" and engine["models"]:
+                    available = True
+                    break
+            if route.name in overdue or (not available and time.time() - latest >= 900):
+                warnings.append(f"Route {route.name!r} has been waiting for recovery for 15 minutes; connected requests remain queued")
+        return warnings
+
+    def follows_host(self, engine: Engine) -> bool:
+        view = engine.model_dump()
+        for route in self.store.config().routes:
+            if not route.enabled:
+                continue
+            for selector in (route.primary, route.fallback):
+                if selector and selector.hosts and not selector_engine_reason(selector, view):
+                    return True
+        return False
+
+    async def refresh_route(self, name: str):
+        await self.consume_network()
+        config = self.store.config()
+        route = next((route for route in config.routes if route.name == name), None)
+        if route is None:
+            return
+        tasks = []
+        for engine in config.engines:
+            for selector in (route.primary, route.fallback):
+                if selector and not selector_engine_reason(selector, engine.model_dump()):
+                    tasks.append(self.refresh_engine(engine))
+                    break
+        await asyncio.gather(*tasks)
 
     def pending_views(self) -> list[dict]:
         config = self.store.config()
@@ -262,6 +376,12 @@ class DiscoveryService:
     async def trusted_host(self, hostname: str) -> bool:
         policy = self.store.config().discovery
         targets = policy.targets
+        for route in self.store.config().routes:
+            if not route.enabled:
+                continue
+            for selector in (route.primary, route.fallback):
+                if selector and hostname.lower().rstrip(".") in selector.hosts:
+                    return True
         try:
             if policy.include_loopback and ipaddress.ip_address(hostname).is_loopback:
                 return True
@@ -328,9 +448,7 @@ class DiscoveryService:
         if candidate.base_url in config.discovery.ignored_urls:
             self.pending.pop(candidate.base_url, None)
             return None
-        existing = next(
-            (e for e in config.engines if candidate.base_url in e.endpoint_urls), None
-        )
+        existing = _existing_engine(config, candidate.base_url)
         if existing:
             self.pending.pop(candidate.base_url, None)
             changed = False
@@ -358,7 +476,8 @@ class DiscoveryService:
         config = self.store.config()
         if candidate.base_url in config.discovery.ignored_urls:
             return None
-        if not config.discovery.auto_register:
+        follows_host = self.follows_host(candidate)
+        if not config.discovery.auto_register and not follows_host:
             self.pending[candidate.base_url] = {
                 "name": candidate.name,
                 "base_url": candidate.base_url,
@@ -368,9 +487,7 @@ class DiscoveryService:
                 "seen_at": time.time(),
             }
             return None
-        existing = next(
-            (e for e in config.engines if candidate.base_url in e.endpoint_urls), None
-        )
+        existing = _existing_engine(config, candidate.base_url)
         if existing:
             changed = False
             if alias and alias not in existing.endpoint_urls:
@@ -398,6 +515,7 @@ class DiscoveryService:
         obs = self.observation(candidate.id)
         obs.models, obs.status = models, "available"
         obs.checked_at = obs.observed_at = time.time()
+        await self.refresh_engine(candidate)
         return candidate.id
 
     async def consume_network(self):
@@ -408,7 +526,9 @@ class DiscoveryService:
             )
             if not manual.get("id") or manual["id"] != report.get("job_id"):
                 return
-        for host in report.get("hosts", []):
+        automatic = await asyncio.to_thread(read_report, self.store.discovery_directory / "automatic")
+        hosts = [*report.get("hosts", []), *automatic.get("hosts", [])]
+        for host in hosts:
             for service in host.get("services", []):
                 if (
                     service.get("status") == "model_service"
@@ -455,7 +575,11 @@ class DiscoveryService:
                     mdns_task.cancel()
                     await asyncio.gather(mdns_task, return_exceptions=True)
                     self.mdns_candidates.clear()
-                await self.refresh()
+                try:
+                    await self.refresh()
+                except (OSError, ValueError, RuntimeError, TypeError) as error:
+                    # One malformed discovery report must not stop every later poll.
+                    self.scan_error = str(error)
                 if (
                     config.discovery.enabled
                     and time.time() - self.last_scan

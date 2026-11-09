@@ -1,3 +1,5 @@
+import { sourceAgentLabel } from "../source-display";
+import { sourceEvidenceLabel } from "../caller-identity";
 import {
   Cloud,
   Cpu,
@@ -9,7 +11,8 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Dialog } from "../components";
-import { sourceTimeLabel } from "../source-time";
+import { sourceTimeLabel, sourceAgeLabel } from "../source-time";
+import { isRequestActive } from "../request-status";
 import {
   callerClientLabel,
   callerDisplayName,
@@ -95,11 +98,11 @@ export function RoutesMap({
   const active = [
     ...new Map(
       jobs
-        .filter((job) => ["running", "routing", "waiting"].includes(job.status))
+        .filter((job) => isRequestActive(job.status))
         .map((job) => [job.id, job]),
     ).values(),
   ];
-  const sources = groupCallerSources(callers);
+  const sources = groupCallerSources(callers, config.clients);
   const sourceId = (source: { key: string }) => `source:${source.key}`;
   const selectedSource =
     selected?.kind === "source"
@@ -121,10 +124,10 @@ export function RoutesMap({
           (group) => accountId(group.account_id) === selected.id,
         )
       : undefined;
-  const y = (index: number) => 50 + index * 104 + 42;
+  const y = (index: number) => 50 + index * 128 + 54;
   const height =
     50 +
-    Math.max(sources.length, config.routes.length, engines.length, 1) * 104;
+    Math.max(sources.length, config.routes.length, engines.length, 1) * 128;
   const pick = (next: Selection) => {
     setError("");
     if (selectedPolicy && next.kind === "route") {
@@ -251,10 +254,11 @@ export function RoutesMap({
   const node = (
     value: Selection,
     name: string,
-    detail: string,
+    detail: React.ReactNode,
     icon: React.ReactNode,
     edit?: () => void,
     disabled = false,
+    tooltip?: string,
   ) => (
     <div
       key={value.id}
@@ -265,7 +269,9 @@ export function RoutesMap({
         onClick={() => pick(value)}
         aria-pressed={selected?.id === value.id && selected.kind === value.kind}
         aria-label={`Select ${value.kind === "policy" ? "permission policy" : value.kind} ${name}`}
-        title={`${name} · ${detail}`}
+        title={
+          tooltip || (typeof detail === "string" ? `${name} · ${detail}` : name)
+        }
       >
         {icon}
         <span>
@@ -373,9 +379,30 @@ export function RoutesMap({
             {sources.map((source) =>
               node(
                 { kind: "source", id: sourceId(source) },
-                source.displayName || "Source address unavailable",
-                `Last seen ${sourceTimeLabel(source.lastSeen)}`,
+                [
+                  source.displayName || "Source address unavailable",
+                  sourceAgentLabel(source.callers),
+                ]
+                  .filter(
+                    (name, index, names) =>
+                      Boolean(name) && names.indexOf(name) === index,
+                  )
+                  .join(" · "),
+                <>
+                  <b title={sourceTimeLabel(source.lastSeen)}>
+                    Last seen {sourceAgeLabel(source.lastSeen)}
+                  </b>
+                  <br />
+                  {source.addresses.join(", ")}
+                  {source.displayName === source.address &&
+                    " · Unrecognized source"}
+                  <br />
+                  {sourceEvidenceLabel(source.callers)}
+                </>,
                 <Monitor size={18} />,
+                undefined,
+                false,
+                `${source.addresses.join(", ")} · ${sourceEvidenceLabel(source.callers)} · Last seen ${sourceTimeLabel(source.lastSeen)}`,
               ),
             )}
             {!sources.length && (
@@ -435,7 +462,7 @@ export function RoutesMap({
           {active.map((job) => (
             <button key={job.id} onClick={() => inspectJob(job)}>
               {job.caller
-                ? callerDisplayName(job.caller)
+                ? callerDisplayName(job.caller, config.clients)
                 : "Source not recorded"}{" "}
               → {job.decision.route || job.requested} →{" "}
               {job.engine || "Selecting"}

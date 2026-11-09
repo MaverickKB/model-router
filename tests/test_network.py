@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from test_transport import serving
 
+from gateway.adapters.openai import read_catalog as read_openai_catalog
 from gateway.app import create_app
 from gateway.network.collector import Collector
 from gateway.network.protocols import inspect_service
@@ -133,6 +134,62 @@ async def test_discovery_and_connection_preserve_root_catalog_base():
         result = await inspect_service(http, origin)
     assert result["base_url"] == origin
     assert Engine(name="Root catalog", base_url=result["base_url"]).base_url == origin
+
+
+@pytest.mark.asyncio
+async def test_openai_catalog_marks_resident_model_from_explicit_health_identity():
+    calls = []
+
+    async def handler(request):
+        calls.append((request.url.path, request.headers.get("Authorization")))
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "resident-model"}, {"id": "advertised-model"}]},
+            )
+        if request.url.path == "/health":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ok",
+                    "model": "resident-model",
+                    "model_ids": ["resident-model"],
+                },
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await read_openai_catalog(
+            http,
+            "http://spark.test:8888/v1",
+            {"Authorization": "Bearer fixture"},
+        )
+
+    assert result["data"] == [
+        {"id": "resident-model", "loaded": True},
+        {"id": "advertised-model", "loaded": False},
+    ]
+    assert calls == [
+        ("/v1/models", "Bearer fixture"),
+        ("/health", "Bearer fixture"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_catalog_leaves_residency_unknown_without_explicit_health_identity():
+    async def handler(request):
+        if request.url.path == "/models":
+            return httpx.Response(200, json={"data": [{"id": "catalog-model"}]})
+        if request.url.path == "/health":
+            return httpx.Response(
+                200, json={"status": "ok", "model": "configured-model"}
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await read_openai_catalog(http, "http://generic.test", {})
+
+    assert result["data"] == [{"id": "catalog-model"}]
 
 
 @pytest.mark.asyncio
@@ -446,9 +503,12 @@ async def test_relay_provenance_is_visible_and_never_auto_registered(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_native_runtime_missing_metadata_preserves_operator_capability_declaration(
-    tmp_path,
-):
+async def test_native_runtime_missing_metadata_declares_no_capabilities(tmp_path):
+    """A runtime that states no capabilities is not filled in from config.
+
+    Neither engine defaults nor the operator's declared list can be proven for
+    a host that never reported one, so the row declares none.
+    """
     from gateway.schema import Engine
 
     async def handler(request):
@@ -470,7 +530,7 @@ async def test_native_runtime_missing_metadata_preserves_operator_capability_dec
         capabilities=["embeddings"],
     )
     models = await app.state.discovery.probe(engine)
-    assert models[0]["capabilities"] == ["embeddings"]
+    assert models[0]["capabilities"] == []
     assert not models[0]["loaded"]
     await _close_app(app)
 

@@ -123,7 +123,7 @@ export function EngineCard({
                   </small>
                 </div>
                 <span className="tag">
-                  {m.enabled === false ? "Excluded" : "Discovered"}
+                  {m.enabled === false ? "Not routable" : "Routable"}
                 </span>
               </div>
             ))}

@@ -32,6 +32,26 @@ def observation(policy_id=None, basis="unassigned", **extra):
     }
 
 
+def test_synthesized_unkeyed_policy_denies_routes_and_cloud():
+    config = Configuration(
+        clients=[
+            Client(
+                name="Other network",
+                allow_network_auth=True,
+                source_networks=["192.0.2.0/24"],
+            )
+        ],
+        security=Security(anonymous_client_id=None),
+        routes=[Route(name="local"), Route(name="cloud")],
+    )
+
+    client, basis = resolve_unkeyed_policy(config, "198.51.100.10")
+
+    assert client.route_names == []
+    assert client.allow_cloud is False
+    assert basis == "shared_access"
+
+
 def test_source_override_requires_opt_in_and_precedes_default_by_specificity():
     default = Client(name="Default", route_names=["default"])
     wide = Client(
@@ -101,7 +121,9 @@ async def test_placeholder_request_and_map_use_same_saved_permission_policy(
 def test_observed_policy_path_requires_actual_key_evidence_for_gated_route(basis):
     policy = Client(name="Policy", route_names=["private"])
     config = Configuration(
-        clients=[policy], routes=[Route(name="private", require_caller_key=True)]
+        clients=[policy],
+        security=Security(anonymous_client_id=policy.id),
+        routes=[Route(name="private", require_caller_key=True)],
     )
     topology = route_map(config, [available_engine()], [observation(policy.id, basis)])
     edge = topology["caller_routes"][0]
@@ -328,7 +350,8 @@ def test_unkeyed_transient_access_has_no_invented_policy_id():
     edge = topology["caller_routes"][0]
     assert edge["caller_id"] == caller["id"]
     assert edge["policy_id"] is None
-    assert edge["ready_engines"]
+    assert edge["ready_engines"] == []
+    assert "allowlist" in edge["reason"]
     assert topology["policies"] == []
     assert topology["policy_routes"] == []
 
@@ -368,3 +391,50 @@ def test_ready_paths_keep_model_permissions_separate_for_each_engine_tier(
         "primary",
         "fallback",
     }
+
+
+def test_a_stored_model_override_round_trips_without_the_retired_flag():
+    """The UI writes only capabilities and context; the save must not 422.
+
+    `ModelSettings` forbids extras, so a leftover `enabled` key in the editor
+    payload failed validation on save. This pins the shape the editor sends.
+    """
+    import pydantic
+
+    from gateway.schema import ModelSettings
+
+    saved = ModelSettings(capabilities=["text", "streaming"], context_length=4096)
+    assert saved.capabilities == ["text", "streaming"]
+    assert saved.context_length == 4096
+    assert "enabled" not in ModelSettings.model_fields
+    with pytest.raises(pydantic.ValidationError):
+        ModelSettings(enabled=True, capabilities=["text"])
+
+
+def test_an_unroutable_model_names_the_host_not_an_operator():
+    """The reason must describe where the bit came from, not blame a person."""
+    policy = Client(name="Policy", allow_cloud=True, allow_direct_models=True)
+    config = Configuration(
+        clients=[policy],
+        routes=[Route(name="auto", fallback=Selector(kind="local", model_patterns=["*"]))],
+    )
+
+    host_says_unavailable = available_engine()
+    host_says_unavailable["models"] = [
+        {"id": "example-model", "capabilities": ["text"], "enabled": False}
+    ]
+    outside_patterns = available_engine()
+    outside_patterns["model_patterns"] = ["other-*"]
+    outside_patterns["models"] = [
+        {"id": "example-model", "capabilities": ["text"], "enabled": False}
+    ]
+
+    host = decide(config, [host_says_unavailable], policy, {"model": "auto"})
+    patterns = decide(config, [outside_patterns], policy, {"model": "auto"})
+
+    reasons = [r["reason"] for r in host["rejections"]]
+    assert any("Host reports this model unavailable" in r for r in reasons)
+    reasons = [r["reason"] for r in patterns["rejections"]]
+    assert any("outside this engine's model patterns" in r for r in reasons)
+    for decision in (host, patterns):
+        assert all("operator" not in r["reason"] for r in decision["rejections"])

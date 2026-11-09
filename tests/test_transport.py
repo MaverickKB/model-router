@@ -15,7 +15,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from gateway.app import create_app
 from gateway.discovery import Observation
 from gateway.proxy import InflightRequest
-from gateway.schema import Client, Configuration, Discovery, Engine, Route, Selector
+from gateway.schema import (
+    Client,
+    Configuration,
+    Discovery,
+    Engine,
+    Route,
+    Security,
+    Selector,
+)
 
 
 @pytest.mark.asyncio
@@ -213,13 +221,21 @@ async def test_real_http_model_swap_cloud_fallback_stream_and_cancel(tmp_path):
                 while app.state.discovery.observation(local.id).inflight:
                     await asyncio.sleep(0.05)
             assert app.state.store.events()[0]["status"] == "cancelled"
+            previous_request = app.state.store.events()[0]["id"]
             async with httpx.AsyncClient(
                 base_url=url, headers={"Authorization": f"Bearer {key}"}, timeout=0.25
             ) as impatient:
                 with pytest.raises(httpx.ReadTimeout):
                     await impatient.post("/v1/chat/completions", json=payload)
             async with asyncio.timeout(3):
-                while app.state.discovery.observation(local.id).inflight:
+                # HTTP disconnect delivery is asynchronous. Wait for this
+                # request's terminal history, including cancellation before
+                # it has acquired an engine admission slot.
+                while (
+                    app.state.discovery.observation(local.id).inflight
+                    or app.state.store.events()[0]["id"] == previous_request
+                    or app.state.store.events()[0]["status"] != "cancelled"
+                ):
                     await asyncio.sleep(0.05)
             assert app.state.store.events()[0]["status"] == "cancelled"
             state["mode"] = "break"
@@ -278,7 +294,12 @@ async def test_client_close_at_done_records_completed_before_upstream_eof(tmp_pa
     async with serving(upstream) as upstream_url:
         app = create_app(str(tmp_path), background=False)
         engine = Engine(name="Tool service", base_url=upstream_url + "/v1")
-        app.state.store.save(Configuration(engines=[engine]))
+        policy = Client(name="Stream completion fixture", route_names=["auto"])
+        app.state.store.save(Configuration(
+            engines=[engine],
+            clients=[policy],
+            security=Security(anonymous_client_id=policy.id),
+        ))
         await app.state.discovery.refresh()
         async with serving(app) as router_url, httpx.AsyncClient(timeout=5) as client:
             async with client.stream(

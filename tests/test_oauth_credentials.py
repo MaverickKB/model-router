@@ -1,5 +1,7 @@
 """OAuth engine credentials resolve to live access tokens at the chokepoint."""
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -181,3 +183,37 @@ async def test_xai_discovers_token_endpoint_then_refreshes():
         "https://auth.x.ai/.well-known/openid-configuration",
         "https://auth.x.ai/oauth2/token",
     ]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refreshes_exchange_a_rotating_token_once():
+    """A rotating refresh token is used by one request, not by every waiter."""
+    issued = []
+
+    async def handler(request):
+        data = dict(pair.split("=", 1) for pair in request.content.decode().split("&"))
+        issued.append(data["refresh_token"])
+        await asyncio.sleep(0.05)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "fresh-access",
+                "expires_in": 3600,
+                "refresh_token": "rotated-refresh",
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    session = OAuthSession()
+    results = await asyncio.gather(
+        *[
+            session.access_token(Provider.CODEX.value, "same-token", http)
+            for _ in range(5)
+        ]
+    )
+
+    assert issued == ["same-token"]
+    assert results[0] == ("fresh-access", "rotated-refresh")
+    # Waiters see the token the first caller refreshed and must not persist a
+    # second rotation of the same refresh token.
+    assert results[1:] == [("fresh-access", None)] * 4

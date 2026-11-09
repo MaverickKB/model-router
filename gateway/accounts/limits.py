@@ -23,7 +23,13 @@ def window_start(now: float, seconds: int) -> float:
 
 
 def estimate_prompt_tokens(payload: dict) -> int:
-    source = payload.get("messages") or payload.get("prompt") or ""
+    if "questions" in payload:
+        source = {
+            "state": payload.get("state"),
+            "questions": payload.get("questions"),
+        }
+    else:
+        source = payload.get("messages") or payload.get("prompt") or ""
     return math.ceil(len(json.dumps(source)) / 4)
 
 

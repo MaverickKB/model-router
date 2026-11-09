@@ -52,7 +52,9 @@ A merge preserves the surviving engine's model policy and limits. It requires bo
 
 When operator sign-in is off, configured trusted source networks can manage the console through its canonical URL or loopback tunnel. Same-origin checks still protect browser writes. `MODEL_ROUTER_PUBLIC_URL` declares the canonical external URL. Keep sign-in enabled when exposing an administrative listener beyond trusted operators.
 
-For each route, the operator can require a caller key or leave it open to unkeyed traffic. A matching source-specific policy takes priority, then the selected default policy. Without either policy, the connection is still observed and can use only routes whose gate is open. A supplied valid key selects its own policy and can be reused across callers. An unusable key header is observed as an unassigned connection but follows the same source, default, or transient routing identity as a request without that header. It can use open routes and is rejected by routes that require a key. Route and model permissions still apply. One exception: when user accounts and device pre-registration are both on, a registered direct source address is identified as its account before the source and default policies are consulted and is treated as key-present, whether or not the request carries an unusable key header; see the dev-mode paragraph under "User accounts (optional)".
+For each route, the operator can require a caller key or leave it open to unkeyed traffic. A matching source-specific policy takes priority, then the selected default policy. Without either policy, the connection is still observed but has no route permissions and cannot use cloud engines, even if a route does not require a key. A supplied valid key selects its own policy and can be reused across callers. An unusable key header is observed as an unassigned connection but follows the same source, default, or transient routing identity as a request without that header. It can use key-optional routes only when the selected source or default policy permits them, and cannot satisfy a route's key requirement. Route and model permissions still apply. One exception: when user accounts and device pre-registration are both on, a registered direct source address is identified as its account before the source and default policies are consulted and is treated as key-present, whether or not the request carries an unusable key header; see the dev-mode paragraph under "User accounts (optional)".
+
+**Migrating previously policyless access:** Disabling a route's caller-key requirement no longer grants access by itself. Create an enabled caller policy with an explicit `route_names` allowlist and the required model permissions. Then either select it as the default unkeyed policy in **Settings > Access** (`security.anonymous_client_id`) or enable source matching (`allow_network_auth: true`) with the intended direct-peer CIDRs in `source_networks`. Keep `require_caller_key: false` only on the routes that should accept this traffic. Cloud access also requires `allow_cloud: true`; leave it off for local-only callers. A policy that is disabled, removed, or does not match the source grants no fallback access unless another valid source/default policy applies.
 
 Enabling sign-in keeps the current browser signed in. Generating a replacement operator key preserves this browser, revokes other operator sessions, and leaves all agent keys unchanged. Upgrades materialize the former global caller-key setting onto each existing route, so an installed access policy is not silently changed.
 
@@ -126,3 +128,11 @@ Tests use controlled HTTP services, loopback sockets and scanner-process fixture
 ## Contributing
 
 Issues and pull requests are welcome. Start with the focused tests for the area you change, then run the complete verification commands above. Keep endpoint addresses, provider credentials and runtime state in local configuration; do not commit them.
+
+
+## Optional extras
+Nothing here is required. The router runs unchanged without any of it.
+- [Origin policy](docs/ORIGIN_POLICY.md): per-origin privacy marking, metadata stripping, route/path allowlists and a maintenance gate. Off unless a policy file exists.
+- [Example origin policy](examples/origin_policy.example.json): placeholder values to copy.
+- [Tag resolvers](gateway/origin_resolvers.py): static-CIDR default, optional Tailscale plugin, or your own callable.
+- [Gate toggle script](scripts/origin-gate.sh): POSIX `sh` helper to turn a maintenance flag file on or off.

@@ -40,24 +40,28 @@ def resolve_unkeyed_policy(
         ),
         None,
     )
-    if (
-        default
-        and address is not None
-        and (
-            not default.source_networks
-            or any(
-                address in ipaddress.ip_network(value, strict=False)
-                for value in default.source_networks
-            )
-        )
-    ):
-        return default, "shared_access"
+    if default and address is not None:
+        allowed = True
+        if default.source_networks:
+            allowed = False
+            for value in default.source_networks:
+                try:
+                    network = ipaddress.ip_network(value, strict=False)
+                except ValueError:
+                    # The sibling loop above skips these; a bad entry must not
+                    # turn every unkeyed request into a server error.
+                    continue
+                if address in network:
+                    allowed = True
+                    break
+        if allowed:
+            return default, "shared_access"
     return (
         Client(
             name="Unkeyed connection",
             kind="shared",
-            route_names=[route.name for route in config.routes],
-            allow_cloud=True,
+            route_names=[],
+            allow_cloud=False,
         ),
         "shared_access",
     )

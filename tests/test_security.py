@@ -165,7 +165,9 @@ async def test_unkeyed_route_catalog_is_observable_without_a_source_policy(tmp_p
             base_url="http://localhost",
         ) as client,
     ):
-        assert (await client.get("/v1/models")).status_code == 200
+        response = await client.get("/v1/models")
+        assert response.status_code == 200
+        assert response.json()["data"] == []
 
 
 @pytest.mark.asyncio
@@ -179,7 +181,7 @@ async def test_pristine_install_is_configurable_before_auth_then_uses_session(tm
         assert (await public.get("/api/v1/state")).status_code == 401
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, client=("192.168.1.10", 1)),
+        transport=httpx.ASGITransport(app=app, client=("192.0.2.10", 1)),
         base_url=origin,
         headers={"Origin": origin},
     ) as browser:

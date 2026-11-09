@@ -1,5 +1,6 @@
 import type { Job } from "../types";
 import { callerSummary } from "../caller-identity";
+import { isRequestActive } from "../request-status";
 
 export type RequestHistoryFilter = "All" | "Active" | "Errors";
 
@@ -22,7 +23,7 @@ export interface RequestSourceGroup {
 }
 
 export function isActive(job: Job): boolean {
-  return ["running", "routing", "waiting"].includes(job.status);
+  return isRequestActive(job.status);
 }
 
 export function isError(job: Job): boolean {

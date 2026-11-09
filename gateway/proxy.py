@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ import httpx
 from anyio import CancelScope
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from starlette.responses import Response
 
 from .accounts.limits import AccountLimits, Refusal, UsageMeter
@@ -19,11 +21,42 @@ from .identity import Identity
 from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
-from .stream_protocol import CompletionMarker
+from .stream_protocol import CompletionMarker, StreamProgress
+
+# One recovery loop can reject admission thousands of times; keep recent
+# evidence only, and count every rejection separately.
+ADMISSION_REJECTIONS_KEPT = 50
 
 
 class ResponseTooLarge(Exception):
     pass
+
+
+class RecoverableStreamError(Exception):
+    """The upstream failed before any answer, reasoning, or tool output."""
+
+
+def require_origin_route(request: Request, route_name: str):
+    origin = getattr(request.state, "origin", None)
+    if origin is None:
+        return
+    if origin.route_allowed(route_name):
+        return
+    allowed = ", ".join(repr(r) for r in origin.allowed_routes or [])
+    raise HTTPException(
+        403,
+        f"This origin may only use these routes: {allowed}"
+        if allowed
+        else "No routes are available to this origin",
+    )
+
+
+def validate_payload(payload):
+    if (not isinstance(payload, dict) or not isinstance(payload.get("model"), str)
+            or not payload["model"].strip()):
+        raise HTTPException(400, "A model or route name is required")
+    if "messages" in payload and not isinstance(payload["messages"], list):
+        raise HTTPException(400, "messages must be an array")
 
 
 async def read_limited(response: httpx.Response, limit: int) -> bytes:
@@ -38,50 +71,89 @@ async def read_limited(response: httpx.Response, limit: int) -> bytes:
 class InflightRequest:
     """Own one admission slot and its upstream connection through stream completion."""
 
-    def __init__(self, observation: Observation, failure_cooldown: float):
+    def __init__(
+        self, observation: Observation, failure_cooldown: float, *, background=False
+    ):
         self.observation = observation
         self.failure_cooldown = failure_cooldown
         self.response: httpx.Response | None = None
         self.released = False
+        self._background = bool(background)
         observation.inflight += 1
+        if self._background:
+            observation.background_inflight += 1
+
+    @property
+    def background(self):
+        return self._background
 
     @classmethod
-    def claim(cls, observation: Observation, limit: int, failure_cooldown: float):
+    def claim(
+        cls,
+        observation: Observation,
+        limit: int,
+        failure_cooldown: float,
+        *,
+        background=False,
+        foreground_reserved_slots=0,
+    ):
         # This synchronous check-and-increment is atomic on the owning event loop.
         # No database or transport await may enter this reservation boundary.
         if observation.identity_locked or observation.inflight >= limit:
             return None
-        return cls(observation, failure_cooldown)
+        if (
+            background
+            and observation.background_inflight >= limit - foreground_reserved_slots
+        ):
+            return None
+        return cls(observation, failure_cooldown, background=background)
 
     async def release(self):
         if not self.released:
             self.released = True
-            try:
-                if self.response is not None:
-                    await self.response.aclose()
-            finally:
-                self.observation.inflight = max(0, self.observation.inflight - 1)
+            with CancelScope(shield=True):
+                try:
+                    if self.response is not None:
+                        await self.response.aclose()
+                finally:
+                    self.observation.inflight = max(0, self.observation.inflight - 1)
+                    if self._background:
+                        self.observation.background_inflight = max(
+                            0, self.observation.background_inflight - 1
+                        )
 
-    async def relay(self, first, iterator, finish, observe=None):
+    async def relay(self, first, iterator, finish, observe=None, recoverable=False):
         terminal = CompletionMarker()
+        progress = StreamProgress()
         status, code = "cancelled", None
         try:
             terminal.feed(first)
+            if recoverable:
+                progress.feed(first)
             if observe is not None:
                 observe(first)
             yield first
             if not terminal.complete:
                 async for chunk in iterator:
                     terminal.feed(chunk)
+                    if recoverable:
+                        progress.feed(chunk)
                     if observe is not None:
                         observe(chunk)
                     yield chunk
                     if terminal.complete:
                         break
+            if recoverable and not terminal.complete and not progress.has_output:
+                status = "recovering"
+                raise RecoverableStreamError("IncompleteStream")
             status, code = "completed", 200
-        except httpx.HTTPError:
+        except httpx.HTTPError as error:
             status, code = "failed", 502
             self.observation.circuit_until = time.time() + self.failure_cooldown
+            self.observation.circuit_reason = "transport"
+            if recoverable and not progress.has_output:
+                status = "recovering"
+                raise RecoverableStreamError(type(error).__name__) from error
             yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted"}}\n\n'
         finally:
             # OpenAI clients close on the terminal event without waiting for
@@ -108,20 +180,21 @@ class Proxy:
     ):
         self.store, self.discovery, self.http = store, discovery, http
         self.identity = identity
+        self.origins = None
         # Open windows are preloaded once; the request path never loads one.
         self.limits = AccountLimits()
         self.limits.ledger.seed(store.open_usage_windows(time.time()))
 
     async def dispatch(self, request: Request, payload: dict, client: Client):
-        if (
-            not isinstance(payload, dict)
-            or not isinstance(payload.get("model"), str)
-            or not payload["model"].strip()
-        ):
-            raise HTTPException(400, "A model or route name is required")
-        if "messages" in payload and not isinstance(payload["messages"], list):
-            raise HTTPException(400, "messages must be an array")
+        validate_payload(payload)
+        origin = getattr(request.state, "origin", None)
+        if origin is not None:
+            require_origin_route(request, payload["model"].strip())
+            origin.sanitize(payload)
         config = self.store.config()
+        route = next((route for route in config.routes if route.name == payload["model"]), None)
+        recovery_seconds = route.recovery_seconds if route and route.enabled else 0
+        recovery_enabled = recovery_seconds is None or recovery_seconds > 0
         caller_key_present = getattr(request.state, "caller_key_present", True)
         operator_test = getattr(request.state, "identity_basis", "") == "operator_test"
         decision = decide(
@@ -131,8 +204,9 @@ class Proxy:
             payload,
             caller_key_present=caller_key_present,
         )
-        event = {
-            "id": uuid4().hex,
+        background = payload.get("priority") == "background"
+        event = getattr(request.state, "router_event", None) or {
+            "id": getattr(request.state, "router_request_id", None) or uuid4().hex,
             "ts": time.time(),
             "caller": getattr(request.state, "caller", None),
             "client_id": client.id,
@@ -142,17 +216,24 @@ class Proxy:
             "attempts": [],
             "decision": decision,
             "stream": bool(payload.get("stream")),
+            "request_class": "background" if background else "foreground",
             "revision": config.revision,
         }
+        request.state.router_event = event
+        if origin is not None:
+            event["origin"] = origin.public()
         # Bound before finish exists: finish settles an admission when one was
         # claimed and must stay callable on every earlier exit.
         admission = None
         meter = None
         account_id = getattr(request.state, "account_id", None)
-        started = time.monotonic()
+        started = getattr(request.state, "router_started", None) or time.monotonic()
+        request.state.router_started = started
         await asyncio.to_thread(self.store.event, event)
 
         async def finish(status, code=None):
+            if status == "recovering":
+                event.setdefault("recovering_since", time.time())
             row = None
             if admission is not None and not admission.settled:
                 # Settle synchronously before the first await so a cancellation
@@ -214,8 +295,38 @@ class Proxy:
                 status_code=status,
             )
 
+        async def recover():
+            if not recovery_enabled:
+                return False
+            remaining = 1
+            if recovery_seconds is not None:
+                deadline = getattr(request.state, "router_recovery_deadline", None)
+                if deadline is None:
+                    deadline = time.monotonic() + recovery_seconds
+                    request.state.router_recovery_deadline = deadline
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+            if event["status"] != "recovering":
+                event["status"] = "recovering"
+                event.setdefault("recovering_since", time.time())
+                await asyncio.to_thread(self.store.event, event)
+            await asyncio.sleep(min(1, remaining))
+            await self.discovery.refresh_route(payload["model"])
+            return True
+
         if not decision["candidates"]:
-            return await refuse(decision)
+            while decision.get("status", 503) == 503 and await recover():
+                client = await self.identity.identify(request)
+                if getattr(request.state, "account_id", None) != account_id:
+                    raise HTTPException(403, "Account access was removed")
+                decision = decide(self.store.config(), self.discovery.views(), client, payload,
+                                  caller_key_present=request.state.caller_key_present)
+                event["decision"] = decision
+                if decision["candidates"]:
+                    break
+            if not decision["candidates"]:
+                return await refuse(decision)
 
         if account_id:
             # Account limits are admitted after decide and before any upstream
@@ -297,7 +408,7 @@ class Proxy:
                     decision=fresh,
                     revision=current_config.revision,
                 )
-                if not fresh["candidates"] and fresh.get("status"):
+                if not fresh["candidates"] and fresh.get("status") and fresh["status"] != 503:
                     return await refuse(fresh)
                 candidate = next(
                     (
@@ -308,11 +419,17 @@ class Proxy:
                     None,
                 )
                 if candidate is None:
+                    if fresh.get("status", 503) == 503 and await recover():
+                        attempted.clear()
+                        continue
                     break
                 attempted.add((candidate["engine_id"], candidate["model"]))
                 engine = next(
                     e for e in current_config.engines if e.id == candidate["engine_id"]
                 )
+                systemone_request = request.url.path.rstrip("/").endswith("systemone")
+                if engine.protocol != ("systemone" if systemone_request else "openai"):
+                    continue
                 obs = self.discovery.observation(engine.id)
                 optional_defaults = {
                     k: v
@@ -343,19 +460,61 @@ class Proxy:
                     # Per attempt: a retry to an engine that cannot take the option
                     # must not inherit the flag from an attempt that was not served.
                     event.pop("stream_options_injected", None)
-                path = (
+                if engine.protocol == "systemone":
+                    path = "/api/evaluate"
+                    body.pop("model", None)
+                    body.pop("stream", None)
+                    body.pop("stream_options", None)
+                elif request.url.path.endswith(
                     "/completions"
-                    if request.url.path.endswith("/completions")
-                    and not request.url.path.endswith("/chat/completions")
-                    else "/chat/completions"
-                )
+                ) and not request.url.path.endswith("/chat/completions"):
+                    path = "/completions"
+                else:
+                    path = "/chat/completions"
+                max_inflight = obs.max_inflight or engine.max_inflight
                 connection = InflightRequest.claim(
-                    obs, engine.max_inflight, engine.failure_cooldown_seconds
+                    obs,
+                    max_inflight,
+                    engine.failure_cooldown_seconds,
+                    background=background,
+                    foreground_reserved_slots=engine.foreground_reserved_slots,
                 )
                 if connection is None:
+                    code = (
+                        "background_quota_exceeded"
+                        if background
+                        and not obs.identity_locked
+                        and obs.inflight < max_inflight
+                        and obs.background_inflight
+                        >= max_inflight - engine.foreground_reserved_slots
+                        else "engine_busy"
+                    )
+                    rejections = event.setdefault("admission_rejections", [])
+                    rejections.append(
+                        {
+                            "engine_id": engine.id,
+                            "code": code,
+                            "request_class": event["request_class"],
+                            "inflight": obs.inflight,
+                            "background_inflight": obs.background_inflight,
+                            "max_inflight": max_inflight,
+                            "foreground_reserved_slots": engine.foreground_reserved_slots,
+                        }
+                    )
+                    event["admission_rejections_total"] = (
+                        event.get("admission_rejections_total", 0) + 1
+                    )
+                    if len(rejections) > ADMISSION_REJECTIONS_KEPT:
+                        del rejections[0]
                     continue
                 attempt = {**candidate, "status": "waiting"}
-                event["attempts"].append(attempt)
+                attempts = event["attempts"]
+                event["attempt_count"] = event.get("attempt_count", len(attempts)) + 1
+                if recovery_enabled and len(attempts) >= 32:
+                    # Keep the first failure and recent evidence through long
+                    # outages without growing a request record indefinitely.
+                    del attempts[1]
+                attempts.append(attempt)
                 event.update(
                     engine_id=engine.id,
                     engine=engine.name,
@@ -373,6 +532,11 @@ class Proxy:
                             "Content-Type": "application/json",
                             "Accept-Encoding": "identity",
                             **await self.discovery.headers(engine),
+                            **(
+                                self.origins.upstream_headers(origin)
+                                if self.origins is not None
+                                else {}
+                            ),
                         },
                         timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
                     )
@@ -381,7 +545,7 @@ class Proxy:
                     )
                     attempt.update(http_status=upstream.status_code, status="responded")
                     content = None
-                    if upstream.status_code == 404:
+                    if upstream.status_code == 404 or (recovery_enabled and upstream.status_code == 400):
                         content = await read_limited(
                             upstream, engine.max_response_bytes
                         )
@@ -399,6 +563,7 @@ class Proxy:
                             if status == 429
                             else engine.failure_cooldown_seconds
                         )
+                        obs.circuit_reason = "rate_limit" if status == 429 else "transport"
                         continue
                     event.update(
                         engine_id=engine.id,
@@ -413,7 +578,9 @@ class Proxy:
                         "x-router-model": candidate["model"],
                         "x-router-request": event["id"],
                     }
-                    if payload.get("stream") and upstream.is_success:
+                    response_content_type = upstream.headers.get("content-type", "")
+                    is_event_stream = "text/event-stream" in response_content_type.lower()
+                    if payload.get("stream") and upstream.is_success and is_event_stream:
                         # Content-Encoding is not forwarded. Relay decoded bytes,
                         # including when an upstream compresses its event stream.
                         iterator = upstream.aiter_bytes()
@@ -422,8 +589,16 @@ class Proxy:
                             obs.circuit_until = (
                                 time.time() + engine.failure_cooldown_seconds
                             )
+                            obs.circuit_reason = "transport"
                             await connection.release()
                             continue
+
+                        async def abandon_stream(connection=connection):
+                            if not connection.released:
+                                try:
+                                    await finish("cancelled")
+                                finally:
+                                    await connection.release()
 
                         return StreamingResponse(
                             connection.relay(
@@ -431,16 +606,16 @@ class Proxy:
                                 iterator,
                                 finish,
                                 observe=meter.feed if meter is not None else None,
+                                recoverable=recovery_enabled,
                             ),
                             status_code=upstream.status_code,
-                            media_type=upstream.headers.get(
-                                "content-type", "text/event-stream"
-                            ),
+                            media_type=response_content_type,
                             headers={
                                 **receipt,
                                 "Cache-Control": "no-cache",
                                 "X-Accel-Buffering": "no",
                             },
+                            background=BackgroundTask(abandon_stream),
                         )
                     if content is None:
                         content = await read_limited(
@@ -480,6 +655,7 @@ class Proxy:
                         error="Upstream connection failed or timed out", status="failed"
                     )
                     obs.circuit_until = time.time() + engine.failure_cooldown_seconds
+                    obs.circuit_reason = "transport"
                     obs.error = "Completion transport failed"
                     await connection.release()
                 except BaseException:
@@ -489,12 +665,25 @@ class Proxy:
                         finally:
                             await connection.release()
                     raise
-            await finish("failed", 503)
+            quota_only = (
+                not event["attempts"]
+                and bool(event.get("admission_rejections"))
+                and all(
+                    rejection["code"] == "background_quota_exceeded"
+                    for rejection in event["admission_rejections"]
+                )
+            )
+            await finish("unavailable" if quota_only else "failed", 503)
             return JSONResponse(
                 {
                     "error": {
-                        "message": "All permitted engines were unavailable",
-                        "type": "upstream_unavailable",
+                        "message": (
+                            "Background request quota is full; foreground capacity is reserved"
+                            if quota_only
+                            else "All permitted engines were unavailable"
+                        ),
+                        "type": "route_unavailable" if quota_only else "upstream_unavailable",
+                        **({"code": "background_quota_exceeded"} if quota_only else {}),
                     },
                     "request_id": event["id"],
                 },
@@ -511,6 +700,22 @@ class Proxy:
             raise
 
     async def dispatch_connected(self, request: Request, payload: dict, client: Client):
+        validate_payload(payload)
+        # The streaming branch below commits to an SSE response before dispatch
+        # runs, so authorization refusals must resolve here to keep a 403 a 403.
+        require_origin_route(request, payload["model"].strip())
+        route = next((route for route in self.store.config().routes if route.name == payload.get("model")), None)
+        preflight = decide(self.store.config(), self.discovery.views(), client, payload,
+                           caller_key_present=getattr(request.state, "caller_key_present", True))
+        if (payload.get("stream") and route and route.enabled and route.recovery_seconds != 0
+                and preflight.get("status") not in {400, 401, 403, 404}):
+            # Recovery owns one downstream stream. Heartbeats keep it connected
+            # while discovery or an accepted upstream request is working.
+            request.state.router_request_id = uuid4().hex
+            return StreamingResponse(self.recovering_stream(request, payload, client),
+                                     media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                              "X-Router-Request": request.state.router_request_id})
         # ASGI does not cancel non-streaming handlers when their caller leaves.
         # Cancel the upstream work as soon as that request is disconnected.
         async def disconnected():
@@ -534,3 +739,96 @@ class Proxy:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(operation, watcher, return_exceptions=True)
+            if operation.cancelled():
+                await self.cancel_pending_event(request)
+
+    async def cancel_pending_event(self, request):
+        event = getattr(request.state, "router_event", None)
+        if event and event["status"] in {"routing", "recovering", "waiting", "running"}:
+            event.update(status="cancelled", http_status=None,
+                         elapsed_ms=round((time.monotonic() - request.state.router_started) * 1000))
+            with CancelScope(shield=True):
+                await asyncio.to_thread(self.store.event, event)
+
+    async def recovering_stream(self, request, payload, client):
+        pending = None
+        iterator = None
+        response = None
+        emitted = False
+        try:
+            while True:
+                pending = asyncio.create_task(self.dispatch(request, payload, client))
+                while not pending.done():
+                    await asyncio.wait({pending}, timeout=5)
+                    if not pending.done():
+                        yield b": router waiting for serving endpoint\n\n"
+                response = pending.result()
+                pending = None
+                if not isinstance(response, StreamingResponse):
+                    # A refusal is an error event, not an empty completion, so
+                    # it must not carry the [DONE] terminator.
+                    if response.status_code >= 400:
+                        yield b"data: " + response.body + b"\n\n"
+                    else:
+                        yield b"data: " + response.body + b"\n\ndata: [DONE]\n\n"
+                    return
+                iterator = response.body_iterator
+                try:
+                    while True:
+                        pending = asyncio.create_task(anext(iterator, None))
+                        while not pending.done():
+                            await asyncio.wait({pending}, timeout=5)
+                            if not pending.done():
+                                yield b": router waiting for serving endpoint\n\n"
+                        chunk = pending.result()
+                        pending = None
+                        if chunk is None:
+                            return
+                        yield chunk
+                        emitted = True
+                except RecoverableStreamError as error:
+                    event = request.state.router_event
+                    event["attempts"][-1]["error_type"] = str(error)
+                    if emitted:
+                        # Bytes already reached the caller, so this attempt
+                        # cannot be replayed. Close with an interruption frame.
+                        event["attempts"][-1].update(status="failed", http_status=502)
+                        event.update(status="failed", http_status=502,
+                                     elapsed_ms=round((time.monotonic() - request.state.router_started) * 1000))
+                        await asyncio.to_thread(self.store.event, event)
+                        yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted"}}\n\n'
+                        return
+                    route = next((route for route in self.store.config().routes if route.name == payload["model"]), None)
+                    if not route or not route.enabled or route.recovery_seconds == 0:
+                        raise
+                    deadline = getattr(request.state, "router_recovery_deadline", None)
+                    if deadline is None and route.recovery_seconds is not None:
+                        deadline = time.monotonic() + route.recovery_seconds
+                        request.state.router_recovery_deadline = deadline
+                    if deadline is not None and time.monotonic() >= deadline:
+                        event.update(status="failed", http_status=504,
+                                     elapsed_ms=round((time.monotonic() - request.state.router_started) * 1000))
+                        await asyncio.to_thread(self.store.event, event)
+                        yield b'data: {"error":{"message":"Serving endpoint is still recovering"}}\n\n'
+                        return
+                    await asyncio.sleep(1)
+                    await self.discovery.refresh_route(payload["model"])
+        except HTTPException as error:
+            body = json.dumps({"error": {"message": str(error.detail), "status": error.status_code}}).encode()
+            # A refusal is an error event; it must not carry the success terminator.
+            yield b"data: " + body + b"\n\n"
+        finally:
+            with CancelScope(shield=True):
+                if pending is not None:
+                    if not pending.done():
+                        pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    if not pending.cancelled() and pending.exception() is None:
+                        result = pending.result()
+                        if isinstance(result, StreamingResponse) and result.background:
+                            await result.background()
+                if iterator is not None:
+                    await iterator.aclose()
+                if response is not None and response.background:
+                    await response.background()
+                await self.cancel_pending_event(request)

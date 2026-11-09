@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
+from urllib.parse import urlsplit
 
 from .contracts import Candidate, Decision, EngineView, ModelView, Rejection
 from .schema import Client, Configuration, Route, Selector
@@ -16,6 +17,8 @@ def route_requires_caller_key(route: Route) -> bool:
 
 
 def requirements(payload: dict) -> set[str]:
+    if "questions" in payload:
+        return {"decision"}
     required = {"text"}
     if payload.get("stream"):
         required.add("streaming")
@@ -59,6 +62,16 @@ def selector_engine_reason(selector: Selector, engine: EngineView) -> str:
         return f"This policy selects {selector.kind} engines"
     if selector.engine_ids and engine["id"] not in selector.engine_ids:
         return "Engine is outside this route's selection"
+    if selector.hosts:
+        addresses = [engine["base_url"], *engine.get("aliases", [])]
+        matched = False
+        for address in addresses:
+            hostname = (urlsplit(address).hostname or "").lower().rstrip(".")
+            if hostname in selector.hosts:
+                matched = True
+                break
+        if not matched:
+            return "Engine is outside this route's serving hosts"
     if selector.tags and not set(selector.tags).issubset(engine["tags"]):
         return "Engine does not have the required tags"
     return ""
@@ -94,6 +107,7 @@ def decide(
     *,
     consider_capacity: bool = True,
     caller_key_present: bool = True,
+    required_capabilities: set[str] | None = None,
 ) -> Decision:
     requested = str(payload.get("model", ""))
     route = next((r for r in config.routes if r.name == requested), None)
@@ -102,7 +116,7 @@ def decide(
     )
     rejected: list[Rejection] = []
     candidates: list[Candidate] = []
-    required = requirements(payload)
+    required = requirements(payload) if required_capabilities is None else set(required_capabilities)
     permission_blocked = False
     missing_capabilities: set[str] = set()
     other_blocker = False
@@ -155,6 +169,10 @@ def decide(
         # A raw model name is exact, even when it contains glob characters.
         # Saved selector patterns apply to routes; the loop below checks IDs.
         tiers = [("primary", Selector(kind="any"))]
+    strategy = route.strategy if route else "least_busy"
+    engine_positions = {}
+    for position, configured_engine in enumerate(config.engines):
+        engine_positions[configured_engine.id] = position
     for tier, selector in tiers:
         for engine in engines:
             if engine["status"] != "available":
@@ -183,7 +201,12 @@ def decide(
                     permission_blocked = True
                 reason = permission or selection
                 if not model.get("enabled", True):
-                    reason = "Model is disabled by the operator"
+                    # Discovery derives this bit from the host, never from an
+                    # operator flag. Name which of the two causes it was.
+                    if matches(model["id"], engine["model_patterns"]):
+                        reason = "Host reports this model unavailable"
+                    else:
+                        reason = "Model is outside this engine's model patterns"
                 if not route and model["id"] != requested:
                     reason = "Direct model requests require an exact model ID"
                 if not reason and not required.issubset(model["capabilities"]):
@@ -216,11 +239,12 @@ def decide(
                         }
                     )
                 else:
-                    order = (
-                        selector.engine_ids.index(engine["id"])
-                        if engine["id"] in selector.engine_ids
-                        else 0
-                    )
+                    selector_position = 0
+                    if engine["id"] in selector.engine_ids:
+                        selector_position = selector.engine_ids.index(engine["id"])
+                    order = selector_position
+                    if strategy == "ordered" and not selector.engine_ids:
+                        order = engine_positions.get(engine["id"], len(engine_positions))
                     candidates.append(
                         {
                             "engine_id": engine["id"],
@@ -237,7 +261,6 @@ def decide(
                             "reason": f"{tier.capitalize()} policy matched; client permissions and required capabilities passed",
                         }
                     )
-    strategy = route.strategy if route else "least_busy"
     candidates.sort(
         key=lambda c: (
             c["tier"] == "fallback",
@@ -256,7 +279,10 @@ def decide(
             unique.append(candidate)
     failure: dict = {}
     if not unique:
-        if not route and permission_blocked:
+        permission_refusal_applies = True
+        if route:
+            permission_refusal_applies = not other_blocker and not missing_capabilities
+        if permission_blocked and permission_refusal_applies:
             failure = {
                 "status": 403,
                 "error": "Client permissions exclude the matching models",

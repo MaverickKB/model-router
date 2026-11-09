@@ -1,5 +1,6 @@
+import { sourceFriendlyName } from "./source-display";
 import { callerClientLabel, CallerIdentity } from "./caller-identity";
-import { sourceTimeLabel } from "./source-time";
+import { sourceTimeLabel, sourceAgeLabel } from "./source-time";
 import type { Client, ObservedCaller } from "./types";
 import { useEffect, useState } from "react";
 import "./caller-sources.css";
@@ -10,10 +11,7 @@ export type CallerSource = {
   addresses: string[];
   displayName: string;
   labelSource:
-    | "operator"
-    | "reported_hostname"
-    | "discovered_hostname"
-    | "address";
+    "operator" | "reported_hostname" | "discovered_hostname" | "address";
   hostname: string;
   identityQuality: "network_hardware" | "reported_device" | "address";
   callers: ObservedCaller[];
@@ -24,7 +22,7 @@ function sourceKey(caller: ObservedCaller) {
   return caller.source_key || `addr:${caller.source_address}`;
 }
 
-function displaySource(source: CallerSource) {
+function displaySource(source: CallerSource, clients: Client[]) {
   const latest = source.callers[0];
   source.address = latest.source_address || source.address;
   source.addresses = [
@@ -38,13 +36,19 @@ function displaySource(source: CallerSource) {
     ]),
   ].sort();
   source.displayName =
-    latest.source_label || source.address || "Source address unavailable";
+    sourceFriendlyName(latest, clients) ||
+    latest.reported_name ||
+    source.address ||
+    "Source address unavailable";
   source.labelSource = latest.source_label_source || "address";
   source.hostname = latest.source_hostname || "";
   source.identityQuality = latest.source_identity_quality || "address";
 }
 
-export function groupCallerSources(callers: ObservedCaller[]): CallerSource[] {
+export function groupCallerSources(
+  callers: ObservedCaller[],
+  clients: Client[] = [],
+): CallerSource[] {
   const sources = new Map<string, CallerSource>();
   for (const caller of callers) {
     const key = sourceKey(caller);
@@ -70,11 +74,19 @@ export function groupCallerSources(callers: ObservedCaller[]): CallerSource[] {
     source.callers.sort(
       (a, b) => b.last_seen - a.last_seen || a.id.localeCompare(b.id),
     );
-    displaySource(source);
+    displaySource(source, clients);
   }
+  // Most recently seen first. This list answers "who is touching the router
+  // right now", so recency outranks the name; the name only breaks a tie so
+  // two sources seen in the same second stay in a stable order. Alphabetical
+  // order was the fault: a numeric address sorts before any name, so one
+  // unnamed row from a host that left days ago parked itself at the top for
+  // good, while the boxes actually calling were pushed below the fold.
   return [...sources.values()].sort(
     (a, b) =>
-      a.displayName.localeCompare(b.displayName) || a.key.localeCompare(b.key),
+      b.lastSeen - a.lastSeen ||
+      a.displayName.localeCompare(b.displayName) ||
+      a.key.localeCompare(b.key),
   );
 }
 
@@ -120,7 +132,9 @@ export function CallerSourceDetails({
     } catch (error) {
       setName(source.displayName);
       setSaveError(
-        error instanceof Error ? error.message : "The friendly name was not saved",
+        error instanceof Error
+          ? error.message
+          : "The friendly name was not saved",
       );
     } finally {
       setSaving(false);
@@ -139,12 +153,15 @@ export function CallerSourceDetails({
               ? "Reported hostname"
               : source.labelSource === "discovered_hostname"
                 ? "Discovered hostname"
-              : "Direct source address"}
+                : "Direct source address"}
         </p>
         <h2>{source.displayName || address}</h2>
         <p>
           {requests} {requests === 1 ? "request" : "requests"} observed · Last
-          seen {sourceTimeLabel(source.lastSeen)}
+          seen{" "}
+          <b title={sourceTimeLabel(source.lastSeen)}>
+            {sourceAgeLabel(source.lastSeen)}
+          </b>
         </p>
       </header>
       {onRename && (
@@ -181,7 +198,11 @@ export function CallerSourceDetails({
           )}
         </form>
       )}
-      {saveError && <p className="error" role="alert">{saveError}</p>}
+      {saveError && (
+        <p className="error" role="alert">
+          {saveError}
+        </p>
+      )}
       {(source.addresses.length > 0 ||
         source.hostname ||
         names.length > 0 ||
@@ -204,11 +225,11 @@ export function CallerSourceDetails({
             {source.identityQuality === "network_hardware"
               ? "Network-observed hardware identifier. The friendly name follows this recorded identifier when discovery later observes it at a new address. It does not grant access."
               : source.identityQuality === "reported_device"
-              ? "Caller-reported device identifier. The friendly name follows only that identifier after an address change. It does not grant access."
-              : source.labelSource === "reported_hostname" ||
-                  source.labelSource === "discovered_hostname"
-                ? "Address-bound. A hostname is a display hint, not identity proof. This name stays on this address. A current, unique network hardware identifier or caller-reported device identifier creates a separately nameable source."
-                : "Address-bound. This name stays on this address. A current, unique network hardware identifier or caller-reported device identifier creates a separately nameable source."}
+                ? "Caller-reported device identifier. The friendly name follows only that identifier after an address change. It does not grant access."
+                : source.labelSource === "reported_hostname" ||
+                    source.labelSource === "discovered_hostname"
+                  ? "Address-bound. A hostname is a display hint, not identity proof. This name stays on this address. A current, unique network hardware identifier or caller-reported device identifier creates a separately nameable source."
+                  : "Address-bound. This name stays on this address. A current, unique network hardware identifier or caller-reported device identifier creates a separately nameable source."}
           </dd>
           {names.length > 0 && (
             <>

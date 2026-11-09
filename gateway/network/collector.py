@@ -20,12 +20,36 @@ from .sweep import Sweep
 class Collector(Sweep):
     async def run(self, once=False):
         catalog_task = None if once else asyncio.create_task(self.watch_catalogs())
+        follow_task = None if once else asyncio.create_task(self.watch_followed_hosts())
         try:
             await self.run_scans(once)
         finally:
             if catalog_task:
                 catalog_task.cancel()
                 await asyncio.gather(catalog_task, return_exceptions=True)
+            if follow_task:
+                follow_task.cancel()
+                await asyncio.gather(follow_task, return_exceptions=True)
+
+    async def watch_followed_hosts(self):
+        """The existing scanner owns full-port discovery on auto-selected hosts."""
+        sweep = Sweep(self.root / "automatic", self.privileged, self.runner)
+        last_hosts = []
+        while True:
+            policy = await asyncio.to_thread(read_policy, self.root)
+            hosts = policy.get("follow_hosts", []) if policy.get("enabled") else []
+            due = time.time() >= sweep.report.get("completed_at", 0) + policy.get("interval_seconds", 60)
+            if hosts and (hosts != last_hosts or due):
+                scoped = dict(policy)
+                scoped.update(targets=hosts, port_range="1-65535", http_ports=[], include_loopback=False,
+                              inspect_all_open_ports=True, packets_per_second=min(policy.get("packets_per_second", 1000), 1000))
+                try:
+                    await sweep.collect(scoped)
+                except (OSError, ValueError, RuntimeError, ET.ParseError, httpx.HTTPError) as error:
+                    sweep.report.update(phase=Phase.FAILED, error=str(error), completed_at=time.time())
+                    await sweep.save(True)
+                last_hosts = hosts
+            await asyncio.sleep(1)
 
     async def run_scans(self, once=False):
         last_policy = None

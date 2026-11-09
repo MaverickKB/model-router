@@ -13,7 +13,9 @@ def network_view(
     limit=None,
     query="",
     category="All addresses",
+    resolved_names=None,
 ) -> dict:
+    resolved_names = resolved_names or (dict)
     report = read_report(root)
     by_url = {
         url: engine
@@ -21,6 +23,15 @@ def network_view(
         for url in [engine["base_url"], *engine.get("aliases", [])]
     }
     hosts = report.get("hosts", [])
+    resolved = resolved_names()
+    for host in hosts:
+        # A scan cannot name a LAN host on its own. Use a cached resolution
+        # instead of leaving every row an address; never resolve here.
+        if not str(host.get("name") or "").strip():
+            address = str(host.get("address") or "")
+            if address in resolved:
+                host["name"] = resolved[address]
+                host["name_source"] = "resolved"
     for host in hosts:
         for service in host.get("services", []):
             engine = by_url.get(service.get("base_url"))

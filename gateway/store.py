@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .caller_records import caller_id, merge_observations
-from .caller_sources import ensure_source_identity, normalized_address
+from .caller_sources import UNNAMED_CALLER, ensure_source_identity, normalized_address
 from .caller_sources import source_identity as caller_source_identity
 from .engine_identity import merged_configuration
 from .migration import configuration as migrate_configuration
@@ -22,6 +22,7 @@ from .network.caller_evidence import DiscoveryCallerEvidence
 from .network.report import write_json
 from .schema import Configuration
 from .security.credentials import CredentialCipher, digest, verify
+from .source_names import SourceNames
 
 ACTIVATION_SECONDS = 72 * 3600
 MAX_ACCOUNT_KEYS = 20
@@ -93,6 +94,9 @@ class Store:
         self._caller_source_evidence = DiscoveryCallerEvidence(
             self.discovery_directory
         )
+        # Address -> name from the tailnet, mDNS and this router's engine table.
+        # Reads answer from a cache; refresh() is called off the request path.
+        self.source_names = SourceNames()
         self.db = sqlite3.connect(path, check_same_thread=False)
         os.chmod(path, 0o600)
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -217,9 +221,20 @@ class Store:
         }
 
     def publish_discovery_policy(self):
+        policy = self._config.discovery.model_dump()
+        hosts = []
+        for route in self._config.routes:
+            if not route.enabled:
+                continue
+            for selector in (route.primary, route.fallback):
+                if selector:
+                    for host in selector.hosts:
+                        if host not in hosts:
+                            hosts.append(host)
+        policy["follow_hosts"] = hosts
         write_json(
             self.discovery_directory / "policy.json",
-            self._config.discovery.model_dump(),
+            policy,
         )
 
     def operator_verifier(self) -> str:
@@ -255,6 +270,11 @@ class Store:
 
     def save_operator_session(self, key: str, expires: float):
         with self.lock:
+            # Expired rows are dropped here so the table follows live sessions
+            # while the process runs, not only when a reader asks for them.
+            self.db.execute(
+                "DELETE FROM operator_sessions WHERE expires <= ?", (time.time(),)
+            )
             self.db.execute(
                 "INSERT OR REPLACE INTO operator_sessions VALUES (?, ?)", (key, expires)
             )
@@ -496,6 +516,9 @@ class Store:
                 "SELECT body FROM events ORDER BY ts DESC LIMIT ?", (limit,)
             ):
                 event = json.loads(row[0])
+                private = getattr(self, "private_event_filter", None)
+                if private is not None and private(event):
+                    continue
                 caller = event.get("caller")
                 if isinstance(caller, dict):
                     event["caller"] = self._apply_caller_source_name(
@@ -567,11 +590,14 @@ class Store:
                 "INSERT OR REPLACE INTO callers VALUES (?, ?, ?)",
                 (stored["id"], stored["last_seen"], json.dumps(stored)),
             )
+            discovery = self._config.discovery
             self.db.execute(
-                "DELETE FROM callers WHERE seen < ?", (time.time() - 7 * 86400,)
+                "DELETE FROM callers WHERE seen < ?",
+                (time.time() - discovery.caller_retention_days * 86400,),
             )
             self.db.execute(
-                "DELETE FROM callers WHERE id NOT IN (SELECT id FROM callers ORDER BY seen DESC LIMIT 1000)"
+                "DELETE FROM callers WHERE id NOT IN (SELECT id FROM callers ORDER BY seen DESC LIMIT ?)",
+                (discovery.caller_row_limit,),
             )
 
     def set_caller_source_name(self, source_key: str, name: str) -> dict:
@@ -632,14 +658,38 @@ class Store:
             if evidence["hostname"] and evidence["hostname"] != address.casefold()
         }
 
+    def recent_source_addresses(self, window_seconds: float | None = None) -> list[str]:
+        """Distinct source addresses worth resolving. Reads only; no lookups."""
+        discovery = self._config.discovery
+        if window_seconds is None:
+            window_seconds = discovery.caller_retention_days * 86400
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT body FROM callers WHERE seen >= ? LIMIT ?",
+                (time.time() - window_seconds, discovery.caller_row_limit),
+            )
+            addresses = set()
+            for (body,) in rows:
+                try:
+                    address = json.loads(body).get("source_address")
+                except ValueError:
+                    continue
+                if address:
+                    addresses.add(str(address))
+            return sorted(addresses)
+
     def callers(self) -> list[dict]:
         with self.lock:
             labels = self.caller_source_names()
             hostnames = self.discovered_source_hostnames()
             records = []
+            discovery = self._config.discovery
             for row in self.db.execute(
-                "SELECT body FROM callers WHERE seen >= ? ORDER BY seen DESC LIMIT 1000",
-                (time.time() - 7 * 86400,),
+                "SELECT body FROM callers WHERE seen >= ? ORDER BY seen DESC LIMIT ?",
+                (
+                    time.time() - discovery.caller_retention_days * 86400,
+                    discovery.caller_row_limit,
+                ),
             ):
                 caller = ensure_source_identity(json.loads(row[0]))
                 records.append(self._apply_caller_source_name(caller, labels, hostnames))
@@ -654,11 +704,20 @@ class Store:
             caller["source_label"] = label
             caller["source_label_source"] = "operator"
             return caller
-        hostname = hostnames.get(normalized_address(str(caller.get("source_address", ""))))
-        if hostname and caller.get("source_label_source") == "address":
+        if caller.get("source_label_source") != "address":
+            return caller
+        address = normalized_address(str(caller.get("source_address", "")))
+        hostname = hostnames.get(address) or self.source_names.name(address)
+        if hostname:
             caller["source_label"] = hostname
             caller["source_label_source"] = "discovered_hostname"
             caller["source_hostname"] = hostname
+        # The row's own name is written when the caller is first seen, before any
+        # lookup has run, so an unnamed row keeps a placeholder forever. Fill it
+        # here, on the read path, from the same cache the label uses. A caller who
+        # reports a name of their own keeps it; only the placeholder is replaced.
+        if caller.get("name") == UNNAMED_CALLER and hostname:
+            caller["name"] = hostname
         return caller
 
     # Accounts. Rows never carry verifiers; the request path reads caches only.
@@ -981,6 +1040,10 @@ class Store:
 
     def save_portal_session(self, digest: str, account_id: str, expires: float):
         with self.lock, self.db:
+            # Same sweep as operator sessions: a saved table is a live-session table.
+            self.db.execute(
+                "DELETE FROM portal_sessions WHERE expires <= ?", (time.time(),)
+            )
             self.db.execute(
                 "INSERT OR REPLACE INTO portal_sessions VALUES (?, ?, ?, ?)",
                 (digest, account_id, expires, time.time()),

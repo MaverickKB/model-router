@@ -127,7 +127,7 @@ it("selects one source across software and policies, with metadata collapsed ins
   expect(input.save).not.toHaveBeenCalled();
 });
 
-it("shows declared names as metadata and keeps the same key on separate source addresses", async () => {
+it("shows declared names with metadata and keeps the same key on separate source addresses", async () => {
   const input = props(
     [
       observation("named-app", {
@@ -159,10 +159,10 @@ it("shows declared names as metadata and keeps the same key on separate source a
     screen.getAllByRole("button", { name: /^Inspect source/ }),
   ).toHaveLength(2);
   await user.click(
-    screen.getByRole("button", { name: "Inspect source 192.0.2.30" }),
+    screen.getByRole("button", { name: "Inspect source Writing assistant" }),
   );
   const details = screen.getByRole("region", {
-    name: "Source details for 192.0.2.30",
+    name: "Source details for Writing assistant",
   });
   expect(within(details).getByText("Reported names")).toBeVisible();
   expect(
@@ -204,7 +204,7 @@ it("retains the unknown-credential explanation inside the source request metadat
   expect(screen.getByText(/Route settings determine access/)).toBeVisible();
 });
 
-it("orders sources by address and their metadata by recency without changing observation records", () => {
+it("orders sources by recency and their metadata by recency without changing observation records", () => {
   const callers = [
     observation("later-address", { source_address: "192.0.2.31" }),
     observation("older", { last_seen: 20 }),
@@ -213,16 +213,22 @@ it("orders sources by address and their metadata by recency without changing obs
   ];
   const original = structuredClone(callers);
   const grouped = groupCallerSources(callers);
+  // Recency, not address. 192.0.2.31 was seen more recently than 192.0.2.30,
+  // so it leads. Ordering by address put an unnamed numeric row from a host
+  // that left days ago above the machines actually calling.
   expect(grouped.map((source) => source.address)).toEqual([
-    "192.0.2.30",
     "192.0.2.31",
+    "192.0.2.30",
   ]);
-  expect(grouped[0].callers.map((caller) => caller.id)).toEqual([
+  // Name the source rather than indexing by position: the list now leads with
+  // whichever source was seen most recently, so position is not identity.
+  const oldest = grouped.find((source) => source.address === "192.0.2.30")!;
+  expect(oldest.callers.map((caller) => caller.id)).toEqual([
     "latest-a",
     "latest-b",
     "older",
   ]);
-  expect(grouped[0].lastSeen).toBe(30);
+  expect(oldest.lastSeen).toBe(30);
   expect(callers).toEqual(original);
 });
 
@@ -348,9 +354,7 @@ it("keeps the existing friendly name and explains a failed save", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "The router did not save this name",
   );
-  expect(screen.getByLabelText("Friendly name")).toHaveValue(
-    "Lab workstation",
-  );
+  expect(screen.getByLabelText("Friendly name")).toHaveValue("Lab workstation");
 });
 
 it("uses discovered hostnames as display evidence while staying address-bound", async () => {
@@ -431,4 +435,134 @@ it("an account caller shows User account and no edit button", async () => {
   expect(
     within(details).queryByRole("button", { name: /^Edit permission policy/ }),
   ).not.toBeInTheDocument();
+});
+
+it("leads with a CIDR client name, keeps the IP secondary, and shows reported agent evidence", () => {
+  const namedPolicy = {
+    ...policy,
+    name: "Lab Mac",
+    source_networks: ["192.0.2.0/24"],
+  };
+  render(
+    <ClientsView
+      {...props(
+        [
+          observation("named", {
+            reported_name: "Cairn Tessera",
+            client_family: "OpenAI Python",
+            identity_quality: "self_reported",
+            last_seen: Date.now() / 1000 - 3 * 86400,
+          }),
+        ],
+        [namedPolicy],
+      )}
+    />,
+  );
+  const card = screen.getByRole("button", { name: "Inspect source Lab Mac" });
+  expect(card.querySelector("strong")).toHaveTextContent(
+    "Lab Mac · Cairn Tessera",
+  );
+  expect(within(card).getByText(/192\.0\.2\.30/)).toBeVisible();
+  expect(card).toHaveTextContent("OpenAI Python");
+  expect(card).toHaveTextContent("Self-reported label");
+  expect(card).toHaveTextContent("Last seen 3 days ago");
+});
+
+it("labels an unknown address honestly and states when no agent identity was reported", () => {
+  render(<ClientsView {...props([observation("unknown")])} />);
+  const card = screen.getByRole("button", {
+    name: "Inspect source 192.0.2.30",
+  });
+  expect(card.querySelector("strong")).toHaveTextContent("192.0.2.30");
+  expect(card).toHaveTextContent("Unrecognized source");
+  expect(card).toHaveTextContent("No agent identity reported");
+  expect(card).not.toHaveTextContent("Unidentified caller");
+});
+
+it("uses a reported hostname without changing the source key", () => {
+  const callers = [
+    observation("mac", {
+      source_address: "100.114.203.45",
+      source_hostname: "Kenneth’s MacBook Pro",
+    }),
+  ];
+  render(<ClientsView {...props(callers)} />);
+  const card = screen.getByRole("button", {
+    name: "Inspect source Kenneth’s MacBook Pro",
+  });
+  expect(card.querySelector("strong")).toHaveTextContent(
+    "Kenneth’s MacBook Pro",
+  );
+  expect(card).toHaveTextContent("100.114.203.45");
+  expect(groupCallerSources(callers)[0].key).toBe("addr:100.114.203.45");
+});
+
+it("uses the most specific unique CIDR name and leaves equal-prefix conflicts unnamed", () => {
+  const callers = [observation("cidr")];
+  const broad = {
+    ...policy,
+    id: "broad",
+    name: "Lab",
+    source_networks: ["192.0.2.0/24"],
+  };
+  const exact = {
+    ...policy,
+    id: "exact",
+    name: "Desk",
+    source_networks: ["192.0.2.30/32"],
+  };
+  expect(groupCallerSources(callers, [broad, exact])[0].displayName).toBe(
+    "Desk",
+  );
+  expect(
+    groupCallerSources(callers, [
+      exact,
+      { ...exact, id: "conflict", name: "Other" },
+    ])[0].displayName,
+  ).toBe("192.0.2.30");
+  expect(
+    groupCallerSources(
+      [observation("outside", { source_address: "192.0.3.30" })],
+      [broad],
+    )[0].displayName,
+  ).toBe("192.0.3.30");
+});
+
+it("matches compressed IPv6 CIDRs without using malformed networks", () => {
+  const callers = [observation("v6", { source_address: "2001:db8::30" })];
+  const network = { ...policy, source_networks: ["bad/64", "2001:db8::/64"] };
+  expect(groupCallerSources(callers, [network])[0].displayName).toBe(
+    policy.name,
+  );
+  expect(
+    groupCallerSources(
+      [observation("other", { source_address: "2001:db9::30" })],
+      [network],
+    )[0].displayName,
+  ).toBe("2001:db9::30");
+});
+
+it("leads with a reported agent name when no client or hostname is known", () => {
+  render(
+    <ClientsView
+      {...props([
+        observation("reported", {
+          reported_name: "Lab agent",
+          identity_quality: "self_reported",
+        }),
+      ])}
+    />,
+  );
+  const card = screen.getByRole("button", { name: "Inspect source Lab agent" });
+  expect(card.querySelector("strong")).toHaveTextContent(/^Lab agent$/);
+  expect(card).toHaveTextContent("192.0.2.30");
+  expect(card).toHaveTextContent("Self-reported label");
+  expect(card).not.toHaveTextContent("No agent identity reported");
+});
+it("does not invent a name for an address from a historic host snapshot", () => {
+  expect(
+    groupCallerSources([
+      observation("unknown-tailnet", { source_address: "100.114.203.45" }),
+    ])[0].displayName,
+  ).toBe("100.114.203.45");
 });

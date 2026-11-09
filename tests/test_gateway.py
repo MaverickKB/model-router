@@ -465,7 +465,15 @@ async def test_plain_catalog_respects_saved_capabilities_for_agent_requests(tmp_
         base_url="http://provider.test/v1",
         capabilities=["text", "streaming", "vision"],
     )
-    app.state.store.save(Configuration(engines=[engine], routes=[Route(name="work")]))
+    caller = Client(name="Agent fixture", route_names=["work"])
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[Route(name="work")],
+            clients=[caller],
+            security=Security(anonymous_client_id=caller.id),
+        )
+    )
     await app.state.discovery.refresh()
     payload = {
         "model": "work",
@@ -516,20 +524,41 @@ async def test_replacement_during_request_refreshes_and_routes_without_client_ed
 
 
 @pytest.mark.asyncio
-async def test_disabled_model_visible_to_operator_but_not_routable(setup):
+async def test_a_model_override_cannot_disable_what_the_host_serves(setup):
+    """Routability is the host's catalog plus model_patterns, never a flag.
+
+    An operator toggle that hides a resident model is a second source of truth.
+    It is how an alias ghost survived: the host answered the name, the router had
+    it marked off, and nothing tied the two facts together. A stored `enabled`
+    key is dropped at load and does not change what routes.
+    """
     app, http, _fleet, _local, *_ = setup
+    from gateway.migration import configuration
     from gateway.schema import ModelSettings
 
+    assert "enabled" not in ModelSettings.model_fields
+
+    # A pre-existing config that carries the retired key loads and drops it.
+    raw = app.state.store.config().model_dump(mode="json")
+    raw["engines"][0]["model_settings"] = {
+        "first-model": {"enabled": False, "capabilities": ["text", "streaming"]}
+    }
+    migrated = configuration(raw)
+    assert "enabled" not in migrated["engines"][0]["model_settings"]["first-model"]
+
     config = app.state.store.config()
-    config.engines[0].model_settings = {"first-model": ModelSettings(enabled=False)}
+    config.engines[0].model_settings = {
+        "first-model": ModelSettings(capabilities=["text", "streaming"])
+    }
     config.clients[0].allow_cloud = False
     app.state.store.save(config)
     await app.state.discovery.refresh()
-    assert app.state.discovery.views()[0]["models"][0]["enabled"] is False
-    assert "first-model" not in [
+    # The override still shapes metadata, but the host's model stays routable.
+    assert app.state.discovery.views()[0]["models"][0]["enabled"] is True
+    assert "first-model" in [
         m["id"] for m in (await http.get("/v1/models")).json()["data"]
     ]
-    assert (await send(http, "first-model")).status_code != 200
+    assert (await send(http, "first-model")).status_code == 200
 
 
 @pytest.mark.asyncio

@@ -350,11 +350,11 @@ async def test_source_network_client_is_still_refreshed_between_attempts(tmp_pat
     ):
         response = await complete(http, "free")
     # The retry is identified afresh: the disabled source policy is skipped and
-    # the open route is served under the transient unkeyed identity, exactly as
-    # a new request from that address would be. The disabled policy never
-    # carries into the second attempt.
-    assert response.status_code == 200
-    assert [host for host, _ in setup.fleet.calls] == ["local-a.test", "local-b.test"]
+    # the transient unkeyed identity has no route permissions. The disabled
+    # policy never carries into a second upstream attempt.
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Route is outside the client's allowlist"
+    assert [host for host, _ in setup.fleet.calls] == ["local-a.test"]
     event = setup.store.events()[0]
     assert event["client_id"] != lan.id and event["client"] == "Unkeyed connection"
     caller = setup.store.callers()[0]
@@ -391,7 +391,7 @@ async def test_route_map_groups_account_callers_and_keeps_unassigned_unchanged(
     async with setup.caller() as http:
         assert (await complete(http, "private")).status_code == 200
     async with setup.caller(address="192.0.2.51", key=False) as http:
-        assert (await complete(http, "free")).status_code == 200
+        assert (await complete(http, "free")).status_code == 403
     store, config = setup.store, setup.store.config()
     views = setup.app.state.discovery.views()
     topology = route_map(config, views, store.callers(), store.accounts())
@@ -423,6 +423,8 @@ async def test_route_map_groups_account_callers_and_keeps_unassigned_unchanged(
     ]
     assert len(unkeyed_edges) == len(config.routes)
     assert all(edge["policy_id"] is None for edge in unkeyed_edges)
+    assert all(edge["ready_engines"] == [] for edge in unkeyed_edges)
+    assert all("allowlist" in edge["reason"] for edge in unkeyed_edges)
 
     disabled = config.model_copy(
         update={"accounts": AccountsSettings(enabled=False)}, deep=True

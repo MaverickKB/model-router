@@ -20,6 +20,7 @@ from .accounts.api import admin_router, portal_router
 from .accounts.devices import warnings as device_warnings
 from .accounts.portal import PortalIdentity
 from .accounts.principal import derive_principal, level_for
+from .adapters.jevos_native import MAX_BODY as NATIVE_BODY_LIMIT
 from .discovery import DiscoveryService
 from .engine_identity import MergeEngines
 from .engine_suggestions import suggestions
@@ -27,18 +28,23 @@ from .identity import Identity
 from .network.collector import Collector
 from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
-from .proxy import Proxy
-from .routing import client_reason, decide, route_requires_caller_key
+from .origin_policy import OriginPolicy
+from .proxy import Proxy, require_origin_route
+from .routing import client_reason, decide, matches, route_requires_caller_key
 from .schema import Configuration, Engine
 from .security.body_limit import BodyLimit
+from .speech import register_speech, speech_decision
 from .store import Conflict, Store
+from .systemone_native import NativeOwner
 from .topology import route_map
 from .updates import Updates
 
 
-def create_app(state_dir: str | None = None, background=True, transport=None):
+def create_app(state_dir: str | None = None, background=True, transport=None, speech_connector=None, native_probe=None, native_exit_probe=None):
     store = Store(state_dir or os.environ.get("MODEL_ROUTER_STATE", "./state"))
     identity = Identity(store)
+    origins = OriginPolicy(str(store.directory))
+    store.private_event_filter = origins.is_private_event
     http = httpx.AsyncClient(
         transport=transport,
         follow_redirects=False,
@@ -47,15 +53,51 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     )
     discovery = DiscoveryService(store, http)
     proxy = Proxy(store, discovery, http, identity)
+    proxy.origins = origins
+    native = NativeOwner(store, discovery, http, identity, probe=native_probe, exit_probe=native_exit_probe)
     portal = PortalIdentity(store, identity)
     updates = Updates(http)
+
+    async def refresh_source_names(store):
+        """Keep the address -> name cache warm, off the request path.
+
+        Every caller row and every scanned host reads this cache. Refreshing it
+        here means a lookup can never stall a request, and a slow or absent
+        lookup source degrades to an honest blank instead of a hung router.
+
+        Only the lookup itself is guarded. A bug in the assembly above is left
+        to surface, because a refresher that dies quietly would leave the cache
+        cold and every row an address again, with nothing to show for it.
+        """
+        while True:
+            engines = [
+                {"base_url": engine.base_url, "name": engine.name}
+                for engine in store.config().engines
+            ]
+            store.source_names.set_engines(engines)
+            addresses = set(await asyncio.to_thread(store.recent_source_addresses))
+            addresses.update(
+                str(host.get("address") or "")
+                for host in (
+                    read_report(store.discovery_directory).get("hosts") or []
+                )
+                if host.get("status") == "up"
+            )
+            if addresses:
+                try:
+                    await asyncio.to_thread(store.source_names.refresh, addresses)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    pass
+            await asyncio.sleep(store.source_names.ttl / 2)
 
     @asynccontextmanager
     async def lifespan(app):
         await asyncio.to_thread(store.interrupt_unfinished)
+        await native.start()
         tasks = []
         if background:
             tasks.append(asyncio.create_task(discovery.run()))
+            tasks.append(asyncio.create_task(refresh_source_names(store)))
             if (
                 os.environ.get("MODEL_ROUTER_DISCOVERY_WORKER", "embedded")
                 == "embedded"
@@ -69,6 +111,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await native.close()
             await http.aclose()
 
     app = FastAPI(
@@ -84,12 +127,26 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         discovery,
         identity,
     )
+    app.state.native_owner = native
     app.state.proxy = proxy
+    app.state.origins = origins
     app.state.portal = portal
     app.state.updates = updates
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""
+        origin = origins.classify(request.client.host if request.client else None)
+        request.state.origin = origin
+        if origin is not None:
+            if origins.in_maintenance(origin):
+                raise HTTPException(503, {"error": {
+                    "message": origin.maintenance_message,
+                    "type": "maintenance", "code": "down_for_maintenance"}})
+            if origin.allowed_paths is not None and (
+                request.scope.get("type") != "http"
+                or not origin.path_allowed(request.url.path)
+            ):
+                raise HTTPException(403, "This endpoint is not available to this origin")
         try:
             client = await identity.identify(request)
         except HTTPException as exc:
@@ -117,6 +174,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         )
         return client
 
+    register_speech(app, store, discovery, identity, identify_caller, speech_connector)
+
     @app.exception_handler(json.JSONDecodeError)
     async def invalid_json(request, exc):
         return JSONResponse({"detail": "Request body must be JSON"}, status_code=400)
@@ -130,16 +189,30 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         await identity.require_operator(request)
         config = store.config()
         engines = discovery.views()
+        # Most recent first. Two callers often tie on both name and address --
+        # one host running several clients -- so last_seen breaks the tie before
+        # the id does, or a row days stale can sit above one seen a minute ago.
         connections = sorted(
             await asyncio.to_thread(store.callers),
-            key=lambda c: (c["name"], c["source_address"], c["id"]),
+            key=lambda c: (
+                -float(c.get("last_seen") or 0),
+                c["name"],
+                c["source_address"],
+                c["id"],
+            ),
         )
         return {
             "setup_required": store.setup_required,
-            "observed_callers": connections,
+            "observed_callers": [
+                c for c in connections if not origins.is_private_caller(c)
+            ],
             "config": config.model_dump(),
             "network": await asyncio.to_thread(
-                network_view, store.discovery_directory, engines, limit=0
+                network_view,
+                store.discovery_directory,
+                engines,
+                limit=0,
+                resolved_names=store.source_names.names,
             ),
             "engines": engines,
             "engine_merge_suggestions": suggestions(engines),
@@ -165,7 +238,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
                     for model in engine["models"]
                 )
             ]
-            + device_warnings(config, store.devices(), store.accounts()),
+            + device_warnings(config, store.devices(), store.accounts())
+            + discovery.recovery_warnings(),
             "server_time": time.time(),
             "environment_label": os.environ.get("MODEL_ROUTER_LABEL", ""),
             "operator_url": os.environ.get("MODEL_ROUTER_PUBLIC_URL") or None,
@@ -192,6 +266,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             limit=limit,
             query=query,
             category=category,
+            resolved_names=store.source_names.names,
         )
 
     @management.post("/login")
@@ -423,27 +498,76 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
         caller_key_present = getattr(request.state, "caller_key_present", True)
         config, views = store.config(), discovery.views()
         data = []
+        chat_views = [e for e in views if e["protocol"] != "xai_tts"]
         for route in config.routes:
             decision = decide(
                 config,
-                views,
+                chat_views,
                 client,
                 {"model": route.name},
                 consider_capacity=False,
                 caller_key_present=caller_key_present,
             )
-            if decision["candidates"]:
-                data.append(
-                    {
-                        "id": route.name,
-                        "object": "model",
-                        "owned_by": "model-router",
-                        "description": route.purpose,
-                    }
+            serving = "chat"
+            if not decision["candidates"]:
+                decision = decide(
+                    config,
+                    chat_views,
+                    client,
+                    {"model": route.name, "questions": []},
+                    consider_capacity=False,
+                    caller_key_present=caller_key_present,
                 )
+                serving = "systemone"
+                if decision["candidates"] and all(
+                    next(e for e in views if e["id"] == c["engine_id"])["protocol"] == "jevos_native"
+                    for c in decision["candidates"]
+                ):
+                    serving = "systemone-native"
+            speech_route = route.name == "cairn_voice"
+            if speech_route:
+                decision = speech_decision(config, views, client, request, consider_capacity=False)
+                serving = "speech"
+            recovering_alias = (
+                route.enabled and route.recovery_seconds != 0 and route.primary.hosts
+                and client.enabled and matches(route.name, client.route_names)
+                and decision.get("status") not in {401, 403}
+            )
+            if recovering_alias and not decision["candidates"] and not speech_route:
+                # A speech route has no chat fallback; keep declaring speech and
+                # report it unavailable rather than advertising a chat row.
+                serving = "chat"
+            if decision["candidates"] or recovering_alias:
+                row = {
+                    "id": route.name,
+                    "object": "model",
+                    "owned_by": "model-router",
+                    "description": route.purpose,
+                }
+                if serving != "chat":
+                    row["serving"] = serving
+                if recovering_alias:
+                    row["available"] = bool(decision["candidates"])
+                if speech_route and not decision["candidates"]:
+                    row["available"] = False
+                selected_engines = set()
+                contexts = []
+                capacity = 0
+                for candidate in decision["candidates"]:
+                    engine = next(engine for engine in views if engine["id"] == candidate["engine_id"])
+                    model = next(model for model in engine["models"] if model["id"] == candidate["model"])
+                    contexts.append(model.get("context_length"))
+                    if engine["id"] not in selected_engines:
+                        selected_engines.add(engine["id"])
+                        capacity += engine["max_inflight"]
+                if recovering_alias and contexts and all(contexts):
+                    row["context_length"] = min(contexts)
+                if recovering_alias and capacity:
+                    row["max_concurrency"] = capacity
+                data.append(row)
         seen = {row["id"] for row in data}
         for engine in views if client.allow_direct_models else []:
-            if engine["status"] != "available":
+            if engine["status"] != "available" or engine["protocol"] == "xai_tts":
                 continue
             for model in engine["models"]:
                 if (
@@ -477,6 +601,10 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
     async def register(request: Request):
         if store.config().security.operator_auth_enabled:
             await identity.require_operator(request, True)
+        elif not identity.origin_allowed(request):
+            # The same browser-origin test as every other state-changing
+            # management POST, applied even when operator auth is off.
+            raise HTTPException(403, "Settings require a same-origin operator request")
         identity.registration_limit.take(
             request.client.host if request.client else "unknown"
         )
@@ -535,6 +663,42 @@ def create_app(state_dir: str | None = None, background=True, transport=None):
             payload = json.loads(raw)
         except ValueError:
             raise HTTPException(400, "Request body must be JSON")
+        if isinstance(payload, dict) and "questions" in payload:
+            raise HTTPException(
+                400, "Chat completions do not accept System One questions"
+            )
+        return await proxy.dispatch_connected(request, payload, client)
+
+    @app.post("/v1/systemone")
+    async def systemone(request: Request):
+        client = await identify_caller(request)
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 16 * 1024 * 1024:
+                raise HTTPException(413, "Request exceeds 16 MiB")
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            raise HTTPException(400, "Request body must be JSON")
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Request body must be a JSON object")
+        questions = payload.get("questions")
+        if isinstance(questions, dict):
+            if len(raw) > NATIVE_BODY_LIMIT:
+                raise HTTPException(413, "Native request exceeds 8 KiB")
+            # Native dispatch resolves its route from payload["model"] exactly
+            # as the proxy does, so the origin allowlist must gate it here too.
+            route_name = payload.get("model")
+            if isinstance(route_name, str) and route_name:
+                require_origin_route(request, route_name)
+            return await native.dispatch(request, payload, client)
+        if not isinstance(questions, list) or not questions:
+            raise HTTPException(400, "questions must be a nonempty array")
+        if payload.get("stream"):
+            raise HTTPException(400, "System One routes do not stream")
+        if "messages" in payload:
+            raise HTTPException(400, "System One routes do not accept chat messages")
         return await proxy.dispatch_connected(request, payload, client)
 
     @management.post("/try-route")

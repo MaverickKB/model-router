@@ -200,7 +200,7 @@ export function RouteEditor({
           <p>
             {draft.require_caller_key
               ? "Only callers presenting a valid key can request this route."
-              : "Callers without a key may request this route when their other permissions allow it."}
+              : "Callers without a key need a matching source or default policy that permits this route."}
           </p>
         </div>
         <Switch

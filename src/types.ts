@@ -6,7 +6,6 @@ export interface Model {
   context_length: number | null;
 }
 export interface ModelSettings {
-  enabled: boolean;
   capabilities: string[];
   context_length: number | null;
 }
@@ -94,6 +93,8 @@ export interface Discovery {
   stale_seconds: number;
   auto_register: boolean;
   mdns: boolean;
+  caller_retention_days: number;
+  caller_row_limit: number;
   ignored_urls: string[];
 }
 export interface Security {
