@@ -51,10 +51,18 @@ export function rowsForEngine(
 
 export function requestTimingLabel(performance: RequestPerformance) {
   const tokens = `${performance.tokens_estimated ? "≈ " : ""}${performance.completion_tokens} completion tokens`;
+  const queue =
+    performance.queue_ms !== undefined
+      ? `Queue ${durationLabel(performance.queue_ms)}`
+      : null;
   if (!performance.stream) {
-    return `Engine response ${durationLabel(performance.upstream_ms)} · ${tokens}`;
+    const parts: string[] = [`Engine response ${durationLabel(performance.upstream_ms)}`];
+    if (queue) parts.push(queue);
+    parts.push(tokens);
+    return parts.join(" · ");
   }
   const parts: string[] = [];
+  if (queue) parts.push(queue);
   if (performance.first_chunk_ms !== null) {
     parts.push(`First chunk ${durationLabel(performance.first_chunk_ms)}`);
   }

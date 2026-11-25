@@ -110,6 +110,9 @@ def _attempt_outcome(attempt: dict, is_final: bool, event: dict) -> str:
     # An interrupted stream or an oversized body after a successful answer.
     if is_final and event.get("status") == "failed" and event.get("http_status") == 502:
         return "failed"
+    # The watchdog stopped a runaway stream on this engine.
+    if is_final and event.get("status") == "watchdog":
+        return "watchdog"
     return "other"
 
 
@@ -120,16 +123,21 @@ def _new_row(engine_id: str, model: str, ts: float) -> dict:
         "model": model,
         "served": 0,
         "failed": 0,
+        "watchdog": 0,
         "first_seen": ts,
         "last_seen": ts,
         "first_chunk_ms": [],
         "tokens_per_second": [],
         "estimated_samples": 0,
         "upstream_ms": [],
+        "queue_ms": [],
     }
 
 
 def _record_served(row: dict, performance: dict) -> None:
+    queue_ms = performance.get("queue_ms")
+    if isinstance(queue_ms, (int, float)):
+        row["queue_ms"].append(queue_ms)
     if performance.get("stream"):
         first_chunk_ms = performance.get("first_chunk_ms")
         if isinstance(first_chunk_ms, (int, float)):
@@ -167,6 +175,7 @@ def _finish_row(row: dict, names: dict, catalogs: dict) -> dict:
         "in_catalog": in_catalog,
         "served": row["served"],
         "failed": row["failed"],
+        "watchdog": row["watchdog"],
         "failure_rate": failure_rate,
         "first_seen": row["first_seen"],
         "last_seen": row["last_seen"],
@@ -176,11 +185,15 @@ def _finish_row(row: dict, names: dict, catalogs: dict) -> dict:
             "first_chunk_ms_p95": percentile(row["first_chunk_ms"], 0.95),
             "tokens_per_second_p50": percentile(row["tokens_per_second"], 0.5),
             "estimated_samples": row["estimated_samples"],
+            "queue_ms_p50": percentile(row["queue_ms"], 0.5),
+            "queue_ms_p95": percentile(row["queue_ms"], 0.95),
         },
         "non_stream": {
             "samples": len(row["upstream_ms"]),
             "upstream_ms_p50": percentile(row["upstream_ms"], 0.5),
             "upstream_ms_p95": percentile(row["upstream_ms"], 0.95),
+            "queue_ms_p50": percentile(row["queue_ms"], 0.5),
+            "queue_ms_p95": percentile(row["queue_ms"], 0.95),
         },
     }
 
@@ -226,6 +239,8 @@ def summarize(events: list[dict], names: dict, catalogs: dict) -> list[dict]:
                     _record_served(row, performance)
             elif outcome == "failed":
                 row["failed"] += 1
+            elif outcome == "watchdog":
+                row["watchdog"] += 1
 
     finished = []
     for row in rows.values():

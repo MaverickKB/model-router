@@ -138,16 +138,43 @@ def test_summary_attributes_each_attempt_to_its_own_engine_and_model():
         "first_chunk_ms_p95": 300,
         "tokens_per_second_p50": 20.0,
         "estimated_samples": 1,
+        "queue_ms_p50": None,
+        "queue_ms_p95": None,
     }
     assert first["non_stream"] == {
         "samples": 0,
         "upstream_ms_p50": None,
         "upstream_ms_p95": None,
+        "queue_ms_p50": None,
+        "queue_ms_p95": None,
     }
     assert second["engine"] == "Engine B"
     assert second["served"] == 2
     assert second["failed"] == 1
     assert second["in_catalog"] is False
+
+
+def test_summary_counts_watchdog_and_reports_queue_wait():
+    normal = served("a", "m", 10, {"stream": False, "upstream_ms": 500, "queue_ms": 120})
+    runaway = {
+        "ts": 20,
+        "status": "watchdog",
+        "attempts": [
+            {
+                "engine_id": "a",
+                "engine": "Engine A",
+                "model": "m",
+                "status": "responded",
+                "http_status": 200,
+            }
+        ],
+    }
+    rows = summarize([normal, runaway], names={}, catalogs={})
+    row = rows[0]
+    assert row["served"] == 1
+    assert row["watchdog"] == 1
+    assert row["non_stream"]["queue_ms_p50"] == 120
+    assert row["non_stream"]["queue_ms_p95"] == 120
 
 
 def test_unknown_catalog_is_not_reported_as_replaced():

@@ -268,6 +268,7 @@ export interface PerformanceRow {
   in_catalog: boolean | null;
   served: number;
   failed: number;
+  watchdog?: number;
   failure_rate: number | null;
   first_seen: number;
   last_seen: number;
@@ -277,11 +278,15 @@ export interface PerformanceRow {
     first_chunk_ms_p95: number | null;
     tokens_per_second_p50: number | null;
     estimated_samples: number;
+    queue_ms_p50?: number | null;
+    queue_ms_p95?: number | null;
   };
   non_stream: {
     samples: number;
     upstream_ms_p50: number | null;
     upstream_ms_p95: number | null;
+    queue_ms_p50?: number | null;
+    queue_ms_p95?: number | null;
   };
 }
 export interface PerformanceSummary {
