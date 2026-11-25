@@ -18,6 +18,7 @@ from .accounts.limits import AccountLimits, Refusal, UsageMeter
 from .accounts.principal import level_for
 from .discovery import DiscoveryService, Observation
 from .identity import Identity
+from .performance import ServedTiming
 from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
@@ -213,7 +214,10 @@ class Proxy:
         # Bound before finish exists: finish settles an admission when one was
         # claimed and must stay callable on every earlier exit.
         admission = None
-        meter = None
+        # Every request counts its output for performance history. Only an
+        # account admission also settles those counts against a budget.
+        meter = UsageMeter(payload)
+        timing = ServedTiming()
         account_id = getattr(request.state, "account_id", None)
         started = getattr(request.state, "router_started", None) or time.monotonic()
         request.state.router_started = started
@@ -223,10 +227,10 @@ class Proxy:
             if status == "recovering":
                 event.setdefault("recovering_since", time.time())
             row = None
+            usage = meter.result(status, code)
             if admission is not None and not admission.settled:
                 # Settle synchronously before the first await so a cancellation
                 # landing here can lose durability, never a slot or reservation.
-                usage = meter.result(status, code)
                 admission.settle(usage)
                 event["usage"] = {
                     "prompt_tokens": usage.prompt_tokens,
@@ -240,6 +244,13 @@ class Proxy:
                     admission.window_seconds,
                     *usage.row(),
                 )
+            # finish can run again when cancellation lands during the first
+            # write, so the stored metrics always follow the final status.
+            event.pop("performance", None)
+            if status == "completed":
+                performance = timing.summary(usage)
+                if performance is not None:
+                    event["performance"] = performance
             if event["attempts"] and event["attempts"][-1].get("status") == "waiting":
                 event["attempts"][-1]["status"] = status
             event.update(
@@ -303,6 +314,13 @@ class Proxy:
             await self.discovery.refresh_route(payload["model"])
             return True
 
+        def observe_chunk(chunk):
+            # The relay observes every chunk exactly once, the prefetched
+            # first chunk included, so each chunk is timed once. A stream
+            # delivered in a single read therefore has no generation interval.
+            meter.feed(chunk)
+            timing.mark_chunk()
+
         if not decision["candidates"]:
             while decision.get("status", 503) == 503 and await recover():
                 client = await self.identity.identify(request)
@@ -340,7 +358,6 @@ class Proxy:
                     headers=outcome.headers(),
                 )
             admission = outcome
-            meter = UsageMeter(payload)
 
         try:
             attempted = set()
@@ -431,7 +448,7 @@ class Proxy:
                     if isinstance(body.get(field), str):
                         body[field] = mapping.get(body[field], body[field])
                 injected = (
-                    meter is not None
+                    admission is not None
                     and bool(body.get("stream"))
                     and "stream_options" not in engine.unsupported_parameters
                 )
@@ -522,6 +539,7 @@ class Proxy:
                         },
                         timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
                     )
+                    timing.mark_sent()
                     upstream = connection.response = await self.http.send(
                         req, stream=True
                     )
@@ -587,7 +605,7 @@ class Proxy:
                                 first,
                                 iterator,
                                 finish,
-                                observe=meter.feed if meter is not None else None,
+                                observe=observe_chunk,
                                 recoverable=recovery_enabled,
                             ),
                             status_code=upstream.status_code,
@@ -603,8 +621,8 @@ class Proxy:
                         content = await read_limited(
                             upstream, engine.max_response_bytes
                         )
-                    if meter is not None:
-                        meter.feed_json(content)
+                    timing.mark_body_read()
+                    meter.feed_json(content)
                     code = upstream.status_code
                     content_type = upstream.headers.get(
                         "content-type", "application/json"
@@ -621,7 +639,7 @@ class Proxy:
                     )
                 except ResponseTooLarge:
                     await connection.release()
-                    if meter is not None:
+                    if admission is not None:
                         meter.oversized(admission.reserve)
                     await finish("failed", 502)
                     return JSONResponse(

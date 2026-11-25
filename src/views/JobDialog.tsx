@@ -2,6 +2,7 @@ import { ArrowRight } from "lucide-react";
 import { Dialog, timeLabel } from "../components";
 import { callerDisplayName, callerSummary } from "../caller-identity";
 import { DecisionView } from "../editors";
+import { requestTimingLabel } from "../performance-format";
 import type { Job } from "../types";
 export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
   return (
@@ -36,6 +37,9 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
             {job.usage.estimated ? "≈ " : ""}
             {job.usage.prompt_tokens + job.usage.completion_tokens} tokens
           </p>
+        )}
+        {job.performance && (
+          <p className="hint">{requestTimingLabel(job.performance)}</p>
         )}
         {job.status === "limited" && (
           <p className="hint">Refused by account limit: {job.limit?.code}</p>
