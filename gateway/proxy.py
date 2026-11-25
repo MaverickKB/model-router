@@ -24,6 +24,7 @@ from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
 from .stream_protocol import CompletionMarker, StreamProgress
+from .watchdog import Watchdog, WatchdogTrip
 
 
 class ResponseTooLarge(Exception):
@@ -105,7 +106,7 @@ class InflightRequest:
                             0, self.observation.background_inflight - 1
                         )
 
-    async def relay(self, first, iterator, finish, observe=None, recoverable=False):
+    async def relay(self, first, iterator, finish, observe=None, recoverable=False, watchdog=None):
         terminal = CompletionMarker()
         progress = StreamProgress()
         status, code = "cancelled", None
@@ -113,23 +114,65 @@ class InflightRequest:
             terminal.feed(first)
             if recoverable:
                 progress.feed(first)
+            if watchdog is not None:
+                trip = watchdog.feed(first)
+                if trip is not None:
+                    raise WatchdogTrip(trip)
             if observe is not None:
                 observe(first)
             yield first
             if not terminal.complete:
-                async for chunk in iterator:
-                    terminal.feed(chunk)
-                    if recoverable:
-                        progress.feed(chunk)
-                    if observe is not None:
-                        observe(chunk)
-                    yield chunk
-                    if terminal.complete:
-                        break
+                if watchdog is None:
+                    async for chunk in iterator:
+                        terminal.feed(chunk)
+                        if recoverable:
+                            progress.feed(chunk)
+                        if observe is not None:
+                            observe(chunk)
+                        yield chunk
+                        if terminal.complete:
+                            break
+                else:
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                anext(iterator, None),
+                                watchdog.no_progress_timeout_seconds,
+                            )
+                        except asyncio.TimeoutError:
+                            raise WatchdogTrip("no_progress") from None
+                        if chunk is None:
+                            break
+                        terminal.feed(chunk)
+                        if recoverable:
+                            progress.feed(chunk)
+                        trip = watchdog.feed(chunk)
+                        if trip is not None:
+                            raise WatchdogTrip(trip)
+                        if observe is not None:
+                            observe(chunk)
+                        yield chunk
+                        if terminal.complete:
+                            break
             if recoverable and not terminal.complete and not progress.has_output:
                 status = "recovering"
                 raise RecoverableStreamError("IncompleteStream")
             status, code = "completed", 200
+        except WatchdogTrip as trip:
+            status, code = "watchdog", None
+            yield (
+                b'event: error\ndata: '
+                + json.dumps(
+                    {
+                        "error": {
+                            "message": "Runaway output stopped by the router watchdog",
+                            "type": "watchdog",
+                            "code": trip.reason,
+                        }
+                    }
+                ).encode()
+                + b"\n\n"
+            )
         except httpx.HTTPError as error:
             status, code = "failed", 502
             self.observation.circuit_until = time.time() + self.failure_cooldown
@@ -652,6 +695,21 @@ class Proxy:
                                 finally:
                                     await connection.release()
 
+                        watchdog = None
+                        if engine.watchdog.enabled:
+                            watchdog = Watchdog(
+                                repeat_window=engine.watchdog.repeat_window,
+                                max_reasoning_bytes_without_answer=(
+                                    engine.watchdog.max_reasoning_bytes_without_answer
+                                ),
+                                first_token_timeout_seconds=(
+                                    engine.watchdog.first_token_timeout_seconds
+                                ),
+                                no_progress_timeout_seconds=(
+                                    engine.watchdog.no_progress_timeout_seconds
+                                ),
+                            )
+
                         return StreamingResponse(
                             connection.relay(
                                 first,
@@ -659,6 +717,7 @@ class Proxy:
                                 finish,
                                 observe=observe_chunk,
                                 recoverable=recovery_enabled,
+                                watchdog=watchdog,
                             ),
                             status_code=upstream.status_code,
                             media_type=response_content_type,

@@ -68,6 +68,22 @@ class NativeOwnerSettings(Record):
         return value
 
 
+class WatchdogSettings(Record):
+    """Runaway-output guard for the OpenAI chat stream relay.
+
+    Only the stream relay observes these; the websocket voice path and the
+    systemone path never enter that relay.
+    """
+
+    enabled: bool = True
+    repeat_window: int = Field(default=8, ge=2, le=64)
+    max_reasoning_bytes_without_answer: int = Field(
+        default=128 * 1024, ge=1024, le=16 * 1024 * 1024
+    )
+    first_token_timeout_seconds: float = Field(default=300, ge=1, le=3600)
+    no_progress_timeout_seconds: float = Field(default=120, ge=1, le=3600)
+
+
 class Engine(NamedRecord):
     id: str = Field(default_factory=identifier)
     name: str = Field(min_length=1, max_length=100)
@@ -107,6 +123,7 @@ class Engine(NamedRecord):
     )
     failure_cooldown_seconds: float = Field(default=15, ge=0, le=300)
     rate_limit_cooldown_seconds: float = Field(default=5, ge=0, le=300)
+    watchdog: WatchdogSettings = Field(default_factory=WatchdogSettings)
     credential_type: Literal["static", "xai_oauth", "codex_oauth"] = "static"
 
     @model_validator(mode="after")
