@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 from .accounts.limits import AccountLimits, Refusal, UsageMeter
 from .accounts.principal import level_for
 from .discovery import DiscoveryService, Observation
+from .debug_capture import DebugBuffer
 from .identity import Identity
 from .performance import ServedTiming
 from .routing import apply_defaults, decide
@@ -159,9 +160,11 @@ class Proxy:
         discovery: DiscoveryService,
         http: httpx.AsyncClient,
         identity: Identity,
+        debug=None,
     ):
         self.store, self.discovery, self.http = store, discovery, http
         self.identity = identity
+        self.debug = debug
         self.origins = None
         # Open windows are preloaded once; the request path never loads one.
         self.limits = AccountLimits()
@@ -222,10 +225,32 @@ class Proxy:
         started = getattr(request.state, "router_started", None) or time.monotonic()
         request.state.router_started = started
         await asyncio.to_thread(self.store.event, event)
+        debug_buffer = None
+        if self.debug is not None:
+            asyncio.create_task(
+                asyncio.to_thread(
+                    self.debug.capture_request,
+                    event["id"],
+                    request.headers,
+                    payload,
+                )
+            )
 
         async def finish(status, code=None):
             if status == "recovering":
                 event.setdefault("recovering_since", time.time())
+            if debug_buffer is not None and not debug_buffer.flushed:
+                debug_buffer.flushed = True
+                body = debug_buffer.flush()
+                if self.debug is not None:
+                    await asyncio.to_thread(
+                        self.debug.capture_stream,
+                        event["id"],
+                        debug_buffer.headers,
+                        body,
+                        "text/event-stream",
+                        debug_buffer.truncated,
+                    )
             row = None
             usage = meter.result(status, code)
             if admission is not None and not admission.settled:
@@ -320,6 +345,8 @@ class Proxy:
             # delivered in a single read therefore has no generation interval.
             meter.feed(chunk)
             timing.mark_chunk()
+            if debug_buffer is not None:
+                debug_buffer.append(chunk)
 
         if not decision["candidates"]:
             while decision.get("status", 503) == 503 and await recover():
@@ -593,6 +620,9 @@ class Proxy:
                             await connection.release()
                             continue
 
+                        if self.debug is not None and self.debug.active() is not None:
+                            debug_buffer = DebugBuffer(upstream.headers)
+
                         async def abandon_stream():
                             if not connection.released:
                                 try:
@@ -627,6 +657,14 @@ class Proxy:
                     content_type = upstream.headers.get(
                         "content-type", "application/json"
                     )
+                    if self.debug is not None:
+                        await asyncio.to_thread(
+                            self.debug.capture_response,
+                            event["id"],
+                            upstream.headers,
+                            content,
+                            content_type,
+                        )
                     if upstream.is_success:
                         obs.last_success = time.time()
                     await finish("completed" if upstream.is_success else "failed", code)

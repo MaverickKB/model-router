@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import sqlite3
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from .accounts.devices import warnings as device_warnings
 from .accounts.portal import PortalIdentity
 from .accounts.principal import derive_principal, level_for
 from .discovery import DiscoveryService
+from .debug_capture import DebugStore, DEFAULT_MAX_BYTES, DEFAULT_TTL_SECONDS
 from .engine_identity import MergeEngines
 from .engine_suggestions import suggestions
 from .identity import Identity
@@ -43,6 +45,12 @@ from .updates import Updates
 
 def create_app(state_dir: str | None = None, background=True, transport=None, speech_connector=None, native_probe=None, native_exit_probe=None):
     store = Store(state_dir or os.environ.get("MODEL_ROUTER_STATE", "./state"))
+    try:
+        debug = DebugStore(store.directory)
+    except (OSError, sqlite3.Error):
+        # Debug capture is optional. A broken debug store must not stop the
+        # router from serving requests.
+        debug = None
     identity = Identity(store)
     origins = OriginPolicy(str(store.directory))
     store.private_event_filter = origins.is_private_event
@@ -53,7 +61,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=32),
     )
     discovery = DiscoveryService(store, http)
-    proxy = Proxy(store, discovery, http, identity)
+    proxy = Proxy(store, discovery, http, identity, debug=debug)
     proxy.origins = origins
     native = NativeOwner(store, discovery, http, identity, probe=native_probe, exit_probe=native_exit_probe)
     portal = PortalIdentity(store, identity)
@@ -113,6 +121,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await native.close()
+            if debug is not None:
+                await asyncio.to_thread(debug.close)
             await http.aclose()
 
     app = FastAPI(
@@ -133,6 +143,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     app.state.origins = origins
     app.state.portal = portal
     app.state.updates = updates
+    app.state.debug = debug
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""
@@ -219,6 +230,96 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
             "generated_at": now,
             "rows": rows,
         }
+
+    def integer_field(body, name, default, minimum, maximum):
+        value = body.get(name, default)
+        if isinstance(value, bool):
+            raise HTTPException(422, name + " must be an integer")
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(422, name + " must be an integer")
+        if number < minimum or number > maximum:
+            raise HTTPException(
+                422,
+                name + " must be between " + str(minimum) + " and " + str(maximum),
+            )
+        return number
+
+    @management.post("/debug/start")
+    async def debug_start(request: Request):
+        await identity.require_operator(request, True)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(422, "A JSON object is required")
+        ttl = integer_field(body, "ttl_seconds", DEFAULT_TTL_SECONDS, 60, 3600)
+        max_bytes = integer_field(
+            body,
+            "max_bytes",
+            DEFAULT_MAX_BYTES,
+            1024 * 1024,
+            500 * 1024 * 1024,
+        )
+        scope = body.get("scope", ["headers", "request", "response", "stream"])
+        if not isinstance(scope, list) or not scope:
+            scope = ["headers", "request", "response", "stream"]
+        allowed = {"headers", "request", "response", "stream"}
+        invalid = []
+        for value in scope:
+            if value not in allowed:
+                invalid.append(str(value))
+        if invalid:
+            raise HTTPException(422, "Unknown debug scope: " + ", ".join(invalid))
+        session = await asyncio.to_thread(
+            debug.start, ttl, max_bytes, scope, "operator"
+        )
+        return {"session": session.as_dict()}
+
+    @management.post("/debug/stop")
+    async def debug_stop(request: Request):
+        await identity.require_operator(request, True)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        await asyncio.to_thread(debug.stop, "operator")
+        return {"ok": True}
+
+    @management.get("/debug/status")
+    async def debug_status(request: Request):
+        await identity.require_operator(request)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        return await asyncio.to_thread(debug.status)
+
+    @management.get("/debug/entries")
+    async def debug_entries(
+        request: Request,
+        limit: int = Query(100, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+    ):
+        await identity.require_operator(request)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        return await asyncio.to_thread(debug.entries, limit, offset, True)
+
+    @management.get("/debug/entries/{entry_id}")
+    async def debug_entry(entry_id: int, request: Request):
+        await identity.require_operator(request)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        entry = await asyncio.to_thread(debug.entry, entry_id)
+        if entry is None:
+            raise HTTPException(404, "Debug entry not found")
+        return entry
+
+    @management.post("/debug/purge")
+    async def debug_purge(request: Request):
+        await identity.require_operator(request, True)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        await asyncio.to_thread(debug.purge)
+        return {"ok": True}
 
     @management.get("/state")
     async def state(request: Request):

@@ -427,3 +427,56 @@ export interface ActivationLink {
   url: string;
   expires: number;
 }
+export interface DebugSession {
+  id: string;
+  started: number;
+  expires: number;
+  ttl_remaining: number;
+  max_bytes: number;
+  scope: string[];
+  operator: string;
+  status: string;
+  stopped: number | null;
+  stop_reason: string | null;
+}
+export interface DebugStatus {
+  active: boolean;
+  session: DebugSession | null;
+  last_session: DebugSession | null;
+  entries: number;
+  bytes_used: number;
+  db_bytes: number;
+  sessions: number;
+  path: string;
+  defaults: {
+    ttl_seconds: number;
+    max_bytes: number;
+    scope: string[];
+  };
+}
+export interface DebugEntrySummary {
+  id: number;
+  session_id: string;
+  ts: number;
+  request_id: string | null;
+  direction: string;
+  headers: Record<string, string>;
+  body_preview: string;
+  body_bytes: number;
+  truncated: number;
+}
+export interface DebugEntries {
+  items: DebugEntrySummary[];
+  total: number;
+}
+export interface DebugEntryDetail {
+  id: number;
+  session_id: string;
+  ts: number;
+  request_id: string | null;
+  direction: string;
+  headers: Record<string, string>;
+  body: string;
+  body_bytes: number;
+  truncated: number;
+}

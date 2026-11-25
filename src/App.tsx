@@ -26,6 +26,7 @@ import { ClientsView } from "./views/ClientsView";
 import { ConnectionDialog } from "./views/ConnectionDialog";
 import { JobDialog } from "./views/JobDialog";
 import { RoutesView } from "./views/RoutesView";
+import { TrafficView } from "./views/TrafficView";
 
 import { EngineCard } from "./EngineCard";
 import { performanceRefreshKey, rowsForEngine } from "./performance-format";
@@ -34,7 +35,7 @@ import { SettingsPage, type Section } from "./settings/SettingsPage";
 import { MergeEnginesDialog } from "./editors/MergeEnginesDialog";
 import { engineUrls } from "./engine-addresses";
 
-type Tab = "Overview" | "Network" | "Routes" | "Callers" | "Settings";
+type Tab = "Overview" | "Traffic" | "Network" | "Routes" | "Callers" | "Settings";
 export function App() {
   const { state, locked, connectionError, reload } = useRouterState();
   const [error, setError] = useState("");
@@ -236,7 +237,7 @@ export function App() {
       <nav className="topbar paper" aria-label="Main navigation">
         <div className="tabs">
           {(
-            ["Overview", "Network", "Routes", "Callers", "Settings"] as Tab[]
+            ["Overview", "Traffic", "Network", "Routes", "Callers", "Settings"] as Tab[]
           ).map((t) => (
             <button
               key={t}
@@ -571,6 +572,9 @@ export function App() {
                 <p className="error">{state.discovery.error}</p>
               )}
             </section>
+          )}
+          {tab === "Traffic" && (
+            <TrafficView events={state.events} engines={state.engines} />
           )}
           {tab === "Network" && (
             <NetworkView
