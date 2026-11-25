@@ -13,7 +13,7 @@ from gateway import performance
 from gateway.accounts.limits import Usage
 from gateway.app import create_app
 from gateway.performance import ServedTiming
-from gateway.schema import Configuration, Discovery, Engine, Route, Selector
+from gateway.schema import Client, Configuration, Discovery, Engine, Route, Selector
 
 
 class Clock:
@@ -165,9 +165,11 @@ async def test_real_http_requests_record_served_engine_timing(tmp_path):
         app = create_app(str(tmp_path), background=False)
         first = Engine(name="Busy engine", base_url=slow_url + "/v1")
         second = Engine(name="Serving engine", base_url=fast_url + "/v1")
+        client = Client(name="Performance test")
         app.state.store.save(
             Configuration(
                 engines=[first, second],
+                clients=[client],
                 routes=[
                     Route(
                         name="auto",
@@ -178,11 +180,16 @@ async def test_real_http_requests_record_served_engine_timing(tmp_path):
                 discovery=Discovery(enabled=False, mdns=False),
             )
         )
+        key = app.state.store.issue_key(client.id)
         await app.state.discovery.refresh()
         payload = {"model": "auto", "messages": [{"role": "user", "content": "hi"}]}
         async with (
             serving(app) as url,
-            httpx.AsyncClient(base_url=url, timeout=8) as http,
+            httpx.AsyncClient(
+                base_url=url,
+                timeout=8,
+                headers={"Authorization": f"Bearer {key}"},
+            ) as http,
         ):
             plain = await http.post("/v1/chat/completions", json=payload)
             assert plain.status_code == 200
@@ -255,17 +262,25 @@ async def test_a_stream_delivered_in_one_read_has_no_generation_rate(
     async with serving(upstream) as upstream_url:
         app = create_app(str(tmp_path), background=False)
         engine = Engine(name="Burst engine", base_url=upstream_url + "/v1")
+        client = Client(name="Performance test")
         app.state.store.save(
             Configuration(
-                engines=[engine], discovery=Discovery(enabled=False, mdns=False)
+                engines=[engine],
+                clients=[client],
+                discovery=Discovery(enabled=False, mdns=False),
             )
         )
+        key = app.state.store.issue_key(client.id)
         await app.state.discovery.refresh()
         # Any second reading of the single chunk would open a 10 ms interval.
         monkeypatch.setattr(performance, "time", SteppingClock())
         async with (
             serving(app) as url,
-            httpx.AsyncClient(base_url=url, timeout=8) as http,
+            httpx.AsyncClient(
+                base_url=url,
+                timeout=8,
+                headers={"Authorization": f"Bearer {key}"},
+            ) as http,
         ):
             result = await http.post(
                 "/v1/chat/completions",
@@ -297,15 +312,23 @@ async def test_failed_requests_record_no_performance(tmp_path):
     async with serving(upstream) as upstream_url:
         app = create_app(str(tmp_path), background=False)
         engine = Engine(name="Down engine", base_url=upstream_url + "/v1")
+        client = Client(name="Performance test")
         app.state.store.save(
             Configuration(
-                engines=[engine], discovery=Discovery(enabled=False, mdns=False)
+                engines=[engine],
+                clients=[client],
+                discovery=Discovery(enabled=False, mdns=False),
             )
         )
+        key = app.state.store.issue_key(client.id)
         await app.state.discovery.refresh()
         async with (
             serving(app) as url,
-            httpx.AsyncClient(base_url=url, timeout=8) as http,
+            httpx.AsyncClient(
+                base_url=url,
+                timeout=8,
+                headers={"Authorization": f"Bearer {key}"},
+            ) as http,
         ):
             result = await http.post(
                 "/v1/chat/completions",
@@ -322,16 +345,25 @@ def mock_engine_app(tmp_path, handle):
         str(tmp_path), background=False, transport=httpx.MockTransport(handle)
     )
     engine = Engine(name="Mock engine", base_url="http://engine.test/v1")
+    client = Client(name="Performance test")
     app.state.store.save(
-        Configuration(engines=[engine], discovery=Discovery(enabled=False, mdns=False))
+        Configuration(
+            engines=[engine],
+            clients=[client],
+            discovery=Discovery(enabled=False, mdns=False),
+        )
     )
+    app.state.test_key = app.state.store.issue_key(client.id)
     return app
 
 
 def asgi_client(app):
+    key = getattr(app.state, "test_key", None)
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 5200)),
         base_url="http://localhost",
+        headers=headers,
     )
 
 
