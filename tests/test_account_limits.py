@@ -737,12 +737,21 @@ async def test_client_and_unkeyed_principals_are_never_limited_or_metered(
         assert (await complete(http)).status_code == 200
         assert (await complete(http, stream=True)).status_code == 200
     async with setup.caller(key=False) as http:
+        denied = await complete(http, "free")
+        assert denied.status_code == 403
+        assert denied.json()["error"]["message"] == "Route is outside the client's allowlist"
+    # Successful unkeyed traffic needs a saved policy; neither that traffic
+    # nor the synthesized-policy refusal belongs to the account meter.
+    config = setup.store.config()
+    config.security.anonymous_client_id = harness.id
+    setup.store.save(config)
+    async with setup.caller(key=False) as http:
         assert (await complete(http, "free")).status_code == 200
     assert admissions == []
     assert setup.store.open_usage_windows(0) == []
     assert setup.limits.ledger.windows == {}
     events = setup.store.events()
-    assert len(events) == 3
+    assert len(events) == 4
     for event in events:
         assert not {"usage", "account_id", "limit", "stream_options_injected"} & set(
             event
