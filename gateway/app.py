@@ -67,6 +67,12 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     portal = PortalIdentity(store, identity)
     updates = Updates(http)
 
+    async def expire_debug():
+        while True:
+            if debug is not None:
+                await asyncio.to_thread(debug.expire)
+            await asyncio.sleep(30)
+
     async def refresh_source_names(store):
         """Keep the address -> name cache warm, off the request path.
 
@@ -114,6 +120,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 tasks.append(
                     asyncio.create_task(Collector(store.discovery_directory).run())
                 )
+            if debug is not None:
+                tasks.append(asyncio.create_task(expire_debug()))
         try:
             yield
         finally:

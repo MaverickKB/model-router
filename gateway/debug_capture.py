@@ -303,6 +303,10 @@ class DebugStore:
                 return None
             return session
 
+    def expire(self) -> None:
+        """Stop and purge a session whose time limit has passed."""
+        self.active()
+
     def record(self, direction: str, request_id: str, headers, body: bytes,
                content_type: str, truncated: bool = False) -> None:
         session = self.active()
