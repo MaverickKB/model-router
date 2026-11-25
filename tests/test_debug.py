@@ -123,6 +123,26 @@ def test_debug_store_expiry_purges(tmp_path):
     assert status["last_session"]["stop_reason"] == "expired"
 
 
+def test_debug_store_restart_purges_open_session(tmp_path):
+    first = DebugStore(tmp_path)
+    first.start(300, 1024 * 1024, ["request"], "operator")
+    first.capture_request("req-1", {}, {"model": "work"})
+    assert first.status()["entries"] == 1
+
+    second = DebugStore(tmp_path)
+    status = second.status()
+    assert status["active"] is False
+    assert status["entries"] == 0
+    assert status["last_session"]["status"] == "stopped"
+    assert status["last_session"]["stop_reason"] == "restart"
+
+
+def test_debug_store_uses_secure_delete(tmp_path):
+    store = DebugStore(tmp_path)
+    with store._connect() as conn:
+        assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
+
+
 def test_debug_store_size_cap_stops_and_keeps_entries(tmp_path):
     store = DebugStore(tmp_path)
     store.start(300, 1024, ["request"], "operator")
@@ -151,7 +171,7 @@ def test_debug_store_truncates_oversized_body(tmp_path):
     assert entry["truncated"] == 1
 
 
-async def build_engine_app(tmp_path, transport):
+async def build_engine_app(tmp_path, transport, engine_secret=None):
     app = create_app(str(tmp_path), background=False, transport=transport)
     engine = Engine(name="Debug engine", base_url="http://engine.test/v1")
     client = Client(name="Debug test")
@@ -168,13 +188,17 @@ async def build_engine_app(tmp_path, transport):
             discovery=Discovery(enabled=False, mdns=False),
         )
     )
+    if engine_secret is not None:
+        app.state.store.set_secret(engine.id, engine_secret)
     key = app.state.store.issue_key(client.id)
     await app.state.discovery.refresh()
     return app, key
 
 
-def json_transport():
+def json_transport(expected_engine_secret=None):
     async def handler(request):
+        if expected_engine_secret is not None:
+            assert request.headers.get("Authorization") == f"Bearer {expected_engine_secret}"
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "work"}]})
         if request.url.path == "/v1/chat/completions":
@@ -315,6 +339,59 @@ async def test_debug_api_captures_request_and_response(tmp_path):
         await http.post("/api/v1/debug/purge", headers=origin)
         status = await http.get("/api/v1/debug/status")
         assert status.json()["entries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_debug_api_does_not_capture_engine_credential(tmp_path):
+    secret = "engine-secret-value"
+    app, key = await build_engine_app(
+        tmp_path, json_transport(secret), engine_secret=secret
+    )
+    origin = {"Origin": "http://127.0.0.1"}
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1",
+        ) as http,
+    ):
+        started = await http.post(
+            "/api/v1/debug/start",
+            headers=origin,
+            json={
+                "ttl_seconds": 300,
+                "max_bytes": 1048576,
+                "scope": ["headers", "request", "response"],
+            },
+        )
+        assert started.status_code == 200
+
+        chat = await http.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={
+                "model": "auto",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+        )
+        assert chat.status_code == 200
+
+        await asyncio.sleep(0.1)
+        entries = await http.get("/api/v1/debug/entries")
+        data = entries.json()
+        assert data["total"] >= 2
+        request_entry = next(
+            item for item in data["items"] if item["direction"] == "request"
+        )
+        assert request_entry["headers"]["authorization"] == "[redacted]"
+        for item in data["items"]:
+            assert secret not in json.dumps(item["headers"])
+            assert secret not in item["body_preview"]
+            detail = await http.get(f"/api/v1/debug/entries/{item['id']}")
+            assert detail.status_code == 200
+            assert secret not in detail.json()["body"]
 
 
 @pytest.mark.asyncio

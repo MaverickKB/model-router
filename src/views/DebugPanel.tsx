@@ -150,6 +150,9 @@ export function DebugPanel() {
     } else if (lastSession?.stop_reason === "operator") {
       statusText += " The last session was stopped by the operator.";
     }
+  } else if (lastSession?.stop_reason === "restart") {
+    statusText =
+      "Capture is off. The last session ended when the router restarted and its entries were purged.";
   }
 
   return (

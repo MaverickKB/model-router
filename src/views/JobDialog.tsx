@@ -67,8 +67,10 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
         <h3>Policy at request time</h3>
         <DecisionView decision={job.decision} />
         <p className="hint">
-          Request history contains routing metadata. Prompts, responses, and
-          credentials are never recorded.
+          Request history contains routing metadata. Prompts and responses are
+          not recorded unless an operator starts a bounded debug capture window
+          in Traffic. Credential headers and known credential fields are
+          redacted.
         </p>
       </div>
     </Dialog>

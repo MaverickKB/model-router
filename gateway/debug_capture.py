@@ -161,7 +161,15 @@ class DebugStore:
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA secure_delete=ON")
+        connection.execute("PRAGMA synchronous=NORMAL")
         return connection
+
+    def _checkpoint(self, conn) -> None:
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
 
     def _init_db(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -207,29 +215,20 @@ class DebugStore:
                 ).fetchone()
                 if row is None:
                     return
-                if row["expires"] <= now:
-                    conn.execute(
-                        "UPDATE debug_sessions SET status='expired', "
-                        "stopped=?, stop_reason='expired' WHERE id=?",
-                        (now, row["id"]),
-                    )
-                    conn.execute(
-                        "DELETE FROM debug_entries WHERE session_id=?",
-                        (row["id"],),
-                    )
-                    conn.commit()
-                    return
-                self.session = DebugSession(
-                    id=row["id"],
-                    started=row["started"],
-                    expires=row["expires"],
-                    max_bytes=row["max_bytes"],
-                    scope=json.loads(row["scope"]),
-                    operator=row["operator"],
-                    status=row["status"],
-                    stopped=row["stopped"],
-                    stop_reason=row["stop_reason"],
+                # A restart must not resume a capture window. Close it and
+                # purge its payloads before serving begins.
+                conn.execute(
+                    "UPDATE debug_sessions SET status='stopped', stopped=?, "
+                    "stop_reason='restart' WHERE id=?",
+                    (now, row["id"]),
                 )
+                conn.execute(
+                    "DELETE FROM debug_entries WHERE session_id=?",
+                    (row["id"],),
+                )
+                conn.commit()
+                self._checkpoint(conn)
+                self.session = None
 
     def start(self, ttl_seconds: int, max_bytes: int, scope, operator: str) -> DebugSession:
         now = time.time()
@@ -264,6 +263,7 @@ class DebugStore:
                     ),
                 )
                 conn.commit()
+                self._checkpoint(conn)
             self.session = session
         return session
 
@@ -292,6 +292,8 @@ class DebugStore:
                     (session.id,),
                 )
             conn.commit()
+            if status == "expired":
+                self._checkpoint(conn)
 
     def active(self) -> DebugSession | None:
         with self.lock:
@@ -479,6 +481,7 @@ class DebugStore:
                 conn.execute("DELETE FROM debug_sessions")
                 conn.commit()
                 conn.execute("VACUUM")
+                self._checkpoint(conn)
             self.session = None
 
     def close(self) -> None:
