@@ -201,6 +201,7 @@ async def test_real_http_requests_record_served_engine_timing(tmp_path):
             assert recorded["tokens_estimated"] is False
             assert recorded["first_chunk_ms"] is None
             assert recorded["tokens_per_second"] is None
+            assert recorded["queue_ms"] >= 0
             # The failed 0.4 s attempt on the busy engine is not the served
             # engine's latency.
             assert 0 <= recorded["upstream_ms"] < 350
@@ -222,6 +223,7 @@ async def test_real_http_requests_record_served_engine_timing(tmp_path):
             assert recorded["tokens_estimated"] is True
             assert recorded["completion_tokens"] == 2
             assert recorded["tokens_per_second"] > 0
+            assert recorded["queue_ms"] >= 0
 
             app.state.discovery.observation(first.id).circuit_until = 0
             reported = await http.post(

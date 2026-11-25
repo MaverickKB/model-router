@@ -162,6 +162,7 @@ export interface Candidate {
   skipped_defaults?: string[];
   status?: string;
   http_status?: number;
+  queue_ms?: number;
   error?: string;
 }
 export interface Decision {
@@ -257,6 +258,7 @@ export interface RequestPerformance {
   completion_tokens: number;
   tokens_estimated: boolean;
   tokens_per_second: number | null;
+  queue_ms?: number;
 }
 /** One engine and model from GET /api/v1/performance. */
 export interface PerformanceRow {

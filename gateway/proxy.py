@@ -275,6 +275,11 @@ class Proxy:
             if status == "completed":
                 performance = timing.summary(usage)
                 if performance is not None:
+                    queue_ms = None
+                    if event["attempts"]:
+                        queue_ms = event["attempts"][-1].get("queue_ms")
+                    if isinstance(queue_ms, (int, float)):
+                        performance["queue_ms"] = queue_ms
                     event["performance"] = performance
             if event["attempts"] and event["attempts"][-1].get("status") == "waiting":
                 event["attempts"][-1]["status"] = status
@@ -504,6 +509,7 @@ class Proxy:
                 else:
                     path = "/chat/completions"
                 max_inflight = obs.max_inflight or engine.max_inflight
+                attempt_started = time.monotonic()
                 connection = InflightRequest.claim(
                     obs,
                     max_inflight,
@@ -567,6 +573,9 @@ class Proxy:
                         timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
                     )
                     timing.mark_sent()
+                    attempt["queue_ms"] = round(
+                        (time.monotonic() - attempt_started) * 1000, 1
+                    )
                     upstream = connection.response = await self.http.send(
                         req, stream=True
                     )
