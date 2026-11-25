@@ -70,7 +70,12 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     async def expire_debug():
         while True:
             if debug is not None:
-                await asyncio.to_thread(debug.expire)
+                try:
+                    await asyncio.to_thread(debug.expire)
+                except (OSError, sqlite3.Error):
+                    # A transient debug database error must not stop the
+                    # scheduled expiry loop.
+                    pass
             await asyncio.sleep(30)
 
     async def refresh_source_names(store):
