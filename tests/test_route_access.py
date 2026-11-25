@@ -424,3 +424,54 @@ def test_pre_route_gate_config_materializes_legacy_global_policy():
     raw["security"]["client_auth_enabled"] = False
     migrated = migrate_configuration(raw)
     assert migrated["routes"][0]["require_caller_key"] is False
+
+
+@pytest.mark.asyncio
+async def test_resident_model_is_preferred_over_advertised_model(tmp_path):
+    async def endpoint(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "advertised-model"}, {"id": "resident-model"}]},
+            )
+        if request.url.path.endswith("/health"):
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ok",
+                    "model": "resident-model",
+                    "model_ids": ["resident-model"],
+                },
+            )
+        return httpx.Response(404)
+
+    app = create_app(
+        str(tmp_path), background=False, transport=httpx.MockTransport(endpoint)
+    )
+    engine = Engine(name="Spark resident", base_url="http://spark.test:8888/v1")
+    caller = Client(name="Resident caller", route_names=["free"])
+    app.state.store.save(
+        Configuration(
+            engines=[engine],
+            routes=[
+                Route(
+                    name="free",
+                    strategy="ordered",
+                    primary=Selector(engine_ids=[engine.id]),
+                )
+            ],
+            clients=[caller],
+            security=Security(operator_auth_enabled=False),
+        )
+    )
+    await app.state.discovery.refresh()
+    decision = decide(
+        app.state.store.config(),
+        app.state.discovery.views(),
+        caller,
+        {"model": "free", "messages": []},
+    )
+    assert [candidate["model"] for candidate in decision["candidates"]] == [
+        "resident-model",
+        "advertised-model",
+    ]

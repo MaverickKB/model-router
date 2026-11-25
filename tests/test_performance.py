@@ -450,3 +450,68 @@ async def test_cancellation_during_the_completed_write_drops_performance(
     event = store.events()[0]
     assert event["status"] == "cancelled"
     assert "performance" not in event
+
+
+async def test_flash_model_reasoning_defaults_off_unless_caller_sets_it(tmp_path):
+    received = []
+
+    upstream = FastAPI()
+
+    @upstream.get("/v1/models")
+    async def models():
+        return {"data": [{"id": "DeepSeek-V4.1-Flash-1017"}]}
+
+    @upstream.post("/v1/chat/completions")
+    async def completion(request: Request):
+        body = await request.json()
+        received.append(body)
+        return {
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        }
+
+    async with serving(upstream) as upstream_url:
+        app = create_app(str(tmp_path), background=False)
+        engine = Engine(name="Spark", base_url=upstream_url + "/v1")
+        client = Client(name="Reasoning default")
+        app.state.store.save(
+            Configuration(
+                engines=[engine],
+                clients=[client],
+                routes=[
+                    Route(
+                        name="auto",
+                        strategy="ordered",
+                        primary=Selector(engine_ids=[engine.id]),
+                    )
+                ],
+                discovery=Discovery(enabled=False, mdns=False),
+            )
+        )
+        key = app.state.store.issue_key(client.id)
+        await app.state.discovery.refresh()
+        async with (
+            serving(app) as url,
+            httpx.AsyncClient(
+                base_url=url,
+                timeout=8,
+                headers={"Authorization": f"Bearer {key}"},
+            ) as http,
+        ):
+            plain = await http.post(
+                "/v1/chat/completions",
+                json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert plain.status_code == 200
+            assert received[-1]["reasoning_effort"] == "none"
+
+            explicit = await http.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "auto",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning_effort": "high",
+                },
+            )
+            assert explicit.status_code == 200
+            assert received[-1]["reasoning_effort"] == "high"

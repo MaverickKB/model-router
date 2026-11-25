@@ -476,6 +476,19 @@ class Proxy:
                 body = apply_defaults(payload, optional_defaults)
                 body["model"] = candidate["model"]
                 body.pop("session_id", None)
+                if (
+                    engine.kind == "local"
+                    and engine.protocol == "openai"
+                    and candidate["model"] == "DeepSeek-V4.1-Flash-1017"
+                    and body.get("reasoning_effort") is None
+                    and "reasoning_effort" not in engine.unsupported_parameters
+                ):
+                    # The Spark harness serves this flash model with thinking on
+                    # by default, which spends the completion budget on reasoning
+                    # tokens and can loop. A silent request pins reasoning off;
+                    # an explicit caller setting is still honoured. Scoped to the
+                    # local openai chat path so System One and voice are untouched.
+                    body["reasoning_effort"] = "none"
                 for field, mapping in engine.value_mappings.items():
                     if isinstance(body.get(field), str):
                         body[field] = mapping.get(body[field], body[field])
