@@ -93,10 +93,13 @@ export function TrafficView({
                 <th>Status</th>
                 <th>Kind</th>
                 <th>Elapsed</th>
+                <th>Queue</th>
+                <th>Upstream</th>
                 <th>Tokens</th>
                 <th>First chunk</th>
                 <th>Rate</th>
                 <th>Attempts</th>
+                <th>Last attempt</th>
               </tr>
             </thead>
             <tbody>
@@ -130,6 +133,12 @@ export function TrafficView({
                       ? durationLabel(event.elapsed_ms)
                       : ""}
                   </td>
+                  <td>{queueLabel(event)}</td>
+                  <td>
+                    {event.performance?.upstream_ms !== undefined
+                      ? durationLabel(event.performance.upstream_ms)
+                      : ""}
+                  </td>
                   <td>{event.usage?.completion_tokens ?? ""}</td>
                   <td>
                     {event.performance?.first_chunk_ms !== null &&
@@ -147,6 +156,7 @@ export function TrafficView({
                       : ""}
                   </td>
                   <td>{event.attempts.length}</td>
+                  <td>{lastAttemptLabel(event)}</td>
                 </tr>
               ))}
             </tbody>
@@ -182,4 +192,22 @@ function engineName(event: Job, engines: EngineView[]) {
     if (engine.id === event.engine_id) return engine.name;
   }
   return event.engine_id;
+}
+
+function queueLabel(event: Job) {
+  if (
+    event.elapsed_ms === undefined ||
+    event.performance?.upstream_ms === undefined
+  ) {
+    return "";
+  }
+  const queueMs = event.elapsed_ms - event.performance.upstream_ms;
+  if (queueMs < 0) return "0 ms";
+  return durationLabel(queueMs);
+}
+
+function lastAttemptLabel(event: Job) {
+  if (event.attempts.length === 0) return "";
+  const last = event.attempts[event.attempts.length - 1];
+  return last.status ?? "";
 }

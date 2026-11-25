@@ -15,6 +15,7 @@ import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import ClientDisconnect
 
 from . import callers
 from .accounts.api import admin_router, portal_router
@@ -806,10 +807,15 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     async def completion(request: Request):
         client = await identify_caller(request)
         raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > 16 * 1024 * 1024:
-                raise HTTPException(413, "Request exceeds 16 MiB")
+        try:
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise HTTPException(413, "Request exceeds 16 MiB")
+        except ClientDisconnect:
+            raise HTTPException(
+                499, "Client disconnected before the request body was complete"
+            )
         try:
             payload = json.loads(raw)
         except ValueError:
@@ -824,10 +830,15 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     async def systemone(request: Request):
         client = await identify_caller(request)
         raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > 16 * 1024 * 1024:
-                raise HTTPException(413, "Request exceeds 16 MiB")
+        try:
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise HTTPException(413, "Request exceeds 16 MiB")
+        except ClientDisconnect:
+            raise HTTPException(
+                499, "Client disconnected before the request body was complete"
+            )
         try:
             payload = json.loads(raw)
         except ValueError:
