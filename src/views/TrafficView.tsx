@@ -139,7 +139,7 @@ export function TrafficView({
                       ? durationLabel(event.performance.upstream_ms)
                       : ""}
                   </td>
-                  <td>{event.usage?.completion_tokens ?? ""}</td>
+                  <td>{tokenLabel(event)}</td>
                   <td>
                     {event.performance?.first_chunk_ms !== null &&
                     event.performance?.first_chunk_ms !== undefined
@@ -210,4 +210,14 @@ function lastAttemptLabel(event: Job) {
   if (event.attempts.length === 0) return "";
   const last = event.attempts[event.attempts.length - 1];
   return last.status ?? "";
+}
+
+function tokenLabel(event: Job) {
+  const usageTokens = event.usage?.completion_tokens;
+  const completion = event.performance?.completion_tokens;
+  const value = usageTokens ?? completion;
+  if (value === undefined) return "";
+  const estimated =
+    event.usage?.estimated ?? event.performance?.tokens_estimated ?? false;
+  return estimated ? `~${value}` : String(value);
 }
