@@ -16,7 +16,7 @@ three, and a caller's own reported hostname outranks a resolved one; those
 rules already live in ``store._apply_caller_source_name``.
 
 Reverse DNS is asked before mDNS because the router's own hostname lives there
-and nowhere else: ``192.168.1.75`` resolves to ``jarvis`` through NSS while
+and nowhere else: a private address resolves to the host's own name through NSS while
 avahi answers nothing for it, which left the router unable to name itself. DNS
 is only consulted for private and CGNAT addresses, because a public address
 reverse-resolves to an ISP's generic pointer, and that is worse than a blank.

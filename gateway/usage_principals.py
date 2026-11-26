@@ -1,10 +1,9 @@
 """Who a request's tokens belong to.
 
-Ken, 2026-10-19: "I need token counts, i want a small lab version of hosting
-capabilities here. we map via origin point or API key. I can't block all free
-paths now without having to retool dr Moore, but still need to track by
-account/origin. We know his, he's on my tailscale and is exempt. I'm exempt."
-
+Rationale (2026-10): token counts are needed to build hosting and budget
+capabilities. Requests are mapped by origin or API key, tracked by account
+or origin, and free paths stay unblocked while enforcement still lives in
+account levels.
 Counting is always on. Enforcement is unchanged: it still lives in account
 levels. This module answers only "whose tokens were these", in a stable order,
 so a report can exist before any limit does.
