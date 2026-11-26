@@ -32,7 +32,7 @@ export function EngineCard({
       data-engine-id={e.id}
     >
       <div className="engine-top">
-        <div className={"engine-orbit " + e.status}>
+        <div className={"engine-orbit " + e.status + (e.inflight > 0 ? " busy" : "")}>
           {e.kind === "cloud" ? (
             <Cloud size={25} strokeWidth={1.5} />
           ) : (

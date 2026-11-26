@@ -327,6 +327,7 @@ export function App() {
       >
         <ActivityRail
           events={state.events}
+          engines={state.engines}
           hover={hover}
           onHover={setHover}
           onSelect={setJob}

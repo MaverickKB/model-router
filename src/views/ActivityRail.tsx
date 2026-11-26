@@ -10,11 +10,13 @@ type Filter = "All" | "Active" | "Errors";
 
 export function ActivityRail({
   events,
+  engines,
   hover,
   onHover,
   onSelect,
 }: {
   events: Job[];
+  engines: { inflight: number }[];
   hover: Job | null;
   onHover: (job: Job | null) => void;
   onSelect: (job: Job) => void;
@@ -30,6 +32,10 @@ export function ActivityRail({
   const listPrefix = useId();
   const narrowed = filter !== "All" || Boolean(search.trim());
   const history = groupRequestHistory(events, filter, search);
+  const inflight = engines.reduce(
+    (total, engine) => total + (engine.inflight || 0),
+    0,
+  );
   const toggle = (id: string) => {
     const update = narrowed ? setCollapsedMatches : setExpandedSources;
     update((previous) => {
@@ -217,8 +223,14 @@ export function ActivityRail({
         )}
       </div>
       <div className="rail-footer">
-        <span className="status-dot available" />
-        Live routing activity
+        <span
+          className={
+            "status-dot " + (inflight > 0 ? "running pulse" : "available")
+          }
+        />
+        {inflight > 0
+          ? `${inflight} in flight`
+          : "Live routing activity"}
       </div>
     </aside>
   );
