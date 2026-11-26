@@ -25,7 +25,9 @@ it("shows an estimated token count and the account limit that refused a job", ()
       onClose={vi.fn()}
     />,
   );
-  expect(screen.getByText("≈ 42 tokens")).toBeInTheDocument();
+  expect(
+    screen.getByText("≈ 42 tokens (12 prompt + 30 completion)"),
+  ).toBeInTheDocument();
   expect(screen.queryByText(/Refused by account limit/)).toBeNull();
   unmount();
   render(

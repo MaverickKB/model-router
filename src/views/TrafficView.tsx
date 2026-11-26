@@ -97,7 +97,7 @@ export function TrafficView({
                 <th>Upstream</th>
                 <th>Tokens</th>
                 <th>First chunk</th>
-                <th>Rate</th>
+                <th>Output rate</th>
                 <th>Attempts</th>
                 <th>Last attempt</th>
               </tr>
@@ -213,11 +213,24 @@ function lastAttemptLabel(event: Job) {
 }
 
 function tokenLabel(event: Job) {
-  const usageTokens = event.usage?.completion_tokens;
-  const completion = event.performance?.completion_tokens;
-  const value = usageTokens ?? completion;
-  if (value === undefined) return "";
-  const estimated =
-    event.usage?.estimated ?? event.performance?.tokens_estimated ?? false;
-  return estimated ? `~${value}` : String(value);
+  // A usage block carries both sides of the charge. Show the total so the
+  // column matches the request dialog and the usage report.
+  const usage = event.usage;
+  if (usage) {
+    const total = usage.prompt_tokens + usage.completion_tokens;
+    return countLabel(total, usage.estimated);
+  }
+  // Older requests have no usage block; only the served output is known.
+  const performance = event.performance;
+  if (!performance) return "";
+  const completion = countLabel(
+    performance.completion_tokens,
+    performance.tokens_estimated,
+  );
+  return completion + " out";
+}
+
+function countLabel(value: number, estimated: boolean) {
+  const text = value.toLocaleString("en-US");
+  return estimated ? "≈ " + text : text;
 }

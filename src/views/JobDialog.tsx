@@ -32,12 +32,7 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
           Permission policy: {job.client}
         </p>
         {job.model && <p className="observed-model">{job.model}</p>}
-        {job.usage && (
-          <p className="hint">
-            {job.usage.estimated ? "≈ " : ""}
-            {job.usage.prompt_tokens + job.usage.completion_tokens} tokens
-          </p>
-        )}
+        {job.usage && <p className="hint">{usageLabel(job.usage)}</p>}
         {job.performance && (
           <p className="hint">{requestTimingLabel(job.performance)}</p>
         )}
@@ -74,5 +69,25 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
         </p>
       </div>
     </Dialog>
+  );
+}
+
+function usageLabel(usage: {
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated: boolean;
+}) {
+  const total = usage.prompt_tokens + usage.completion_tokens;
+  const prefix = usage.estimated ? "≈ " : "";
+  const prompt = usage.prompt_tokens.toLocaleString("en-US");
+  const completion = usage.completion_tokens.toLocaleString("en-US");
+  return (
+    prefix +
+    total.toLocaleString("en-US") +
+    " tokens (" +
+    prompt +
+    " prompt + " +
+    completion +
+    " completion)"
   );
 }

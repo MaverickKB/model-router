@@ -39,7 +39,47 @@ const job: Job = {
 it("shows completion tokens from performance when no usage block exists", () => {
   stubFetch();
   render(<TrafficView events={[job]} engines={[]} />);
-  expect(screen.getByText("321")).toBeInTheDocument();
+  expect(screen.getByText("321 out")).toBeInTheDocument();
+});
+
+it("shows prompt plus completion when a usage block exists", () => {
+  stubFetch();
+  render(
+    <TrafficView
+      events={[
+        {
+          ...job,
+          usage: {
+            prompt_tokens: 1200,
+            completion_tokens: 340,
+            estimated: false,
+          },
+        },
+      ]}
+      engines={[]}
+    />,
+  );
+  expect(screen.getByText("1,540")).toBeInTheDocument();
+});
+
+it("marks an estimated usage total", () => {
+  stubFetch();
+  render(
+    <TrafficView
+      events={[
+        {
+          ...job,
+          usage: {
+            prompt_tokens: 1200,
+            completion_tokens: 340,
+            estimated: true,
+          },
+        },
+      ]}
+      engines={[]}
+    />,
+  );
+  expect(screen.getByText("≈ 1,540")).toBeInTheDocument();
 });
 
 it("marks token counts that are estimates", () => {
@@ -59,5 +99,5 @@ it("marks token counts that are estimates", () => {
       engines={[]}
     />,
   );
-  expect(screen.getByText("~40")).toBeInTheDocument();
+  expect(screen.getByText("≈ 40 out")).toBeInTheDocument();
 });
