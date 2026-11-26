@@ -14,7 +14,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.responses import Response
 from starlette.background import BackgroundTask
 
-from .accounts.limits import AccountLimits, Refusal, UsageMeter
+from .accounts.limits import (
+    REPORTING_WINDOW_SECONDS,
+    AccountLimits,
+    Refusal,
+    UsageMeter,
+    window_start,
+)
+from .usage_principals import resolve as resolve_principal
+from .usage_principals import row as principal_row
 from .accounts.principal import level_for
 from .discovery import DiscoveryService, Observation
 from .debug_capture import DebugBuffer
@@ -267,6 +275,10 @@ class Proxy:
         account_id = getattr(request.state, "account_id", None)
         started = getattr(request.state, "router_started", None) or time.monotonic()
         request.state.router_started = started
+        # Counting is unconditional. Enforcement stays in account levels; this
+        # records whose tokens were spent so a report can exist before a limit.
+        principal = resolve_principal(request)
+        principal_window = window_start(time.time(), REPORTING_WINDOW_SECONDS)
         await asyncio.to_thread(self.store.event, event)
         debug_buffer = None
         if self.debug is not None:
@@ -295,17 +307,24 @@ class Proxy:
                         debug_buffer.truncated,
                     )
             row = None
+            principal_usage = None
+            # One reading of the meter feeds both ledgers: the account's window
+            # and the principal's. Counting happens whether or not an account
+            # admission ran, so an unmetered caller still appears in the report.
             usage = meter.result(status, code)
             if admission is not None and not admission.settled:
                 # Settle synchronously before the first await so a cancellation
                 # landing here can lose durability, never a slot or reservation.
                 admission.settle(usage)
-                event["usage"] = {
-                    "prompt_tokens": usage.prompt_tokens,
-                    "completion_tokens": usage.completion_tokens,
-                    "estimated": usage.estimated,
-                }
                 event["account_id"] = account_id
+                event.setdefault(
+                    "usage",
+                    {
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "estimated": usage.estimated,
+                    },
+                )
                 row = (
                     account_id,
                     admission.window_start,
@@ -332,10 +351,31 @@ class Proxy:
                 http_status=code,
             )
 
+            # A request that never reached an engine spent nothing: a refusal
+            # before any upstream send is not a zero-token charge, it is no
+            # charge. Only real spend creates a principal row and a usage block.
+            if usage is not None and usage.total > 0:
+                principal_usage = principal_row(
+                    principal, principal_window, REPORTING_WINDOW_SECONDS, usage
+                )
+                event["principal"] = {
+                    "principal": principal["principal"],
+                    "kind": principal["kind"],
+                    "label": principal["label"],
+                    "login": principal["login"],
+                }
+                event["usage"] = {
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "estimated": usage.estimated,
+                }
+
             def persist():
                 self.store.event(event)
                 if row is not None:
                     self.store.record_usage(*row)
+                if principal_usage is not None:
+                    self.store.record_principal_usage(*principal_usage)
 
             await asyncio.to_thread(persist)
 
@@ -535,8 +575,12 @@ class Proxy:
                 for field, mapping in engine.value_mappings.items():
                     if isinstance(body.get(field), str):
                         body[field] = mapping.get(body[field], body[field])
+                # Only an admitted (account) request may have its body altered to
+                # request a usage report. An unadmitted caller's bytes go upstream
+                # exactly as sent; its stream is counted from chunks instead.
                 injected = (
                     admission is not None
+                    and meter is not None
                     and bool(body.get("stream"))
                     and "stream_options" not in engine.unsupported_parameters
                 )
@@ -758,7 +802,9 @@ class Proxy:
                     )
                 except ResponseTooLarge:
                     await connection.release()
-                    if admission is not None:
+                    # Charge the whole reservation only when one exists; an
+                    # unadmitted request has no reservation to charge.
+                    if meter is not None and admission is not None:
                         meter.oversized(admission.reserve)
                     await finish("failed", 502)
                     return JSONResponse(

@@ -12,8 +12,37 @@ import subprocess
 import time
 
 _CACHE: dict[str, tuple[float, list]] = {}
+_LOGIN_CACHE: dict[str, tuple[float, str]] = {}
 TTL = float(os.environ.get("MODEL_ROUTER_TAG_RESOLVER_TTL", "300"))
 TAILSCALE_BIN = os.environ.get("MODEL_ROUTER_TAILSCALE_BIN", "tailscale")
+
+
+def _whois(address: str) -> dict:
+    """One `tailscale whois --json` call, cached. {} when the CLI is absent."""
+    if not shutil.which(TAILSCALE_BIN):
+        return {}
+    try:
+        out = subprocess.run([TAILSCALE_BIN, "whois", "--json", address],
+                             capture_output=True, timeout=2, check=True).stdout
+        return json.loads(out)
+    except Exception:
+        return {}
+
+
+def tailscale_login(address: str) -> str:
+    """The tailnet account (email) that owns *address*, or "".
+
+    This is the identity Ken asked to share by: the login, not the machine name
+    and not the tag. Tagged devices have no user login, so a tagged node
+    returns "" and the caller falls back to its tag or address.
+    """
+    hit = _LOGIN_CACHE.get(address)
+    if hit and time.monotonic() - hit[0] < TTL:
+        return hit[1]
+    profile = (_whois(address).get("UserProfile") or {})
+    login = str(profile.get("LoginName") or "")
+    _LOGIN_CACHE[address] = (time.monotonic(), login)
+    return login
 
 
 def tailscale_tags(address: str) -> list:
@@ -22,14 +51,7 @@ def tailscale_tags(address: str) -> list:
     hit = _CACHE.get(address)
     if hit and time.monotonic() - hit[0] < TTL:
         return hit[1]
-    tags: list = []
-    if shutil.which(TAILSCALE_BIN):
-        try:
-            out = subprocess.run([TAILSCALE_BIN, "whois", "--json", address],
-                                 capture_output=True, timeout=2, check=True).stdout
-            tags = list((json.loads(out).get("Node") or {}).get("Tags") or [])
-        except Exception:
-            tags = []
+    tags = list((_whois(address).get("Node") or {}).get("Tags") or [])
     _CACHE[address] = (time.monotonic(), tags)
     return tags
 

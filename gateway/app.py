@@ -161,8 +161,10 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""
-        origin = origins.classify(request.client.host if request.client else None)
+        peer = request.client.host if request.client else None
+        origin = origins.classify(peer)
         request.state.origin = origin
+        request.state.origin_login = origins.login_for(peer)
         if origin is not None:
             if origins.in_maintenance(origin):
                 raise HTTPException(503, {"error": {
@@ -577,6 +579,19 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
             )
         except ValueError as exc:
             raise HTTPException(404, str(exc))
+
+    @management.get("/usage")
+    async def usage(request: Request):
+        """Token totals per principal. Counting only; no limits are applied here."""
+        await identity.require_operator(request)
+        days = max(1, min(35, int(request.query_params.get("days", 7))))
+        kind = request.query_params.get("kind", "")
+        rows = await asyncio.to_thread(store.principal_usage, days, kind)
+        return {
+            "days": days,
+            "principals": rows,
+            "total_tokens": sum(row["total_tokens"] for row in rows),
+        }
 
     @management.post("/discover")
     async def discover(request: Request):

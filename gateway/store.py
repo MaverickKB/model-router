@@ -138,6 +138,18 @@ class Store:
               prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
               estimated_tokens INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY (account_id, window_start, window_seconds));
+            -- Per-principal token totals. Accounts are only one kind of
+            -- principal; an origin or a bare address has tokens too. This table
+            -- counts them all so a report can exist before any limit does.
+            CREATE TABLE IF NOT EXISTS principal_usage (
+              principal TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
+              login TEXT NOT NULL DEFAULT '', window_start REAL NOT NULL,
+              window_seconds INTEGER NOT NULL,
+              prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+              estimated_tokens INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY (principal, window_start, window_seconds));
+            CREATE INDEX IF NOT EXISTS principal_usage_login ON principal_usage(login);
+            CREATE INDEX IF NOT EXISTS principal_usage_window ON principal_usage(window_start);
         """)
         self.db.execute(
             "INSERT OR IGNORE INTO installation VALUES (1, ?)",
@@ -1200,6 +1212,77 @@ class Store:
                     (account_id, time.time() - days * 86400),
                 )
             ]
+
+    def record_principal_usage(
+        self,
+        principal: str,
+        kind: str,
+        label: str,
+        login: str,
+        window_start: float,
+        window_seconds: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        estimated_tokens: int,
+    ) -> None:
+        """Add one request's tokens to a principal's window. Never content."""
+        with self.lock:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO principal_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)"
+                    " ON CONFLICT(principal, window_start, window_seconds) DO UPDATE SET"
+                    " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
+                    " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                    " estimated_tokens = estimated_tokens + excluded.estimated_tokens,"
+                    " requests = requests + 1,"
+                    " label = excluded.label,"
+                    " login = CASE WHEN excluded.login <> '' THEN excluded.login ELSE login END",
+                    (principal, kind, label, login, window_start, window_seconds,
+                     prompt_tokens, completion_tokens, estimated_tokens),
+                )
+
+    def principal_usage(self, days: int = 7, kind: str = "") -> list[dict]:
+        """Totals per principal over a window, newest windows included."""
+        cutoff = time.time() - days * 86400
+        sql = (
+            "SELECT principal, kind, label, login, window_start, window_seconds,"
+            " prompt_tokens, completion_tokens, estimated_tokens, requests"
+            " FROM principal_usage WHERE window_start + window_seconds > ?"
+        )
+        args = [cutoff]
+        if kind:
+            sql += " AND kind = ?"
+            args.append(kind)
+        sql += " ORDER BY window_start DESC"
+        with self.lock:
+            rows = self.db.execute(sql, args).fetchall()
+        totals: dict[str, dict] = {}
+        for row in rows:
+            key = row[0]
+            entry = totals.get(key)
+            if entry is None:
+                entry = totals[key] = {
+                    "principal": row[0], "kind": row[1], "label": row[2],
+                    "login": row[3], "prompt_tokens": 0, "completion_tokens": 0,
+                    "estimated_tokens": 0, "requests": 0, "windows": 0,
+                    "first_window": row[4], "last_window": row[4],
+                }
+            entry["prompt_tokens"] += row[6]
+            entry["completion_tokens"] += row[7]
+            entry["estimated_tokens"] += row[8]
+            entry["requests"] += row[9]
+            entry["windows"] += 1
+            entry["first_window"] = min(entry["first_window"], row[4])
+            entry["last_window"] = max(entry["last_window"], row[4])
+            if row[3] and not entry["login"]:
+                entry["login"] = row[3]
+        for entry in totals.values():
+            entry["total_tokens"] = (
+                entry["prompt_tokens"]
+                + entry["completion_tokens"]
+                + entry["estimated_tokens"]
+            )
+        return sorted(totals.values(), key=lambda e: -e["total_tokens"])
 
     def open_usage_windows(self, now: float) -> list[dict]:
         with self.lock:
