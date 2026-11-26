@@ -321,7 +321,8 @@ async def test_network_discovery_keeps_ip_transport_and_records_reported_hostnam
     tmp_path, monkeypatch
 ):
     def upstream(request):
-        if request.method == "GET" and str(request.url) == "http://192.0.2.10:51234/health":
+        if request.url.path == "/health":
+            assert str(request.url) == "http://192.0.2.10:51234/health"
             return httpx.Response(404)
         assert str(request.url) == "http://192.0.2.10:51234/v1/models"
         return httpx.Response(
@@ -514,13 +515,13 @@ def test_same_machine_written_two_ways_is_one_duplicate():
 
     found = suggestions(
         [
-            view("Spark 1 (currently 2 spark host)", "http://192.0.2.91:8888/v1"),
-            view("192.0.2.91", "http://192.0.2.91:8888", "discovered"),
+            view("Spark 1 (currently 2 spark host)", "http://192.168.1.91:8888/v1"),
+            view("192.168.1.91", "http://192.168.1.91:8888", "discovered"),
         ]
     )
     assert len(found) == 1
     assert found[0]["kind"] == "duplicate"
-    assert found[0]["endpoints"] == ["192.0.2.91:8888"]
+    assert found[0]["endpoints"] == ["192.168.1.91:8888"]
     assert "same discovered catalog" in found[0]["reasons"]
 
 
@@ -547,8 +548,8 @@ def test_two_machines_on_the_same_port_are_not_one_machine():
     assert (
         suggestions(
             [
-                view("spark-host", "http://192.0.2.91:8888/v1"),
-                view("spark-19cd", "http://192.0.2.33:8888/v1"),
+                view("spark-48e7", "http://192.168.1.91:8888/v1"),
+                view("spark-19cd", "http://192.168.1.33:8888/v1"),
             ]
         )
         == []
@@ -572,8 +573,8 @@ def test_a_display_label_is_not_a_hostname():
     assert (
         suggestions(
             [
-                view("Spark 1", "http://192.0.2.91:8888/v1"),
-                view("Spark 1", "http://192.0.2.92:8888/v1"),
+                view("Spark 1", "http://192.168.1.91:8888/v1"),
+                view("Spark 1", "http://192.168.1.92:8888/v1"),
             ]
         )
         == []
@@ -583,8 +584,8 @@ def test_a_display_label_is_not_a_hostname():
     assert (
         suggestions(
             [
-                view("Spark 1 (currently 2 spark host)", "http://192.0.2.91:8888/v1"),
-                view("Spark 1 (currently 2 spark host)", "http://192.0.2.92:8888/v1"),
+                view("Spark 1 (currently 2 spark host)", "http://192.168.1.91:8888/v1"),
+                view("Spark 1 (currently 2 spark host)", "http://192.168.1.92:8888/v1"),
             ]
         )
         == []
@@ -606,8 +607,8 @@ def test_one_machine_several_addresses_merges_by_hostname():
     # Wired and WiFi on one box: different addresses, same hostname field. Merge.
     wired = suggestions(
         [
-            view("spark1-wired", "http://192.0.2.91:8888/v1", "spark1"),
-            view("spark1-wifi", "http://192.0.2.92:8888/v1", "spark1"),
+            view("spark1-wired", "http://192.168.1.91:8888/v1", "spark1"),
+            view("spark1-wifi", "http://192.168.1.92:8888/v1", "spark1"),
         ]
     )
     assert len(wired) == 1
@@ -616,7 +617,7 @@ def test_one_machine_several_addresses_merges_by_hostname():
     # Same box on LAN and tailnet: different subnets, same hostname. Merge.
     transports = suggestions(
         [
-            view("spark1-lan", "http://192.0.2.91:8888/v1", "spark1"),
+            view("spark1-lan", "http://192.168.1.91:8888/v1", "spark1"),
             view("spark1-tail", "http://100.74.202.23:8888/v1", "spark1"),
         ]
     )
@@ -626,8 +627,8 @@ def test_one_machine_several_addresses_merges_by_hostname():
     # Discovery writes the host name as an alias URL. That is hostname evidence too.
     discovered = suggestions(
         [
-            view("a", "http://192.0.2.91:8888/v1", aliases=["http://spark1:8888/v1"]),
-            view("b", "http://192.0.2.92:8888/v1", aliases=["http://spark1:8888/v1"]),
+            view("a", "http://192.168.1.91:8888/v1", aliases=["http://spark1:8888/v1"]),
+            view("b", "http://192.168.1.92:8888/v1", aliases=["http://spark1:8888/v1"]),
         ]
     )
     assert len(discovered) == 1
@@ -646,8 +647,8 @@ def test_one_machine_without_a_name_needs_an_operator_pin():
         }
 
     pair = [
-        view("wired", "http://192.0.2.91:8888/v1"),
-        view("wifi", "http://192.0.2.92:8888/v1"),
+        view("wired", "http://192.168.1.91:8888/v1"),
+        view("wifi", "http://192.168.1.92:8888/v1"),
     ]
     # No hostname resolves and no pin: the shared alias in one subnet is a name
     # error, which is the honest reading. Two machines cannot share a name.
@@ -656,7 +657,7 @@ def test_one_machine_without_a_name_needs_an_operator_pin():
     assert unpinned[0]["kind"] == "name_error"
 
     pinned = suggestions(
-        pair, pins={"192.0.2.91": "spark1", "192.0.2.92": "spark1"}
+        pair, pins={"192.168.1.91": "spark1", "192.168.1.92": "spark1"}
     )
     assert len(pinned) == 1
     assert pinned[0]["kind"] == "merge"
@@ -676,13 +677,13 @@ def test_an_operator_may_pin_by_hostname():
         }
 
     pair = [
-        view("wired", "http://192.0.2.91:8888/v1"),
-        view("wifi", "http://192.0.2.92:8888/v1"),
+        view("wired", "http://192.168.1.91:8888/v1"),
+        view("wifi", "http://192.168.1.92:8888/v1"),
     ]
     found = suggestions(
         pair,
-        resolve={"spark1": "192.0.2.91"},
-        pins={"spark1": "box", "192.0.2.92": "box"},
+        resolve={"spark1": "192.168.1.91"},
+        pins={"spark1": "box", "192.168.1.92": "box"},
     )
     assert len(found) == 1
     assert found[0]["kind"] == "merge"
@@ -702,8 +703,8 @@ def test_shared_alias_on_two_machines_in_one_subnet_is_a_name_error():
 
     found = suggestions(
         [
-            view("a", "http://192.0.2.91:8888/v1", "spark-host"),
-            view("b", "http://192.0.2.33:8888/v1", "spark-19cd"),
+            view("a", "http://192.168.1.91:8888/v1", "spark-48e7"),
+            view("b", "http://192.168.1.33:8888/v1", "spark-19cd"),
         ]
     )
     assert len(found) == 1
@@ -714,11 +715,11 @@ def test_shared_alias_on_two_machines_in_one_subnet_is_a_name_error():
         suggestions(
             [
                 {
-                    **view("a", "http://192.0.2.91:8888/v1", "spark-host"),
+                    **view("a", "http://192.168.1.91:8888/v1", "spark-48e7"),
                     "aliases": ["Spark1"],
                 },
                 {
-                    **view("b", "http://192.0.2.33:8888/v1", "spark-19cd"),
+                    **view("b", "http://192.168.1.33:8888/v1", "spark-19cd"),
                     "aliases": ["Spark2"],
                 },
             ]
@@ -743,8 +744,8 @@ def test_a_stored_url_with_a_bad_port_does_not_crash_the_console():
     assert (
         suggestions(
             [
-                view("bad", "http://192.0.2.91:99999/v1"),
-                view("good", "http://192.0.2.92:8888/v1"),
+                view("bad", "http://192.168.1.91:99999/v1"),
+                view("good", "http://192.168.1.92:8888/v1"),
             ]
         )
         == []
@@ -761,14 +762,14 @@ def test_discovery_recognises_an_engine_written_with_a_different_api_root():
             Engine(
                 id="a" * 32,
                 name="Spark 1",
-                base_url="http://192.0.2.91:8888/v1",
+                base_url="http://192.168.1.91:8888/v1",
                 name_source="operator",
             )
         ]
     )
-    assert _existing_engine(config, "http://192.0.2.91:8888").id == "a" * 32
-    assert _existing_engine(config, "http://192.0.2.91:8888/v1").id == "a" * 32
-    assert _existing_engine(config, "http://192.0.2.33:8888/v1") is None
-    assert _existing_engine(config, "http://192.0.2.91:8889/v1") is None
+    assert _existing_engine(config, "http://192.168.1.91:8888").id == "a" * 32
+    assert _existing_engine(config, "http://192.168.1.91:8888/v1").id == "a" * 32
+    assert _existing_engine(config, "http://192.168.1.33:8888/v1") is None
+    assert _existing_engine(config, "http://192.168.1.91:8889/v1") is None
     # A hostname cannot prove which machine it is, so it never matches by name.
-    assert _existing_engine(config, "http://spark-host:8888/v1") is None
+    assert _existing_engine(config, "http://spark-48e7:8888/v1") is None

@@ -10,4 +10,4 @@ Expected serving restarts keep connected requests in quiet recovery. An unlimite
 
 Long recovery keeps one request record with a bounded attempt trace and a total attempt count. Catalog health alone must not hide a prolonged failure to generate a response.
 
-Verify backend replacement, metadata changes, temporary failure, cancellation and prevention of output replay. Delivery requires real generation through router host `auto` from the MacBook, plus matching request history. A healthy model catalog alone does not establish delivery.
+Verify backend replacement, metadata changes, temporary failure, cancellation and prevention of output replay. Delivery requires real generation through the router `auto` route from a client, plus matching request history. A healthy model catalog alone does not establish delivery.

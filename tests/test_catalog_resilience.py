@@ -86,7 +86,7 @@ async def test_bad_and_unreachable_catalogs_do_not_stop_neighbor_refresh(tmp_pat
         if request.url.host == "unreachable.test":
             raise httpx.ConnectError("connection refused", request=request)
         assert request.url.host == "healthy.test"
-        if request.method == "GET" and request.url.path == "/health":
+        if request.url.path == "/health":
             return httpx.Response(404)
         assert request.url.path == "/v1/models"
         refresh_count += 1

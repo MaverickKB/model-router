@@ -13,8 +13,6 @@ async def test_retry_rechecks_current_request_authority(tmp_path, identity):
     calls = []
 
     async def upstream(request):
-        if request.method == "GET" and request.url.path == "/health":
-            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}]})
         calls.append(request.url.host)
@@ -88,7 +86,7 @@ async def test_retry_rechecks_current_request_authority(tmp_path, identity):
             "/v1/chat/completions",
             json={"model": "work", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert response.status_code == (403 if identity == "key" else 503)
+    assert response.status_code == (401 if identity == "key" else 503)
     assert calls == ["primary.test"]
     assert all(e["inflight"] == 0 for e in app.state.discovery.views())
 
@@ -104,8 +102,6 @@ async def test_compressed_upstream_stream_is_decoded(tmp_path):
             yield body[12:]
 
     async def upstream(request):
-        if request.method == "GET" and request.url.path == "/health":
-            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}]})
         return httpx.Response(
@@ -117,13 +113,8 @@ async def test_compressed_upstream_stream_is_decoded(tmp_path):
     app = create_app(
         str(tmp_path), background=False, transport=httpx.MockTransport(upstream)
     )
-    policy = Client(name="Stream fixture", route_names=["auto"])
     app.state.store.save(
-        Configuration(
-            engines=[Engine(name="API", base_url="http://provider.test/v1")],
-            clients=[policy],
-            security=Security(anonymous_client_id=policy.id),
-        )
+        Configuration(engines=[Engine(name="API", base_url="http://provider.test/v1")])
     )
     await app.state.discovery.refresh()
     async with (
@@ -149,8 +140,6 @@ async def test_compressed_upstream_stream_is_decoded(tmp_path):
 @pytest.mark.asyncio
 async def test_console_try_route_keeps_selected_policy(tmp_path):
     async def upstream(request):
-        if request.method == "GET" and request.url.path == "/health":
-            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}]})
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})

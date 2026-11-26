@@ -162,6 +162,7 @@ export interface Candidate {
   skipped_defaults?: string[];
   status?: string;
   http_status?: number;
+  queue_ms?: number;
   error?: string;
 }
 export interface Decision {
@@ -246,6 +247,53 @@ export interface Job {
     estimated: boolean;
   };
   limit?: { code: string; retry_after: number | null };
+  performance?: RequestPerformance;
+}
+/** Timing of the attempt that served a completed request. */
+export interface RequestPerformance {
+  stream: boolean;
+  upstream_ms: number;
+  first_chunk_ms: number | null;
+  generation_ms: number | null;
+  completion_tokens: number;
+  tokens_estimated: boolean;
+  tokens_per_second: number | null;
+  queue_ms?: number;
+}
+/** One engine and model from GET /api/v1/performance. */
+export interface PerformanceRow {
+  engine_id: string;
+  engine: string;
+  model: string;
+  in_catalog: boolean | null;
+  served: number;
+  failed: number;
+  watchdog?: number;
+  failure_rate: number | null;
+  first_seen: number;
+  last_seen: number;
+  stream: {
+    samples: number;
+    first_chunk_ms_p50: number | null;
+    first_chunk_ms_p95: number | null;
+    tokens_per_second_p50: number | null;
+    estimated_samples: number;
+    queue_ms_p50?: number | null;
+    queue_ms_p95?: number | null;
+  };
+  non_stream: {
+    samples: number;
+    upstream_ms_p50: number | null;
+    upstream_ms_p95: number | null;
+    queue_ms_p50?: number | null;
+    queue_ms_p95?: number | null;
+  };
+}
+export interface PerformanceSummary {
+  window_hours: number;
+  since: number;
+  generated_at: number;
+  rows: PerformanceRow[];
 }
 export interface State {
   setup_required: boolean;
@@ -385,4 +433,57 @@ export interface ActivationLink {
   token: string;
   url: string;
   expires: number;
+}
+export interface DebugSession {
+  id: string;
+  started: number;
+  expires: number;
+  ttl_remaining: number;
+  max_bytes: number;
+  scope: string[];
+  operator: string;
+  status: string;
+  stopped: number | null;
+  stop_reason: string | null;
+}
+export interface DebugStatus {
+  active: boolean;
+  session: DebugSession | null;
+  last_session: DebugSession | null;
+  entries: number;
+  bytes_used: number;
+  db_bytes: number;
+  sessions: number;
+  path: string;
+  defaults: {
+    ttl_seconds: number;
+    max_bytes: number;
+    scope: string[];
+  };
+}
+export interface DebugEntrySummary {
+  id: number;
+  session_id: string;
+  ts: number;
+  request_id: string | null;
+  direction: string;
+  headers: Record<string, string>;
+  body_preview: string;
+  body_bytes: number;
+  truncated: number;
+}
+export interface DebugEntries {
+  items: DebugEntrySummary[];
+  total: number;
+}
+export interface DebugEntryDetail {
+  id: number;
+  session_id: string;
+  ts: number;
+  request_id: string | null;
+  direction: string;
+  headers: Record<string, string>;
+  body: string;
+  body_bytes: number;
+  truncated: number;
 }

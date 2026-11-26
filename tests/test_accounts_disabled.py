@@ -29,10 +29,10 @@ class Upstream:
         self.completions = 0
 
     async def handle(self, request):
-        if request.method == "GET" and request.url.path == "/health":
-            return httpx.Response(404)
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "local-model"}]})
+        if request.url.path == "/health":
+            return httpx.Response(404)
         self.completions += 1
         body = json.loads(request.content)
         return httpx.Response(
@@ -110,6 +110,7 @@ async def registered_device_grants_nothing(ctx: Disabled):
             json={"model": "private", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Route is outside the client's allowlist"
     assert ctx.upstream.completions == 0
     caller = next(
         c for c in ctx.store.callers() if c["source_address"] == ctx.device["address"]
@@ -137,7 +138,12 @@ async def limits_are_never_consulted(ctx: Disabled):
                         "messages": [{"role": "user", "content": "hi"}],
                     },
                 )
-            assert response.status_code == (401 if headers else 403)
+            if headers:
+                assert response.status_code == 401
+                assert response.json()["detail"] == "User accounts are not enabled on this router"
+            else:
+                assert response.status_code == 403
+                assert response.json()["error"]["message"] == "Route is outside the client's allowlist"
     finally:
         limits.admit = original
     assert admissions == []
@@ -276,6 +282,7 @@ async def test_device_switch_alone_makes_devices_inert(tmp_path):
     async with ctx.http(ctx.device["address"]) as unkeyed:
         refused = await unkeyed.post("/v1/chat/completions", json=completion)
     assert refused.status_code == 403 and ctx.upstream.completions == 0
+    assert refused.json()["error"]["message"] == "Route is outside the client's allowlist"
     caller = next(
         c for c in ctx.store.callers() if c["source_address"] == ctx.device["address"]
     )

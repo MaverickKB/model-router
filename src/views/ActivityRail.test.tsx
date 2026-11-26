@@ -49,6 +49,7 @@ const completed: Job = {
 };
 const props = (events: Job[]) => ({
   events,
+  engines: [],
   hover: null,
   onHover: vi.fn(),
   onSelect: vi.fn(),
@@ -217,6 +218,18 @@ it("reveals matched request rows for Errors and Active, preserving whole-source 
   expect(within(group()).getByText(error)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "All" }));
   expect(container.querySelectorAll("[data-job-id]")).toHaveLength(0);
+});
+
+it("shows a live in-flight count when an engine is serving", () => {
+  render(<ActivityRail {...props([])} engines={[{ inflight: 1 }]} />);
+  expect(screen.getByText("1 in flight")).toBeVisible();
+  expect(screen.queryByText("Live routing activity")).not.toBeInTheDocument();
+});
+
+it("keeps the static live label when nothing is in flight", () => {
+  render(<ActivityRail {...props([])} engines={[]} />);
+  expect(screen.getByText("Live routing activity")).toBeVisible();
+  expect(screen.queryByText("1 in flight")).not.toBeInTheDocument();
 });
 
 it.each([

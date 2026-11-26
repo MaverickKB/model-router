@@ -16,7 +16,7 @@ three, and a caller's own reported hostname outranks a resolved one; those
 rules already live in ``store._apply_caller_source_name``.
 
 Reverse DNS is asked before mDNS because the router's own hostname lives there
-and nowhere else: ``192.0.2.75`` resolves to ``router-host`` through NSS while
+and nowhere else: a private address resolves to the host's own name through NSS while
 avahi answers nothing for it, which left the router unable to name itself. DNS
 is only consulted for private and CGNAT addresses, because a public address
 reverse-resolves to an ISP's generic pointer, and that is worse than a blank.
@@ -60,7 +60,7 @@ def tailnet_names(runner=run) -> dict[str, str]:
     """IPv4 address -> node name for every peer on this tailnet, in one call.
 
     The node's DNS name is preferred because it is a hostname by construction and
-    survives validation; a display name like "Example Laptop" is not one.
+    survives validation; a display name like "Kenneth's MacBook Pro" is not one.
     """
     output = runner([TAILSCALE_BIN, "status", "--json"])
     if not output:
@@ -95,7 +95,7 @@ def dns_name(address: str, runner=run) -> str:
     """Address -> hostname via reverse DNS (NSS). '' when nothing authoritative answers."""
     try:
         output = runner([GETENT_BIN, "hosts", address]).decode("utf-8", "replace")
-    except Exception:  # noqa: BLE001 - injected lookup runners are best-effort metadata.
+    except Exception:
         return ""
     for line in output.splitlines():
         parts = line.split()

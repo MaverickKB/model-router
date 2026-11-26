@@ -251,6 +251,10 @@ def decide(
                             "engine": engine["name"],
                             "model": model["id"],
                             "kind": engine["kind"],
+                            # An engine that reports residency says which of its
+                            # advertised models is actually serving. Engines that
+                            # do not report it stay unknown and are not penalised.
+                            "loaded": model.get("loaded", True),
                             "tier": tier,
                             "order": order,
                             "load": engine["inflight"] / engine["max_inflight"],
@@ -267,6 +271,9 @@ def decide(
             c["order"] if strategy == "ordered" else c["load"],
             c["order"],
             c["engine_id"],
+            # Same engine, same tier, same load: prefer the model the engine
+            # reports as resident over one it merely advertises.
+            not c["loaded"],
             c["model"],
         )
     )

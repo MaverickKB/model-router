@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import sqlite3
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -14,14 +15,15 @@ import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import ClientDisconnect
 
 from . import callers
 from .accounts.api import admin_router, portal_router
 from .accounts.devices import warnings as device_warnings
 from .accounts.portal import PortalIdentity
 from .accounts.principal import derive_principal, level_for
-from .adapters.jevos_native import MAX_BODY as NATIVE_BODY_LIMIT
 from .discovery import DiscoveryService
+from .debug_capture import DebugStore, DEFAULT_MAX_BYTES, DEFAULT_TTL_SECONDS
 from .engine_identity import MergeEngines
 from .engine_suggestions import suggestions
 from .identity import Identity
@@ -29,19 +31,27 @@ from .network.collector import Collector
 from .network.report import read_json, read_report, request_scan, write_json
 from .network.views import network_view
 from .origin_policy import OriginPolicy
+from .performance import summarize
 from .proxy import Proxy, require_origin_route
+from .systemone_native import NativeOwner
+from .adapters.jevos_native import MAX_BODY as NATIVE_BODY_LIMIT
 from .routing import client_reason, decide, matches, route_requires_caller_key
 from .schema import Configuration, Engine
 from .security.body_limit import BodyLimit
 from .speech import register_speech, speech_decision
 from .store import Conflict, Store
-from .systemone_native import NativeOwner
 from .topology import route_map
 from .updates import Updates
 
 
 def create_app(state_dir: str | None = None, background=True, transport=None, speech_connector=None, native_probe=None, native_exit_probe=None):
     store = Store(state_dir or os.environ.get("MODEL_ROUTER_STATE", "./state"))
+    try:
+        debug = DebugStore(store.directory)
+    except (OSError, sqlite3.Error):
+        # Debug capture is optional. A broken debug store must not stop the
+        # router from serving requests.
+        debug = None
     identity = Identity(store)
     origins = OriginPolicy(str(store.directory))
     store.private_event_filter = origins.is_private_event
@@ -52,11 +62,22 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=32),
     )
     discovery = DiscoveryService(store, http)
-    proxy = Proxy(store, discovery, http, identity)
+    proxy = Proxy(store, discovery, http, identity, debug=debug)
     proxy.origins = origins
     native = NativeOwner(store, discovery, http, identity, probe=native_probe, exit_probe=native_exit_probe)
     portal = PortalIdentity(store, identity)
     updates = Updates(http)
+
+    async def expire_debug():
+        while True:
+            if debug is not None:
+                try:
+                    await asyncio.to_thread(debug.expire)
+                except (OSError, sqlite3.Error):
+                    # A transient debug database error must not stop the
+                    # scheduled expiry loop.
+                    pass
+            await asyncio.sleep(30)
 
     async def refresh_source_names(store):
         """Keep the address -> name cache warm, off the request path.
@@ -105,6 +126,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 tasks.append(
                     asyncio.create_task(Collector(store.discovery_directory).run())
                 )
+            if debug is not None:
+                tasks.append(asyncio.create_task(expire_debug()))
         try:
             yield
         finally:
@@ -112,6 +135,8 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await native.close()
+            if debug is not None:
+                await asyncio.to_thread(debug.close)
             await http.aclose()
 
     app = FastAPI(
@@ -132,11 +157,14 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     app.state.origins = origins
     app.state.portal = portal
     app.state.updates = updates
+    app.state.debug = debug
 
     async def identify_caller(request: Request):
         """Observe connection evidence before returning any caller error."""
-        origin = origins.classify(request.client.host if request.client else None)
+        peer = request.client.host if request.client else None
+        origin = origins.classify(peer)
         request.state.origin = origin
+        request.state.origin_login = origins.login_for(peer)
         if origin is not None:
             if origins.in_maintenance(origin):
                 raise HTTPException(503, {"error": {
@@ -183,6 +211,131 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     @app.exception_handler(Conflict)
     async def conflict_handler(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @management.get("/performance")
+    async def performance(request: Request, hours: int = Query(24, ge=1, le=168)):
+        # Request history is kept for seven days, so a longer window would
+        # silently report less than it names.
+        await identity.require_operator(request)
+        now = time.time()
+        since = now - hours * 3600
+        names = {}
+        for engine in store.config().engines:
+            names[engine.id] = engine.name
+        catalogs = {}
+        for view in discovery.views():
+            # A failed probe clears the catalog; only a known catalog can say
+            # that a model was replaced.
+            if view["status"] != "available" and not view["models"]:
+                continue
+            model_ids = set()
+            for model in view["models"]:
+                model_ids.add(model["id"])
+            catalogs[view["id"]] = model_ids
+
+        def read_and_summarize():
+            # A seven-day window can hold many requests; reading and grouping
+            # them happens on a worker thread so proxied requests keep moving.
+            events = store.events_since(since)
+            return summarize(events, names, catalogs)
+
+        rows = await asyncio.to_thread(read_and_summarize)
+        return {
+            "window_hours": hours,
+            "since": since,
+            "generated_at": now,
+            "rows": rows,
+        }
+
+    def integer_field(body, name, default, minimum, maximum):
+        value = body.get(name, default)
+        if isinstance(value, bool):
+            raise HTTPException(422, name + " must be an integer")
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(422, name + " must be an integer")
+        if number < minimum or number > maximum:
+            raise HTTPException(
+                422,
+                name + " must be between " + str(minimum) + " and " + str(maximum),
+            )
+        return number
+
+    @management.post("/debug/start")
+    async def debug_start(request: Request):
+        await identity.require_operator(request, True)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(422, "A JSON object is required")
+        ttl = integer_field(body, "ttl_seconds", DEFAULT_TTL_SECONDS, 60, 3600)
+        max_bytes = integer_field(
+            body,
+            "max_bytes",
+            DEFAULT_MAX_BYTES,
+            1024 * 1024,
+            500 * 1024 * 1024,
+        )
+        scope = body.get("scope", ["headers", "request", "response", "stream"])
+        if not isinstance(scope, list) or not scope:
+            scope = ["headers", "request", "response", "stream"]
+        allowed = {"headers", "request", "response", "stream"}
+        invalid = []
+        for value in scope:
+            if value not in allowed:
+                invalid.append(str(value))
+        if invalid:
+            raise HTTPException(422, "Unknown debug scope: " + ", ".join(invalid))
+        session = await asyncio.to_thread(
+            debug.start, ttl, max_bytes, scope, "operator"
+        )
+        return {"session": session.as_dict()}
+
+    @management.post("/debug/stop")
+    async def debug_stop(request: Request):
+        await identity.require_operator(request, True)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        await asyncio.to_thread(debug.stop, "operator")
+        return {"ok": True}
+
+    @management.get("/debug/status")
+    async def debug_status(request: Request):
+        await identity.require_operator(request)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        return await asyncio.to_thread(debug.status)
+
+    @management.get("/debug/entries")
+    async def debug_entries(
+        request: Request,
+        limit: int = Query(100, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+    ):
+        await identity.require_operator(request)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        return await asyncio.to_thread(debug.entries, limit, offset, True)
+
+    @management.get("/debug/entries/{entry_id}")
+    async def debug_entry(entry_id: int, request: Request):
+        await identity.require_operator(request)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        entry = await asyncio.to_thread(debug.entry, entry_id)
+        if entry is None:
+            raise HTTPException(404, "Debug entry not found")
+        return entry
+
+    @management.post("/debug/purge")
+    async def debug_purge(request: Request):
+        await identity.require_operator(request, True)
+        if debug is None:
+            raise HTTPException(503, "Debug capture is unavailable on this router")
+        await asyncio.to_thread(debug.purge)
+        return {"ok": True}
 
     @management.get("/state")
     async def state(request: Request):
@@ -427,6 +580,19 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
         except ValueError as exc:
             raise HTTPException(404, str(exc))
 
+    @management.get("/usage")
+    async def usage(request: Request):
+        """Token totals per principal. Counting only; no limits are applied here."""
+        await identity.require_operator(request)
+        days = max(1, min(35, int(request.query_params.get("days", 7))))
+        kind = request.query_params.get("kind", "")
+        rows = await asyncio.to_thread(store.principal_usage, days, kind)
+        return {
+            "days": days,
+            "principals": rows,
+            "total_tokens": sum(row["total_tokens"] for row in rows),
+        }
+
     @management.post("/discover")
     async def discover(request: Request):
         await identity.require_operator(request, True)
@@ -533,10 +699,11 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
                 and client.enabled and matches(route.name, client.route_names)
                 and decision.get("status") not in {401, 403}
             )
-            if recovering_alias and not decision["candidates"] and not speech_route:
+            if recovering_alias and not decision["candidates"]:
                 # A speech route has no chat fallback; keep declaring speech and
                 # report it unavailable rather than advertising a chat row.
-                serving = "chat"
+                if not speech_route:
+                    serving = "chat"
             if decision["candidates"] or recovering_alias:
                 row = {
                     "id": route.name,
@@ -655,10 +822,15 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     async def completion(request: Request):
         client = await identify_caller(request)
         raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > 16 * 1024 * 1024:
-                raise HTTPException(413, "Request exceeds 16 MiB")
+        try:
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise HTTPException(413, "Request exceeds 16 MiB")
+        except ClientDisconnect:
+            raise HTTPException(
+                499, "Client disconnected before the request body was complete"
+            )
         try:
             payload = json.loads(raw)
         except ValueError:
@@ -673,10 +845,15 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
     async def systemone(request: Request):
         client = await identify_caller(request)
         raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > 16 * 1024 * 1024:
-                raise HTTPException(413, "Request exceeds 16 MiB")
+        try:
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise HTTPException(413, "Request exceeds 16 MiB")
+        except ClientDisconnect:
+            raise HTTPException(
+                499, "Client disconnected before the request body was complete"
+            )
         try:
             payload = json.loads(raw)
         except ValueError:

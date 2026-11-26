@@ -725,9 +725,6 @@ async def test_client_and_unkeyed_principals_are_never_limited_or_metered(
 ):
     harness = Client(name="Harness", route_names=["free", "private"])
     setup = await build(tmp_path, clients=[harness])
-    config = setup.store.config()
-    config.security.anonymous_client_id = harness.id
-    setup.store.save(config)
     client_key = setup.store.issue_key(harness.id)
     admissions = []
     original = setup.limits.admit
@@ -740,17 +737,46 @@ async def test_client_and_unkeyed_principals_are_never_limited_or_metered(
         assert (await complete(http)).status_code == 200
         assert (await complete(http, stream=True)).status_code == 200
     async with setup.caller(key=False) as http:
+        denied = await complete(http, "free")
+        assert denied.status_code == 403
+        assert denied.json()["error"]["message"] == "Route is outside the client's allowlist"
+    # Successful unkeyed traffic needs a saved policy; neither that traffic
+    # nor the synthesized-policy refusal belongs to the account meter.
+    config = setup.store.config()
+    config.security.anonymous_client_id = harness.id
+    setup.store.save(config)
+    async with setup.caller(key=False) as http:
         assert (await complete(http, "free")).status_code == 200
+    # Unchanged: no admission is claimed, so no account limit can apply.
     assert admissions == []
     assert setup.store.open_usage_windows(0) == []
     assert setup.limits.ledger.windows == {}
     events = setup.store.events()
-    assert len(events) == 3
+    assert len(events) == 4
     for event in events:
-        assert not {"usage", "account_id", "limit", "stream_options_injected"} & set(
-            event
-        )
+        # Unchanged: nothing here belongs to an account.
+        assert not {"account_id", "limit", "stream_options_injected"} & set(event)
+        # Changed 2026-10-19: counting is unconditional. A client-key caller and
+        # an unkeyed caller both get a principal row and a usage block, because
+        # Ken needs token counts before any limit exists. Enforcement is still
+        # absent -- that is what the three assertions above prove.
+        # A non-streamed response carries the engine's own usage report; a
+        # streamed one is counted from chunks, so its count is an estimate.
+        # Both are recorded, and the flag says which kind each one is.
+        # A refusal that never reached an engine is no charge: no principal
+        # row and no usage block, only the completed requests count.
+        if event["status"] != "completed":
+            assert "usage" not in event
+            assert "principal" not in event
+            continue
+        assert "usage" in event
+        assert event["usage"]["estimated"] is bool(event["stream"])
+        assert event["principal"]["kind"] in {"key", "address"}
+        assert event["principal"]["principal"].startswith(("key:", "addr:"))
+    principals = {row["principal"] for row in setup.store.principal_usage(days=1)}
+    assert len(principals) == 2, "the key holder and the unkeyed caller are distinct"
     streamed = next(body for _, body in setup.fleet.calls if body.get("stream"))
+    # Still not injected: an unadmitted caller's bytes go upstream as sent.
     assert "stream_options" not in streamed
 
 

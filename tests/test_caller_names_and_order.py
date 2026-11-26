@@ -1,6 +1,9 @@
 """A caller list has to answer three questions without the caller's help.
 
-Regression coverage for three caller-list faults:
+Ken, 2026-10-26, reading the live Routes page: "last seen 4 days ago. right at
+the top and no clue who that is."
+
+Three separate faults were measured on the running router that day:
 
  1. rows were sorted by ``(name, source_address, id)`` and every unkeyed row's
     name was the same placeholder, so the sort collapsed to address order and
@@ -8,7 +11,7 @@ Regression coverage for three caller-list faults:
  2. a row's name was written when the caller was first seen, before any lookup
     had run, so it kept the placeholder for the life of the row;
  3. the resolver had no reverse-DNS source, so it could not name the router's
-    own host -- ``192.0.2.75`` resolves to ``router-host`` through NSS and avahi
+    own host -- ``192.168.1.75`` resolves to ``jarvis`` through NSS and avahi
     answers nothing for it.
 
 Each test below fails on the tree that shipped those faults.
@@ -60,16 +63,16 @@ def cold_store(tmp_path, runner):
 # 1. reverse DNS is a resolver source, and it names the router's own host.
 def test_reverse_dns_names_an_address_that_tailnet_and_mdns_do_not(tmp_path):
     assert dns_name(
-        "192.0.2.75",
-        fake_runner({("getent", "hosts", "192.0.2.75"): b"192.0.2.75   router-host\n"}),
-    ) == "router-host"
+        "192.168.1.75",
+        fake_runner({("getent", "hosts", "192.168.1.75"): b"192.168.1.75   jarvis\n"}),
+    ) == "jarvis"
 
 
 def test_a_pointer_back_at_the_address_carries_no_name(tmp_path):
     # Some resolvers answer "<ip> <ip>". That is not a name and must not be one.
     assert dns_name(
-        "192.0.2.75",
-        fake_runner({("getent", "hosts", "192.0.2.75"): b"192.0.2.75   192.0.2.75\n"}),
+        "192.168.1.75",
+        fake_runner({("getent", "hosts", "192.168.1.75"): b"192.168.1.75   192.168.1.75\n"}),
     ) == ""
 
 
@@ -93,43 +96,43 @@ def test_a_public_address_is_never_named_from_reverse_dns(tmp_path):
 def test_an_unnamed_row_gets_its_name_when_the_lookup_lands(tmp_path):
     store = cold_store(
         tmp_path,
-        fake_runner({("getent", "hosts", "192.0.2.75"): b"192.0.2.75   router-host\n"}),
+        fake_runner({("getent", "hosts", "192.168.1.75"): b"192.168.1.75   jarvis\n"}),
     )
     insert_caller(
         store,
         "x",
         {
-            "source_address": "192.0.2.75",
-            "source_key": "addr:192.0.2.75",
+            "source_address": "192.168.1.75",
+            "source_key": "addr:192.168.1.75",
             "name": "Unidentified caller",
         },
     )
     # Before the refresh the row is honestly unnamed.
     assert store.callers()[0]["name"] == "Unidentified caller"
 
-    store.source_names.refresh(["192.0.2.75"])
+    store.source_names.refresh(["192.168.1.75"])
 
     caller = store.callers()[0]
-    assert caller["name"] == "router-host"
-    assert caller["source_label"] == "router-host"
+    assert caller["name"] == "jarvis"
+    assert caller["source_label"] == "jarvis"
 
 
 def test_a_name_the_caller_reported_is_never_overwritten(tmp_path):
     store = cold_store(
         tmp_path,
-        fake_runner({("getent", "hosts", "192.0.2.75"): b"192.0.2.75   router-host\n"}),
+        fake_runner({("getent", "hosts", "192.168.1.75"): b"192.168.1.75   jarvis\n"}),
     )
     insert_caller(
         store,
         "x",
         {
-            "source_address": "192.0.2.75",
-            "source_key": "addr:192.0.2.75",
+            "source_address": "192.168.1.75",
+            "source_key": "addr:192.168.1.75",
             "name": "build-runner-7",
             "reported_name": "build-runner-7",
         },
     )
-    store.source_names.refresh(["192.0.2.75"])
+    store.source_names.refresh(["192.168.1.75"])
     assert store.callers()[0]["name"] == "build-runner-7"
 
 
@@ -147,8 +150,8 @@ def test_one_host_running_two_clients_does_not_put_the_stale_row_on_top(tmp_path
         "aaa-stale",
         {
             "seen": now - 4 * 86400,
-            "source_address": "192.0.2.75",
-            "source_key": "addr:192.0.2.75",
+            "source_address": "192.168.1.75",
+            "source_key": "addr:192.168.1.75",
             "name": "Unidentified caller",
             "software": "Python-urllib/3.12",
             "last_seen": now - 4 * 86400,
@@ -159,8 +162,8 @@ def test_one_host_running_two_clients_does_not_put_the_stale_row_on_top(tmp_path
         "zzz-fresh",
         {
             "seen": now,
-            "source_address": "192.0.2.75",
-            "source_key": "addr:192.0.2.75",
+            "source_address": "192.168.1.75",
+            "source_key": "addr:192.168.1.75",
             "name": "Unidentified caller",
             "software": "python-httpx/0.28.1",
             "last_seen": now,
@@ -198,8 +201,8 @@ async def test_the_served_state_puts_the_recent_row_first(tmp_path):
         "aaa-stale",
         {
             "seen": now - 4 * 86400,
-            "source_address": "192.0.2.75",
-            "source_key": "addr:192.0.2.75",
+            "source_address": "192.168.1.75",
+            "source_key": "addr:192.168.1.75",
             "name": "Unidentified caller",
             "software": "Python-urllib/3.12",
             "last_seen": now - 4 * 86400,
@@ -210,8 +213,8 @@ async def test_the_served_state_puts_the_recent_row_first(tmp_path):
         "zzz-fresh",
         {
             "seen": now,
-            "source_address": "192.0.2.75",
-            "source_key": "addr:192.0.2.75",
+            "source_address": "192.168.1.75",
+            "source_key": "addr:192.168.1.75",
             "name": "Unidentified caller",
             "software": "python-httpx/0.28.1",
             "last_seen": now,
@@ -230,7 +233,10 @@ async def test_the_served_state_puts_the_recent_row_first(tmp_path):
 
 # 4. the two values that govern this view are settings, not literals.
 #
-# Retention duration and the stored-row ceiling must remain configurable.
+# Ken, 2026-10-26: "there are settings that are governing this view and i have
+# no controls for them in the Settings UI either." He was right: how long a
+# departed source stayed on the page, and the hard ceiling on stored rows, were
+# both literals in store.py. Nobody could see them, let alone change them.
 #
 # These tests fail if either value goes back to being hardcoded, because they
 # set a non-default and require the read path and the prune to honour it.
@@ -304,12 +310,12 @@ def test_row_limit_is_a_setting_and_caps_the_listed_rows(tmp_path):
     for index in range(12):
         insert_caller(
             store,
-            f"row-{index:02d}",
+            "row-%02d" % index,
             {
                 "seen": now - index,
                 "last_seen": now - index,
-                "source_address": f"192.0.2.{100 + index}",
-                "source_key": f"addr:192.0.2.{100 + index}",
+                "source_address": "192.0.2.%d" % (100 + index),
+                "source_key": "addr:192.0.2.%d" % (100 + index),
             },
         )
     assert len(store.callers()) == 12

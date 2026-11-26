@@ -2,6 +2,7 @@ import { ArrowRight } from "lucide-react";
 import { Dialog, timeLabel } from "../components";
 import { callerDisplayName, callerSummary } from "../caller-identity";
 import { DecisionView } from "../editors";
+import { requestTimingLabel } from "../performance-format";
 import type { Job } from "../types";
 export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
   return (
@@ -37,6 +38,9 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
             {job.usage.prompt_tokens + job.usage.completion_tokens} tokens
           </p>
         )}
+        {job.performance && (
+          <p className="hint">{requestTimingLabel(job.performance)}</p>
+        )}
         {job.status === "limited" && (
           <p className="hint">Refused by account limit: {job.limit?.code}</p>
         )}
@@ -63,8 +67,10 @@ export function JobDialog({ job, onClose }: { job: Job; onClose: () => void }) {
         <h3>Policy at request time</h3>
         <DecisionView decision={job.decision} />
         <p className="hint">
-          Request history contains routing metadata. Prompts, responses, and
-          credentials are never recorded.
+          Request history contains routing metadata. Prompts and responses are
+          not recorded unless an operator starts a bounded debug capture window
+          in Traffic. Credential headers and known credential fields are
+          redacted.
         </p>
       </div>
     </Dialog>

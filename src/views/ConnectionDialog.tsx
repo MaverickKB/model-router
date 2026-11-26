@@ -46,10 +46,9 @@ export function ConnectionDialog({
           </strong>
         </div>
         <p className="hint">
-          Each route decides whether a caller key is required. Callers are
-          observed as they connect. A key selects a named permission policy and
-          can be reused across callers. Without a key, a matching source or
-          default policy must grant route access.
+          "Each route decides whether a caller key is required. Callers are
+          observed as they connect; an optional key selects a named permission
+          policy and can be reused across callers."
         </p>
       </div>
       <footer>

@@ -11,17 +11,29 @@ import httpx
 from anyio import CancelScope
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from starlette.background import BackgroundTask
 from starlette.responses import Response
+from starlette.background import BackgroundTask
 
-from .accounts.limits import AccountLimits, Refusal, UsageMeter
+from .accounts.limits import (
+    REPORTING_WINDOW_SECONDS,
+    AccountLimits,
+    Refusal,
+    UsageMeter,
+    window_start,
+)
+from .usage_principals import resolve as resolve_principal
+from .usage_principals import row as principal_row
 from .accounts.principal import level_for
 from .discovery import DiscoveryService, Observation
+from .debug_capture import DebugBuffer
 from .identity import Identity
+from .performance import ServedTiming
 from .routing import apply_defaults, decide
 from .schema import Client
 from .store import Store
 from .stream_protocol import CompletionMarker, StreamProgress
+from .watchdog import Watchdog, WatchdogTrip
+
 
 # One recovery loop can reject admission thousands of times; keep recent
 # evidence only, and count every rejection separately.
@@ -122,7 +134,7 @@ class InflightRequest:
                             0, self.observation.background_inflight - 1
                         )
 
-    async def relay(self, first, iterator, finish, observe=None, recoverable=False):
+    async def relay(self, first, iterator, finish, observe=None, recoverable=False, watchdog=None):
         terminal = CompletionMarker()
         progress = StreamProgress()
         status, code = "cancelled", None
@@ -130,23 +142,65 @@ class InflightRequest:
             terminal.feed(first)
             if recoverable:
                 progress.feed(first)
+            if watchdog is not None:
+                trip = watchdog.feed(first)
+                if trip is not None:
+                    raise WatchdogTrip(trip)
             if observe is not None:
                 observe(first)
             yield first
             if not terminal.complete:
-                async for chunk in iterator:
-                    terminal.feed(chunk)
-                    if recoverable:
-                        progress.feed(chunk)
-                    if observe is not None:
-                        observe(chunk)
-                    yield chunk
-                    if terminal.complete:
-                        break
+                if watchdog is None:
+                    async for chunk in iterator:
+                        terminal.feed(chunk)
+                        if recoverable:
+                            progress.feed(chunk)
+                        if observe is not None:
+                            observe(chunk)
+                        yield chunk
+                        if terminal.complete:
+                            break
+                else:
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                anext(iterator, None),
+                                watchdog.no_progress_timeout_seconds,
+                            )
+                        except asyncio.TimeoutError:
+                            raise WatchdogTrip("no_progress") from None
+                        if chunk is None:
+                            break
+                        terminal.feed(chunk)
+                        if recoverable:
+                            progress.feed(chunk)
+                        trip = watchdog.feed(chunk)
+                        if trip is not None:
+                            raise WatchdogTrip(trip)
+                        if observe is not None:
+                            observe(chunk)
+                        yield chunk
+                        if terminal.complete:
+                            break
             if recoverable and not terminal.complete and not progress.has_output:
                 status = "recovering"
                 raise RecoverableStreamError("IncompleteStream")
             status, code = "completed", 200
+        except WatchdogTrip as trip:
+            status, code = "watchdog", None
+            yield (
+                b'event: error\ndata: '
+                + json.dumps(
+                    {
+                        "error": {
+                            "message": "Runaway output stopped by the router watchdog",
+                            "type": "watchdog",
+                            "code": trip.reason,
+                        }
+                    }
+                ).encode()
+                + b"\n\n"
+            )
         except httpx.HTTPError as error:
             status, code = "failed", 502
             self.observation.circuit_until = time.time() + self.failure_cooldown
@@ -177,9 +231,11 @@ class Proxy:
         discovery: DiscoveryService,
         http: httpx.AsyncClient,
         identity: Identity,
+        debug=None,
     ):
         self.store, self.discovery, self.http = store, discovery, http
         self.identity = identity
+        self.debug = debug
         self.origins = None
         # Open windows are preloaded once; the request path never loads one.
         self.limits = AccountLimits()
@@ -225,33 +281,81 @@ class Proxy:
         # Bound before finish exists: finish settles an admission when one was
         # claimed and must stay callable on every earlier exit.
         admission = None
-        meter = None
+        # Every request counts its output for performance history. Only an
+        # account admission also settles those counts against a budget.
+        meter = UsageMeter(payload)
+        timing = ServedTiming()
         account_id = getattr(request.state, "account_id", None)
         started = getattr(request.state, "router_started", None) or time.monotonic()
         request.state.router_started = started
+        # Counting is unconditional. Enforcement stays in account levels; this
+        # records whose tokens were spent so a report can exist before a limit.
+        principal = resolve_principal(request)
+        principal_window = window_start(time.time(), REPORTING_WINDOW_SECONDS)
         await asyncio.to_thread(self.store.event, event)
+        debug_buffer = None
+        if self.debug is not None:
+            asyncio.create_task(
+                asyncio.to_thread(
+                    self.debug.capture_request,
+                    event["id"],
+                    request.headers,
+                    payload,
+                )
+            )
 
         async def finish(status, code=None):
             if status == "recovering":
                 event.setdefault("recovering_since", time.time())
+            if debug_buffer is not None and not debug_buffer.flushed:
+                debug_buffer.flushed = True
+                body = debug_buffer.flush()
+                if self.debug is not None:
+                    await asyncio.to_thread(
+                        self.debug.capture_stream,
+                        event["id"],
+                        debug_buffer.headers,
+                        body,
+                        "text/event-stream",
+                        debug_buffer.truncated,
+                    )
             row = None
+            principal_usage = None
+            # One reading of the meter feeds both ledgers: the account's window
+            # and the principal's. Counting happens whether or not an account
+            # admission ran, so an unmetered caller still appears in the report.
+            usage = meter.result(status, code)
             if admission is not None and not admission.settled:
                 # Settle synchronously before the first await so a cancellation
                 # landing here can lose durability, never a slot or reservation.
-                usage = meter.result(status, code)
                 admission.settle(usage)
-                event["usage"] = {
-                    "prompt_tokens": usage.prompt_tokens,
-                    "completion_tokens": usage.completion_tokens,
-                    "estimated": usage.estimated,
-                }
                 event["account_id"] = account_id
+                event.setdefault(
+                    "usage",
+                    {
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "estimated": usage.estimated,
+                    },
+                )
                 row = (
                     account_id,
                     admission.window_start,
                     admission.window_seconds,
                     *usage.row(),
                 )
+            # finish can run again when cancellation lands during the first
+            # write, so the stored metrics always follow the final status.
+            event.pop("performance", None)
+            if status == "completed":
+                performance = timing.summary(usage)
+                if performance is not None:
+                    queue_ms = None
+                    if event["attempts"]:
+                        queue_ms = event["attempts"][-1].get("queue_ms")
+                    if isinstance(queue_ms, (int, float)):
+                        performance["queue_ms"] = queue_ms
+                    event["performance"] = performance
             if event["attempts"] and event["attempts"][-1].get("status") == "waiting":
                 event["attempts"][-1]["status"] = status
             event.update(
@@ -260,10 +364,31 @@ class Proxy:
                 http_status=code,
             )
 
+            # A request that never reached an engine spent nothing: a refusal
+            # before any upstream send is not a zero-token charge, it is no
+            # charge. Only real spend creates a principal row and a usage block.
+            if usage is not None and usage.total > 0:
+                principal_usage = principal_row(
+                    principal, principal_window, REPORTING_WINDOW_SECONDS, usage
+                )
+                event["principal"] = {
+                    "principal": principal["principal"],
+                    "kind": principal["kind"],
+                    "label": principal["label"],
+                    "login": principal["login"],
+                }
+                event["usage"] = {
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "estimated": usage.estimated,
+                }
+
             def persist():
                 self.store.event(event)
                 if row is not None:
                     self.store.record_usage(*row)
+                if principal_usage is not None:
+                    self.store.record_principal_usage(*principal_usage)
 
             await asyncio.to_thread(persist)
 
@@ -315,6 +440,15 @@ class Proxy:
             await self.discovery.refresh_route(payload["model"])
             return True
 
+        def observe_chunk(chunk):
+            # The relay observes every chunk exactly once, the prefetched
+            # first chunk included, so each chunk is timed once. A stream
+            # delivered in a single read therefore has no generation interval.
+            meter.feed(chunk)
+            timing.mark_chunk()
+            if debug_buffer is not None:
+                debug_buffer.append(chunk)
+
         if not decision["candidates"]:
             while decision.get("status", 503) == 503 and await recover():
                 client = await self.identity.identify(request)
@@ -352,7 +486,6 @@ class Proxy:
                     headers=outcome.headers(),
                 )
             admission = outcome
-            meter = UsageMeter(payload)
 
         try:
             attempted = set()
@@ -439,11 +572,28 @@ class Proxy:
                 body = apply_defaults(payload, optional_defaults)
                 body["model"] = candidate["model"]
                 body.pop("session_id", None)
+                if (
+                    engine.kind == "local"
+                    and engine.protocol == "openai"
+                    and candidate["model"] == "DeepSeek-V4.1-Flash-1017"
+                    and body.get("reasoning_effort") is None
+                    and "reasoning_effort" not in engine.unsupported_parameters
+                ):
+                    # The Spark harness serves this flash model with thinking on
+                    # by default, which spends the completion budget on reasoning
+                    # tokens and can loop. A silent request pins reasoning off;
+                    # an explicit caller setting is still honoured. Scoped to the
+                    # local openai chat path so System One and voice are untouched.
+                    body["reasoning_effort"] = "none"
                 for field, mapping in engine.value_mappings.items():
                     if isinstance(body.get(field), str):
                         body[field] = mapping.get(body[field], body[field])
+                # Only an admitted (account) request may have its body altered to
+                # request a usage report. An unadmitted caller's bytes go upstream
+                # exactly as sent; its stream is counted from chunks instead.
                 injected = (
-                    meter is not None
+                    admission is not None
+                    and meter is not None
                     and bool(body.get("stream"))
                     and "stream_options" not in engine.unsupported_parameters
                 )
@@ -472,6 +622,7 @@ class Proxy:
                 else:
                     path = "/chat/completions"
                 max_inflight = obs.max_inflight or engine.max_inflight
+                attempt_started = time.monotonic()
                 connection = InflightRequest.claim(
                     obs,
                     max_inflight,
@@ -540,6 +691,10 @@ class Proxy:
                         },
                         timeout=httpx.Timeout(engine.timeout_seconds, connect=8),
                     )
+                    timing.mark_sent()
+                    attempt["queue_ms"] = round(
+                        (time.monotonic() - attempt_started) * 1000, 1
+                    )
                     upstream = connection.response = await self.http.send(
                         req, stream=True
                     )
@@ -593,20 +748,39 @@ class Proxy:
                             await connection.release()
                             continue
 
-                        async def abandon_stream(connection=connection):
+                        if self.debug is not None and self.debug.active() is not None:
+                            debug_buffer = DebugBuffer(upstream.headers)
+
+                        async def abandon_stream():
                             if not connection.released:
                                 try:
                                     await finish("cancelled")
                                 finally:
                                     await connection.release()
 
+                        watchdog = None
+                        if engine.watchdog.enabled:
+                            watchdog = Watchdog(
+                                repeat_window=engine.watchdog.repeat_window,
+                                max_reasoning_bytes_without_answer=(
+                                    engine.watchdog.max_reasoning_bytes_without_answer
+                                ),
+                                first_token_timeout_seconds=(
+                                    engine.watchdog.first_token_timeout_seconds
+                                ),
+                                no_progress_timeout_seconds=(
+                                    engine.watchdog.no_progress_timeout_seconds
+                                ),
+                            )
+
                         return StreamingResponse(
                             connection.relay(
                                 first,
                                 iterator,
                                 finish,
-                                observe=meter.feed if meter is not None else None,
+                                observe=observe_chunk,
                                 recoverable=recovery_enabled,
+                                watchdog=watchdog,
                             ),
                             status_code=upstream.status_code,
                             media_type=response_content_type,
@@ -621,12 +795,20 @@ class Proxy:
                         content = await read_limited(
                             upstream, engine.max_response_bytes
                         )
-                    if meter is not None:
-                        meter.feed_json(content)
+                    timing.mark_body_read()
+                    meter.feed_json(content)
                     code = upstream.status_code
                     content_type = upstream.headers.get(
                         "content-type", "application/json"
                     )
+                    if self.debug is not None:
+                        await asyncio.to_thread(
+                            self.debug.capture_response,
+                            event["id"],
+                            upstream.headers,
+                            content,
+                            content_type,
+                        )
                     if upstream.is_success:
                         obs.last_success = time.time()
                     await finish("completed" if upstream.is_success else "failed", code)
@@ -639,7 +821,9 @@ class Proxy:
                     )
                 except ResponseTooLarge:
                     await connection.release()
-                    if meter is not None:
+                    # Charge the whole reservation only when one exists; an
+                    # unadmitted request has no reservation to charge.
+                    if meter is not None and admission is not None:
                         meter.oversized(admission.reserve)
                     await finish("failed", 502)
                     return JSONResponse(

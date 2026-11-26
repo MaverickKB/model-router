@@ -129,9 +129,7 @@ class ProviderOwner:
                     # Only OUR deadline permits forced-close completion. An
                     # unrelated context TimeoutError remains a real failure.
                     failure = not grace.expired()
-                except Exception:  # noqa: BLE001
-                    # External connector cleanup can fail with arbitrary errors;
-                    # still prove transport closure before releasing admission.
+                except Exception:
                     failure = True
                 if not self._positive():
                     transport = getattr(self.upstream, "transport", None)
@@ -485,11 +483,8 @@ def register_speech(app, store, discovery, identity, identify_caller, connector=
                     await owner.close()
                 except asyncio.CancelledError:
                     interrupted = True
-                except Exception:  # noqa: BLE001, S110
-                    # External cleanup errors must not bypass client cleanup.
-                    # Unknown closure retains admission as quarantine; do not
-                    # log raw provider errors that may include private data.
-                    pass
+                except Exception:
+                    pass  # Unknown closure retains admission as quarantine.
             if slot and (owner is None or owner.closed):
                 await slot.release()
             with suppress(Exception):

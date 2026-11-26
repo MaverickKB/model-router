@@ -5,7 +5,7 @@ import pytest
 
 from gateway.app import create_app
 from gateway.origin_policy import PRIVATE_HEADER, Origin, OriginPolicy
-from gateway.schema import Client, Configuration, Engine
+from gateway.schema import Client, Configuration, Engine, Security
 
 PRIVATE_IP = "192.0.2.66"   # TEST-NET-1, documentation range
 OTHER_IP = "192.0.2.10"
@@ -27,25 +27,22 @@ def write_policy(tmp_path, monkeypatch, **extra):
     return policy, flag
 
 
-def make_app(tmp_path, seen):
+def make_app(tmp_path, seen, *, shared_access=False):
     async def upstream(request):
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"data": [{"id": "model"}, {"id": "other"}]})
+        if request.url.path == "/health":
+            return httpx.Response(404)
         seen.append({"headers": dict(request.headers), "body": json.loads(request.content)})
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
     app = create_app(str(tmp_path / "state"), background=False,
                      transport=httpx.MockTransport(upstream))
-    caller = Client(
-        name="Origin-policy fixture",
-        route_names=["auto"],
-        allow_direct_models=True,
-        allow_network_auth=True,
-        source_networks=[f"{PRIVATE_IP}/32", f"{OTHER_IP}/32"],
-    )
+    shared = Client(name="Shared access", route_names=["auto"], allow_cloud=False)
     app.state.store.save(Configuration(
         engines=[Engine(name="API", base_url="http://provider.test/v1")],
-        clients=[caller],
+        clients=[shared] if shared_access else [],
+        security=Security(anonymous_client_id=shared.id if shared_access else None),
     ))
     return app
 
@@ -75,7 +72,7 @@ def body(model="auto", **kw):
 async def test_private_origin_strips_capture_metadata_and_marks_header(tmp_path, monkeypatch):
     write_policy(tmp_path, monkeypatch)
     seen = []
-    app = make_app(tmp_path, seen)
+    app = make_app(tmp_path, seen, shared_access=True)
     r = await post(app, PRIVATE_IP, body(
         metadata={"dream_capture": {"tag": "glm-terminal-v1", "request_id": "r1"},
                   "eval_run": "e", "capture": 1, "keep": "yes"},
@@ -89,15 +86,22 @@ async def test_private_origin_strips_capture_metadata_and_marks_header(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_other_origins_unchanged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared_access", [False, True])
+async def test_other_origins_unchanged(tmp_path, monkeypatch, shared_access):
     write_policy(tmp_path, monkeypatch)
     seen = []
-    app = make_app(tmp_path, seen)
+    app = make_app(tmp_path, seen, shared_access=shared_access)
     md = {"dream_capture": {"tag": "glm-terminal-v1", "request_id": "r1"}}
     r = await post(app, OTHER_IP, body(metadata=md))
-    assert r.status_code == 200
-    assert PRIVATE_HEADER.lower() not in seen[0]["headers"]
-    assert seen[0]["body"]["metadata"] == md
+    assert PRIVATE_HEADER.lower() not in r.headers
+    if shared_access:
+        assert r.status_code == 200
+        assert PRIVATE_HEADER.lower() not in seen[0]["headers"]
+        assert seen[0]["body"]["metadata"] == md
+    else:
+        assert r.status_code == 403
+        assert r.json()["error"]["message"] == "Route is outside the client's allowlist"
+        assert seen == []
 
 
 @pytest.mark.asyncio
@@ -124,7 +128,7 @@ async def test_other_origin_may_pick_model(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("how", ["origin_flag", "global_flag", "config"])
 async def test_maintenance_gate_returns_503_and_never_forwards(tmp_path, monkeypatch, how):
-    _policy, flag = write_policy(tmp_path, monkeypatch, maintenance=(how == "config"))
+    policy, flag = write_policy(tmp_path, monkeypatch, maintenance=(how == "config"))
     if how == "origin_flag":
         flag.write_text("")
     if how == "global_flag":
@@ -140,19 +144,28 @@ async def test_maintenance_gate_returns_503_and_never_forwards(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_origin_flag_does_not_gate_others(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared_access", [False, True])
+async def test_origin_flag_does_not_gate_others(tmp_path, monkeypatch, shared_access):
     _, flag = write_policy(tmp_path, monkeypatch)
     flag.write_text("")
     seen = []
-    app = make_app(tmp_path, seen)
-    assert (await post(app, OTHER_IP, body())).status_code == 200
+    app = make_app(tmp_path, seen, shared_access=shared_access)
+    response = await post(app, OTHER_IP, body())
+    assert PRIVATE_HEADER.lower() not in response.headers
+    if shared_access:
+        assert response.status_code == 200
+        assert PRIVATE_HEADER.lower() not in seen[0]["headers"]
+    else:
+        assert response.status_code == 403
+        assert response.json()["error"]["message"] == "Route is outside the client's allowlist"
+        assert seen == []
 
 
 @pytest.mark.asyncio
 async def test_gate_toggles_live_without_restart(tmp_path, monkeypatch):
     _, flag = write_policy(tmp_path, monkeypatch)
     seen = []
-    app = make_app(tmp_path, seen)
+    app = make_app(tmp_path, seen, shared_access=True)
     await app.state.discovery.refresh()
     async with app.router.lifespan_context(app), httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=(PRIVATE_IP, 1)),
@@ -212,16 +225,23 @@ def test_origin_defaults_are_neutral():
 
 
 @pytest.mark.asyncio
-async def test_no_policy_file_changes_nothing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared_access", [False, True])
+async def test_no_policy_file_changes_nothing(tmp_path, monkeypatch, shared_access):
     monkeypatch.setenv("MODEL_ROUTER_ORIGIN_POLICY", str(tmp_path / "missing.json"))
     monkeypatch.setenv("MODEL_ROUTER_MAINTENANCE_FLAG", str(tmp_path / "global.flag"))
     (tmp_path / "global.flag").write_text("")  # gate applies only to configured origins
     seen = []
-    app = make_app(tmp_path, seen)
+    app = make_app(tmp_path, seen, shared_access=shared_access)
     md = {"dream_capture": {"tag": "t"}}
     r = await post(app, PRIVATE_IP, body(metadata=md))
-    assert r.status_code == 200 and seen[0]["body"]["metadata"] == md
-    assert PRIVATE_HEADER.lower() not in seen[0]["headers"]
+    assert PRIVATE_HEADER.lower() not in r.headers
+    if shared_access:
+        assert r.status_code == 200 and seen[0]["body"]["metadata"] == md
+        assert PRIVATE_HEADER.lower() not in seen[0]["headers"]
+    else:
+        assert r.status_code == 403
+        assert r.json()["error"]["message"] == "Route is outside the client's allowlist"
+        assert seen == []
 
 
 def test_tag_resolver_off_by_default(tmp_path, monkeypatch):
@@ -234,8 +254,7 @@ def test_tag_resolver_off_by_default(tmp_path, monkeypatch):
 
 
 def test_pluggable_resolver_by_module_path(tmp_path, monkeypatch):
-    import sys
-    import types
+    import sys, types
     mod = types.ModuleType("fake_resolver_mod")
     mod.resolve = lambda a: ["tag:x"] if a == TAGGED_IP else []
     monkeypatch.setitem(sys.modules, "fake_resolver_mod", mod)
@@ -272,9 +291,7 @@ def test_origin_name_header_optional(tmp_path, monkeypatch):
     assert pol.upstream_headers(pol.classify(PRIVATE_IP)) == {PRIVATE_HEADER: "1"}
     p.write_text(json.dumps({"origins": [o], "origin_name_header": True,
                              "private_header": "X-Private"}))
-    import os
-
-    os.utime(p, (1, 1))
+    import os; os.utime(p, (1, 1))
     pol.reload()
     assert pol.upstream_headers(pol.classify(PRIVATE_IP)) == {"X-Private": "1", "X-Router-Origin": "n"}
 

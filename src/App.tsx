@@ -26,13 +26,16 @@ import { ClientsView } from "./views/ClientsView";
 import { ConnectionDialog } from "./views/ConnectionDialog";
 import { JobDialog } from "./views/JobDialog";
 import { RoutesView } from "./views/RoutesView";
+import { TrafficView } from "./views/TrafficView";
 
 import { EngineCard } from "./EngineCard";
+import { performanceRefreshKey, rowsForEngine } from "./performance-format";
+import { usePerformance } from "./usePerformance";
 import { SettingsPage, type Section } from "./settings/SettingsPage";
 import { MergeEnginesDialog } from "./editors/MergeEnginesDialog";
 import { engineUrls } from "./engine-addresses";
 
-type Tab = "Overview" | "Network" | "Routes" | "Callers" | "Settings";
+type Tab = "Overview" | "Traffic" | "Network" | "Routes" | "Callers" | "Settings";
 export function App() {
   const { state, locked, connectionError, reload } = useRouterState();
   const [error, setError] = useState("");
@@ -43,6 +46,7 @@ export function App() {
     [route, setRoute] = useState<Route | null>(null),
     [client, setClient] = useState<Client | null>(null);
   const [merging, setMerging] = useState<Engine | null>(null);
+  const [performanceHours, setPerformanceHours] = useState(24);
   const [job, setJob] = useState<Job | null>(null),
     [hover, setHover] = useState<Job | null>(null),
     [endpoints, setEndpoints] = useState(false);
@@ -51,6 +55,11 @@ export function App() {
   const [release, setRelease] = useState<ReleaseStatus | null>(null);
   const workspace = useRef<HTMLDivElement>(null);
   const [curve, setCurve] = useState("");
+  const performance = usePerformance(
+    performanceHours,
+    tab === "Overview" && state !== null && !locked,
+    performanceRefreshKey(state),
+  );
   async function action(fn: () => Promise<unknown>) {
     try {
       await fn();
@@ -228,7 +237,7 @@ export function App() {
       <nav className="topbar paper" aria-label="Main navigation">
         <div className="tabs">
           {(
-            ["Overview", "Network", "Routes", "Callers", "Settings"] as Tab[]
+            ["Overview", "Traffic", "Network", "Routes", "Callers", "Settings"] as Tab[]
           ).map((t) => (
             <button
               key={t}
@@ -318,6 +327,7 @@ export function App() {
       >
         <ActivityRail
           events={state.events}
+          engines={state.engines}
           hover={hover}
           onHover={setHover}
           onSelect={setJob}
@@ -390,6 +400,16 @@ export function App() {
                   <EngineCard
                     key={e.id}
                     engine={e}
+                    performance={{
+                      rows: rowsForEngine(
+                        performance.summary,
+                        performanceHours,
+                        e.id,
+                      ),
+                      hours: performanceHours,
+                      error: performance.error,
+                      onHours: setPerformanceHours,
+                    }}
                     onMerge={() => setMerging(e)}
                     onEdit={() =>
                       setEngine(config.engines.find((x) => x.id === e.id)!)
@@ -553,6 +573,9 @@ export function App() {
                 <p className="error">{state.discovery.error}</p>
               )}
             </section>
+          )}
+          {tab === "Traffic" && (
+            <TrafficView events={state.events} engines={state.engines} />
           )}
           {tab === "Network" && (
             <NetworkView

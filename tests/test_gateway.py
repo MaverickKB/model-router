@@ -465,15 +465,7 @@ async def test_plain_catalog_respects_saved_capabilities_for_agent_requests(tmp_
         base_url="http://provider.test/v1",
         capabilities=["text", "streaming", "vision"],
     )
-    caller = Client(name="Agent fixture", route_names=["work"])
-    app.state.store.save(
-        Configuration(
-            engines=[engine],
-            routes=[Route(name="work")],
-            clients=[caller],
-            security=Security(anonymous_client_id=caller.id),
-        )
-    )
+    app.state.store.save(Configuration(engines=[engine], routes=[Route(name="work")]))
     await app.state.discovery.refresh()
     payload = {
         "model": "work",
@@ -814,3 +806,46 @@ async def test_configured_route_precedes_same_named_model_and_retains_its_gate(
     event = app.state.store.events()[0]
     assert event["status"] == ("unavailable" if expected == 503 else "denied")
     assert event["attempts"] == []
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_returns_499(setup):
+    app, http, fleet, local, cloud, client = setup
+    authorization = http.headers.get("Authorization")
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"localhost"),
+            (b"content-type", b"application/json"),
+            (b"authorization", authorization.encode()),
+        ],
+        "client": ("127.0.0.1", 5123),
+        "server": ("localhost", 80),
+    }
+    messages = [
+        {"type": "http.request", "body": b'{"model": "auto"', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 499
+    assert not fleet.calls

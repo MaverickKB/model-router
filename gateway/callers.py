@@ -88,7 +88,9 @@ async def observe(store: Store, request: Request, policy: Client | None) -> dict
         name = principal_label
     else:
         name = reported_name or UNNAMED_CALLER
+    origin_login = getattr(request.state, "origin_login", "")
     caller = {
+        "source_login": origin_login,
         "policy_id": policy.id if policy else None,
         "account_id": account_id,
         "key_id": key_id,

@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Switch, timeLabel } from "./components";
 import type { Engine, EngineView } from "./types";
 import { engineHost, engineUrls } from "./engine-addresses";
+import { EnginePerformance } from "./EnginePerformance";
+import type { EnginePerformanceProps } from "./EnginePerformance";
 export function EngineCard({
   engine: e,
   onEdit,
@@ -10,8 +12,10 @@ export function EngineCard({
   onRefresh,
   onRemove,
   onMerge,
+  performance,
 }: {
   engine: EngineView;
+  performance: EnginePerformanceProps;
   onEdit: () => void;
   onChange: (c: Partial<Engine>) => Promise<void>;
   onRefresh: () => Promise<void>;
@@ -28,7 +32,7 @@ export function EngineCard({
       data-engine-id={e.id}
     >
       <div className="engine-top">
-        <div className={"engine-orbit " + e.status}>
+        <div className={"engine-orbit " + e.status + (e.inflight > 0 ? " busy" : "")}>
           {e.kind === "cloud" ? (
             <Cloud size={25} strokeWidth={1.5} />
           ) : (
@@ -134,6 +138,7 @@ export function EngineCard({
               </p>
             )}
           </div>
+          <EnginePerformance {...performance} />
           <div className="engine-foot">
             <span>
               Catalog checked {timeLabel(e.checked_at)}

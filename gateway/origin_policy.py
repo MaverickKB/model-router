@@ -46,7 +46,7 @@ class Origin:
               "strip_keys", "maintenance", "maintenance_flag", "maintenance_message")
 
     @classmethod
-    def parse(cls, raw: dict) -> Origin:
+    def parse(cls, raw: dict) -> "Origin":
         o = cls(name=str(raw["name"]),
                 networks=[ipaddress.ip_network(n, strict=False)
                           for n in raw.get("source_networks", [])],
@@ -121,6 +121,8 @@ class OriginPolicy:
         self.private_header = DEFAULT_PRIVATE_HEADER
         self.origin_header: str | None = None   # off by default
         self.resolver = tag_lookup
+        self.login_resolver = None
+        self._injected_login = None
         self.error: str | None = None
         self.reload()
 
@@ -144,8 +146,15 @@ class OriginPolicy:
                 if spec is None and os.environ.get("MODEL_ROUTER_TAILSCALE_TAGS") == "1":
                     spec = "tailscale"
                 self.resolver = self._injected or load_resolver(spec, raw.get("static_tags"))
+                # A login resolver is separate from tags: tags classify, a login
+                # names the account. Only tailscale can supply one today.
+                self.login_resolver = self._injected_login or (
+                    load_resolver(spec, raw.get("static_tags"))
+                    if spec == "tailscale"
+                    else None
+                )
                 self.error = None
-            except Exception as exc:  # noqa: BLE001 - optional resolver plugins may raise arbitrary errors.
+            except Exception as exc:  # keep last good policy
                 self.error = f"{type(exc).__name__}: {exc}"
             self._mtime = mtime
             self._cache = {}
@@ -155,9 +164,35 @@ class OriginPolicy:
         if address not in cache:
             try:
                 cache[address] = set(self.resolver(address) or [])
-            except Exception:  # noqa: BLE001 - an optional resolver failure supplies no tags.
+            except Exception:
                 cache[address] = set()
             self._cache = cache
+        return cache[address]
+
+    def set_login_resolver(self, resolver) -> None:
+        """Install a login resolver that survives policy reloads (tests, plugins)."""
+        self._injected_login = resolver
+        self.login_resolver = resolver
+
+    def login_for(self, address: str | None) -> str:
+        """The account login owning *address*, when a login resolver is enabled."""
+        if not address:
+            return ""
+        resolver = self._injected_login or self.login_resolver
+        if resolver is None:
+            return ""
+        cache = getattr(self, "_login_cache", {})
+        if address not in cache:
+            try:
+                if self._injected_login is not None:
+                    cache[address] = str(resolver(address) or "")
+                else:
+                    from .origin_resolvers import tailscale_login
+
+                    cache[address] = tailscale_login(address) or ""
+            except Exception:
+                cache[address] = ""
+            self._login_cache = cache
         return cache[address]
 
     def classify(self, address: str | None) -> Origin | None:
