@@ -334,3 +334,86 @@ def test_row_shape_matches_the_store_columns():
 def test_window_start_is_stable_within_a_day():
     now = time.time()
     assert window_start(now, 86400) == window_start(now + 10, 86400)
+
+
+@pytest.mark.asyncio
+async def test_caller_usage_is_recorded_per_source(tmp_path):
+    """The Callers tab key is the source key, not the principal."""
+    app, store, _ = router(tmp_path)
+    await ready(app)
+    assert (await chat(app)).status_code == 200
+    report = store.caller_usage_ranges()
+    assert len(report["callers"]) == 1
+    entry = report["callers"][0]
+    assert entry["source_key"] == "addr:192.0.2.10"
+    assert entry["day"]["total_tokens"] == USAGE["total_tokens"]
+    assert entry["week"]["total_tokens"] == USAGE["total_tokens"]
+    assert entry["month"]["total_tokens"] == USAGE["total_tokens"]
+    assert entry["all_time"]["total_tokens"] == USAGE["total_tokens"]
+    assert entry["all_time"]["requests"] == 1
+
+
+def test_caller_usage_ranges_cover_day_week_month_and_all_time(tmp_path):
+    store = Store(str(tmp_path))
+    now = time.time()
+    today = window_start(now, REPORTING_WINDOW_SECONDS)
+    day = REPORTING_WINDOW_SECONDS
+    store.record_caller_usage(
+        "addr:192.0.2.60", "test", "", today, REPORTING_WINDOW_SECONDS, 10, 5, 0
+    )
+    store.record_caller_usage(
+        "addr:192.0.2.60", "test", "", today - 3 * day, REPORTING_WINDOW_SECONDS, 20, 6, 0
+    )
+    store.record_caller_usage(
+        "addr:192.0.2.60", "test", "", today - 10 * day, REPORTING_WINDOW_SECONDS, 30, 7, 0
+    )
+    store.record_caller_usage(
+        "addr:192.0.2.60", "test", "", today - 40 * day, REPORTING_WINDOW_SECONDS, 40, 8, 0
+    )
+    entry = store.caller_usage_ranges()["callers"][0]
+    assert entry["day"]["total_tokens"] == 15
+    assert entry["week"]["total_tokens"] == 41
+    assert entry["month"]["total_tokens"] == 78
+    assert entry["all_time"]["total_tokens"] == 126
+    assert entry["all_time"]["requests"] == 4
+
+
+@pytest.mark.asyncio
+async def test_the_caller_usage_endpoint_reports_ranges(tmp_path):
+    app, store, _ = router(tmp_path)
+    await ready(app)
+    await chat(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 9000)),
+        base_url="http://127.0.0.1:8680",
+    ) as http:
+        response = await http.get("/api/usage/callers")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["callers"][0]["source_key"] == "addr:192.0.2.10"
+    assert body["callers"][0]["day"]["total_tokens"] == USAGE["total_tokens"]
+    assert body["callers"][0]["all_time"]["total_tokens"] == USAGE["total_tokens"]
+
+
+def test_backfill_caller_usage_from_events(tmp_path):
+    store = Store(str(tmp_path))
+    event = {
+        "id": "backfill-1",
+        "ts": time.time(),
+        "status": "completed",
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "estimated": False},
+        "caller": {
+            "source_key": "addr:192.0.2.50",
+            "source_address": "192.0.2.50",
+            "name": "Backfill caller",
+            "source_label": "192.0.2.50",
+        },
+    }
+    store.event(event)
+    store.db.execute("DELETE FROM caller_totals")
+    store.db.commit()
+    store.backfill_caller_usage()
+    entry = store.caller_usage_ranges()["callers"][0]
+    assert entry["source_key"] == "addr:192.0.2.50"
+    assert entry["all_time"]["total_tokens"] == 15
+    assert entry["day"]["total_tokens"] == 15

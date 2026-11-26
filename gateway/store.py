@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from .accounts.limits import REPORTING_WINDOW_SECONDS, window_start
 from .caller_records import caller_id, merge_observations
 from .caller_sources import UNNAMED_CALLER, ensure_source_identity, normalized_address
 from .caller_sources import source_identity as caller_source_identity
@@ -112,6 +113,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS callers (id TEXT PRIMARY KEY, seen REAL NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS caller_source_names (source_key TEXT PRIMARY KEY, name TEXT NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts REAL NOT NULL, body TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
             CREATE TABLE IF NOT EXISTS accounts (
               id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
               level_id TEXT NOT NULL,
@@ -150,6 +152,25 @@ class Store:
               PRIMARY KEY (principal, window_start, window_seconds));
             CREATE INDEX IF NOT EXISTS principal_usage_login ON principal_usage(login);
             CREATE INDEX IF NOT EXISTS principal_usage_window ON principal_usage(window_start);
+            -- Per-caller-source token totals. The Callers tab groups observed
+            -- endpoints by source_key, so this table uses the same key. A
+            -- principal can span sources (an origin behind an address), and a
+            -- source can span principals (a keyed and an unkeyed request from
+            -- one address); this ledger answers "what did this caller spend".
+            CREATE TABLE IF NOT EXISTS caller_usage (
+              source_key TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
+              login TEXT NOT NULL DEFAULT '', window_start REAL NOT NULL,
+              window_seconds INTEGER NOT NULL,
+              prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+              estimated_tokens INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY (source_key, window_start, window_seconds));
+            CREATE INDEX IF NOT EXISTS caller_usage_window ON caller_usage(window_start);
+            CREATE TABLE IF NOT EXISTS caller_totals (
+              source_key TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '',
+              login TEXT NOT NULL DEFAULT '',
+              prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+              estimated_tokens INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0,
+              first_seen REAL NOT NULL, last_seen REAL NOT NULL);
         """)
         self.db.execute(
             "INSERT OR IGNORE INTO installation VALUES (1, ?)",
@@ -174,6 +195,7 @@ class Store:
             ).fetchone()[0]
         )
         self._migrate_callers()
+        self.backfill_caller_usage()
         self.publish_discovery_policy()
         self._secrets = {}
         migrated = False
@@ -1283,6 +1305,265 @@ class Store:
                 + entry["estimated_tokens"]
             )
         return sorted(totals.values(), key=lambda e: -e["total_tokens"])
+
+    def record_caller_usage(
+        self,
+        source_key: str,
+        label: str,
+        login: str,
+        window_start: float,
+        window_seconds: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        estimated_tokens: int,
+    ) -> None:
+        """Add one request to a caller source's daily window and lifetime total."""
+        now = time.time()
+        with self.lock:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO caller_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)"
+                    " ON CONFLICT(source_key, window_start, window_seconds) DO UPDATE SET"
+                    " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
+                    " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                    " estimated_tokens = estimated_tokens + excluded.estimated_tokens,"
+                    " requests = requests + 1,"
+                    " label = excluded.label,"
+                    " login = CASE WHEN excluded.login <> '' THEN excluded.login ELSE login END",
+                    (
+                        source_key,
+                        label,
+                        login,
+                        window_start,
+                        window_seconds,
+                        prompt_tokens,
+                        completion_tokens,
+                        estimated_tokens,
+                    ),
+                )
+                self.db.execute(
+                    "DELETE FROM caller_usage WHERE window_start + window_seconds < ?",
+                    (now - USAGE_RETENTION_SECONDS,),
+                )
+                self.db.execute(
+                    "INSERT INTO caller_totals VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)"
+                    " ON CONFLICT(source_key) DO UPDATE SET"
+                    " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
+                    " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                    " estimated_tokens = estimated_tokens + excluded.estimated_tokens,"
+                    " requests = requests + 1,"
+                    " label = excluded.label,"
+                    " login = CASE WHEN excluded.login <> '' THEN excluded.login ELSE login END,"
+                    " last_seen = excluded.last_seen",
+                    (
+                        source_key,
+                        label,
+                        login,
+                        prompt_tokens,
+                        completion_tokens,
+                        estimated_tokens,
+                        now,
+                        now,
+                    ),
+                )
+
+    @staticmethod
+    def _usage_totals(prompt_tokens, completion_tokens, estimated_tokens, requests):
+        prompt = int(prompt_tokens or 0)
+        completion = int(completion_tokens or 0)
+        estimated = int(estimated_tokens or 0)
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "estimated_tokens": estimated,
+            "requests": int(requests or 0),
+            "total_tokens": prompt + completion + estimated,
+        }
+
+    @staticmethod
+    def _empty_usage_totals():
+        return Store._usage_totals(0, 0, 0, 0)
+
+    def caller_usage_ranges(self, now: float | None = None) -> dict:
+        """Token totals per caller source for day, week, 30 days and all time."""
+        if now is None:
+            now = time.time()
+        day_start = window_start(now, REPORTING_WINDOW_SECONDS)
+        ranges = {
+            "day": day_start,
+            "week": day_start - 6 * REPORTING_WINDOW_SECONDS,
+            "month": day_start - 29 * REPORTING_WINDOW_SECONDS,
+        }
+        with self.lock:
+            callers = {}
+            for row in self.db.execute(
+                "SELECT source_key, label, login, prompt_tokens, completion_tokens,"
+                " estimated_tokens, requests, first_seen, last_seen FROM caller_totals"
+            ):
+                source_key = row[0]
+                callers[source_key] = {
+                    "source_key": source_key,
+                    "label": row[1],
+                    "login": row[2],
+                    "first_seen": row[7],
+                    "last_seen": row[8],
+                    "day": self._empty_usage_totals(),
+                    "week": self._empty_usage_totals(),
+                    "month": self._empty_usage_totals(),
+                    "all_time": self._usage_totals(row[3], row[4], row[5], row[6]),
+                }
+            for name, start in ranges.items():
+                rows = self.db.execute(
+                    "SELECT source_key, label, login, SUM(prompt_tokens),"
+                    " SUM(completion_tokens), SUM(estimated_tokens), SUM(requests)"
+                    " FROM caller_usage WHERE window_start >= ? GROUP BY source_key",
+                    (start,),
+                ).fetchall()
+                for row in rows:
+                    source_key = row[0]
+                    entry = callers.get(source_key)
+                    if entry is None:
+                        entry = callers[source_key] = {
+                            "source_key": source_key,
+                            "label": row[1],
+                            "login": row[2],
+                            "first_seen": None,
+                            "last_seen": None,
+                            "day": self._empty_usage_totals(),
+                            "week": self._empty_usage_totals(),
+                            "month": self._empty_usage_totals(),
+                            "all_time": self._empty_usage_totals(),
+                        }
+                    entry[name] = self._usage_totals(row[3], row[4], row[5], row[6])
+        ordered = sorted(
+            callers.values(),
+            key=lambda entry: (-entry["all_time"]["total_tokens"], entry["label"]),
+        )
+        accounting_since = min(
+            (entry["first_seen"] for entry in ordered if entry["first_seen"] is not None),
+            default=None,
+        )
+        return {
+            "generated_at": now,
+            "accounting_since": accounting_since,
+            "callers": ordered,
+        }
+
+    def backfill_caller_usage(self) -> None:
+        """Seed the caller ledger from retained events once, before serving."""
+        with self.lock:
+            existing = self.db.execute(
+                "SELECT COUNT(*) FROM caller_totals"
+            ).fetchone()[0]
+            if existing:
+                return
+            cutoff = time.time() - 7 * 86400
+            rows = self.db.execute(
+                "SELECT ts, body FROM events WHERE ts >= ?"
+                " AND json_extract(body, '$.usage') IS NOT NULL ORDER BY ts ASC",
+                (cutoff,),
+            ).fetchall()
+            windows = {}
+            totals = {}
+            for ts, body in rows:
+                try:
+                    event = json.loads(body)
+                except (ValueError, TypeError):
+                    continue
+                usage = event.get("usage") or {}
+                prompt = usage.get("prompt_tokens", 0) or 0
+                completion = usage.get("completion_tokens", 0) or 0
+                if prompt + completion <= 0:
+                    continue
+                estimated = bool(usage.get("estimated"))
+                if estimated:
+                    prompt_tokens = 0
+                    completion_tokens = 0
+                    estimated_tokens = prompt + completion
+                else:
+                    prompt_tokens = prompt
+                    completion_tokens = completion
+                    estimated_tokens = 0
+                caller = event.get("caller") or {}
+                source_key = caller.get("source_key") or (
+                    "addr:" + str(caller.get("source_address") or "")
+                )
+                if source_key == "addr:":
+                    continue
+                label = caller.get("source_label") or caller.get("name") or source_key
+                login = caller.get("source_login") or ""
+                start = window_start(ts, REPORTING_WINDOW_SECONDS)
+                key = (source_key, start)
+                entry = windows.get(key)
+                if entry is None:
+                    entry = windows[key] = {
+                        "label": label,
+                        "login": login,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "estimated_tokens": 0,
+                        "requests": 0,
+                    }
+                entry["label"] = label
+                if login:
+                    entry["login"] = login
+                entry["prompt_tokens"] += prompt_tokens
+                entry["completion_tokens"] += completion_tokens
+                entry["estimated_tokens"] += estimated_tokens
+                entry["requests"] += 1
+                total = totals.get(source_key)
+                if total is None:
+                    total = totals[source_key] = {
+                        "label": label,
+                        "login": login,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "estimated_tokens": 0,
+                        "requests": 0,
+                        "first_seen": ts,
+                        "last_seen": ts,
+                    }
+                total["label"] = label
+                if login:
+                    total["login"] = login
+                total["prompt_tokens"] += prompt_tokens
+                total["completion_tokens"] += completion_tokens
+                total["estimated_tokens"] += estimated_tokens
+                total["requests"] += 1
+                total["first_seen"] = min(total["first_seen"], ts)
+                total["last_seen"] = max(total["last_seen"], ts)
+            with self.db:
+                self.db.execute("DELETE FROM caller_usage")
+                for (source_key, start), entry in windows.items():
+                    self.db.execute(
+                        "INSERT INTO caller_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            source_key,
+                            entry["label"],
+                            entry["login"],
+                            start,
+                            REPORTING_WINDOW_SECONDS,
+                            entry["prompt_tokens"],
+                            entry["completion_tokens"],
+                            entry["estimated_tokens"],
+                            entry["requests"],
+                        ),
+                    )
+                for source_key, total in totals.items():
+                    self.db.execute(
+                        "INSERT INTO caller_totals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            source_key,
+                            total["label"],
+                            total["login"],
+                            total["prompt_tokens"],
+                            total["completion_tokens"],
+                            total["estimated_tokens"],
+                            total["requests"],
+                            total["first_seen"],
+                            total["last_seen"],
+                        ),
+                    )
 
     def open_usage_windows(self, now: float) -> list[dict]:
         with self.lock:

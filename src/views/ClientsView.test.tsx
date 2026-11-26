@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { groupCallerSources } from "../caller-sources";
 import { fixtureConfig } from "../test-fixtures";
-import type { Client, Config, ObservedCaller } from "../types";
+import type { CallerUsageReport, Client, Config, ObservedCaller } from "../types";
 import { ClientsView } from "./ClientsView";
 
 function observation(
@@ -38,6 +38,48 @@ const policy: Client = {
   allow_network_auth: false,
   source_networks: [],
   has_key: true,
+};
+
+const usageReport: CallerUsageReport = {
+  generated_at: 1800000100,
+  accounting_since: 1799000000,
+  callers: [
+    {
+      source_key: "addr:192.0.2.30",
+      label: "192.0.2.30",
+      login: "",
+      first_seen: 1799000000,
+      last_seen: 1800000000,
+      day: {
+        prompt_tokens: 1200,
+        completion_tokens: 300,
+        estimated_tokens: 0,
+        requests: 5,
+        total_tokens: 1500,
+      },
+      week: {
+        prompt_tokens: 4000,
+        completion_tokens: 900,
+        estimated_tokens: 0,
+        requests: 12,
+        total_tokens: 4900,
+      },
+      month: {
+        prompt_tokens: 8000,
+        completion_tokens: 1800,
+        estimated_tokens: 0,
+        requests: 25,
+        total_tokens: 9800,
+      },
+      all_time: {
+        prompt_tokens: 12000,
+        completion_tokens: 2500,
+        estimated_tokens: 0,
+        requests: 40,
+        total_tokens: 14500,
+      },
+    },
+  ],
 };
 
 function props(callers: ObservedCaller[], clients: Client[] = []) {
@@ -565,4 +607,35 @@ it("does not invent a name for an address from a historic host snapshot", () => 
       observation("unknown-tailnet", { source_address: "100.114.203.45" }),
     ])[0].displayName,
   ).toBe("100.114.203.45");
+});
+
+
+it("shows day, week, 30 day and all-time totals for each caller", () => {
+  const input = props([observation("requests")]);
+  render(<ClientsView {...input} usage={usageReport} />);
+  expect(screen.getByText("Token usage")).toBeVisible();
+  expect(screen.getByText("1,500")).toBeVisible();
+  expect(screen.getByText("4,900")).toBeVisible();
+  expect(screen.getByText("9,800")).toBeVisible();
+  expect(screen.getByText("14,500")).toBeVisible();
+  expect(screen.getByText(/All time 14.5k tokens/)).toBeVisible();
+});
+
+it("shows the selected caller's usage breakdown", async () => {
+  const input = props([observation("requests")]);
+  render(<ClientsView {...input} usage={usageReport} />);
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "Inspect source 192.0.2.30" }),
+  );
+  const details = screen.getByRole("region", {
+    name: "Source details for 192.0.2.30",
+  });
+  expect(within(details).getByText("Token usage")).toBeVisible();
+  expect(within(details).getByText("Day")).toBeVisible();
+  expect(within(details).getByText("Week")).toBeVisible();
+  expect(within(details).getByText("30 days")).toBeVisible();
+  expect(within(details).getAllByText("All time").length).toBeGreaterThan(0);
+  expect(within(details).getByText("12,000")).toBeVisible();
+  expect(within(details).getByText("14,500")).toBeVisible();
 });

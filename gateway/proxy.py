@@ -321,6 +321,7 @@ class Proxy:
                     )
             row = None
             principal_usage = None
+            caller_usage_row = None
             # One reading of the meter feeds both ledgers: the account's window
             # and the principal's. Counting happens whether or not an account
             # admission ran, so an unmetered caller still appears in the report.
@@ -382,6 +383,24 @@ class Proxy:
                     "completion_tokens": usage.completion_tokens,
                     "estimated": usage.estimated,
                 }
+                caller = getattr(request.state, "caller", {}) or {}
+                source_key = caller.get("source_key") or (
+                    "addr:" + str(caller.get("source_address") or "")
+                )
+                caller_label = (
+                    caller.get("source_label")
+                    or caller.get("name")
+                    or source_key
+                )
+                caller_login = caller.get("source_login") or ""
+                caller_usage_row = (
+                    source_key,
+                    caller_label,
+                    caller_login,
+                    principal_window,
+                    REPORTING_WINDOW_SECONDS,
+                    *usage.row(),
+                )
 
             def persist():
                 self.store.event(event)
@@ -389,6 +408,8 @@ class Proxy:
                     self.store.record_usage(*row)
                 if principal_usage is not None:
                     self.store.record_principal_usage(*principal_usage)
+                if caller_usage_row is not None:
+                    self.store.record_caller_usage(*caller_usage_row)
 
             await asyncio.to_thread(persist)
 

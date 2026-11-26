@@ -1,7 +1,7 @@
 import { sourceFriendlyName } from "./source-display";
 import { callerClientLabel, CallerIdentity } from "./caller-identity";
 import { sourceTimeLabel, sourceAgeLabel } from "./source-time";
-import type { Client, ObservedCaller } from "./types";
+import type { CallerUsageEntry, Client, ObservedCaller } from "./types";
 import { useEffect, useState } from "react";
 import "./caller-sources.css";
 
@@ -95,11 +95,13 @@ export function CallerSourceDetails({
   policies,
   onEditPolicy,
   onRename,
+  usage = null,
 }: {
   source: CallerSource;
   policies: Client[];
   onEditPolicy?: (policy: Client) => void;
   onRename?: (source: CallerSource, name: string) => Promise<void>;
+  usage?: CallerUsageEntry | null;
 }) {
   const address =
     source.addresses[0] || source.address || "Source address unavailable";
@@ -203,6 +205,41 @@ export function CallerSourceDetails({
           {saveError}
         </p>
       )}
+      {usage && (
+        <>
+          <h3>Token usage</h3>
+          <p className="source-explanation">
+            Tokens recorded for this caller source. Day is the current UTC day;
+            week and 30 days include today. Only requests that spent tokens are
+            counted. All time starts{" "}
+            {firstSeenLabel(usage.first_seen)}.
+          </p>
+          <table className="caller-usage-table">
+            <thead>
+              <tr>
+                <th>Window</th>
+                <th>Prompt</th>
+                <th>Completion</th>
+                <th>Estimated</th>
+                <th>Total</th>
+                <th>Charged requests</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageWindows(usage).map((row) => (
+                <tr key={row.name}>
+                  <td>{row.name}</td>
+                  <td>{row.totals.prompt_tokens.toLocaleString("en-US")}</td>
+                  <td>{row.totals.completion_tokens.toLocaleString("en-US")}</td>
+                  <td>{row.totals.estimated_tokens.toLocaleString("en-US")}</td>
+                  <td>{row.totals.total_tokens.toLocaleString("en-US")}</td>
+                  <td>{row.totals.requests.toLocaleString("en-US")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
       {(source.addresses.length > 0 ||
         source.hostname ||
         names.length > 0 ||
@@ -289,5 +326,26 @@ export function CallerSourceDetails({
         })}
       </div>
     </section>
+  );
+}
+
+function usageWindows(usage: CallerUsageEntry) {
+  return [
+    { name: "Day", totals: usage.day },
+    { name: "Week", totals: usage.week },
+    { name: "30 days", totals: usage.month },
+    { name: "All time", totals: usage.all_time },
+  ];
+}
+
+function firstSeenLabel(value: number | null) {
+  if (value === null) return "with the first recorded request";
+  return (
+    "on " +
+    new Date(value * 1000).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
   );
 }

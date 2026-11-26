@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Callers › Token usage records per caller source for today, 7 days, 30 days and all time, with prompt, completion, estimated and charged-request breakdowns. The ledger is seeded from retained request history on first start and is separate from per-principal budget accounting.
+- Request history reads use an index on event time, so the operator state endpoint no longer scans the seven-day event table on every poll.
 - Traffic shows the full token charge for each request, prompt plus completion, matching the request dialog and the usage report. Requests recorded before usage counting show their output-only count.
 - Completed requests record the serving attempt's timing and output size in request history: upstream time, time to the first streamed chunk, generation time, completion tokens (reported or estimated) and tokens per second for streams. No content is stored and no request is altered to measure it.
 - `GET /api/v1/performance?hours=N` summarizes request history per engine and model: served and failed attempts, median and 95th-percentile first-chunk and response times, median stream tokens per second, and whether the model is still in the engine's catalog.

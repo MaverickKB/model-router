@@ -5,7 +5,21 @@ import { CallerSourceDetails, groupCallerSources } from "../caller-sources";
 import { sourceTimeLabel, sourceAgeLabel } from "../source-time";
 import { ArrowLeft, Plus, Users } from "lucide-react";
 import { ClientEditor, newClient } from "../editors";
-import type { Client, Config, EngineView, ObservedCaller } from "../types";
+import type {
+  CallerUsageEntry,
+  CallerUsageReport,
+  CallerUsageTotals,
+  Client,
+  Config,
+  EngineView,
+  ObservedCaller,
+} from "../types";
+
+type CallerUsageRow = {
+  key: string;
+  name: string;
+  usage: CallerUsageEntry | null;
+};
 
 export function ClientsView({
   config,
@@ -17,6 +31,8 @@ export function ClientsView({
   clients,
   callers = [],
   onRenameSource,
+  usage = null,
+  usageError = "",
 }: {
   config: Config;
   engines: EngineView[];
@@ -27,10 +43,47 @@ export function ClientsView({
   clients: Client[];
   callers?: ObservedCaller[];
   onRenameSource?: (sourceKey: string, name: string) => Promise<void>;
+  usage?: CallerUsageReport | null;
+  usageError?: string;
 }) {
   const [selectedSource, selectSource] = useState<string | null>(null);
   const sources = groupCallerSources(callers, clients);
   const source = sources.find((entry) => entry.key === selectedSource);
+
+  const usageByKey = new Map<string, CallerUsageEntry>();
+  if (usage) {
+    for (const entry of usage.callers) {
+      usageByKey.set(entry.source_key, entry);
+    }
+  }
+
+  const usageRows: CallerUsageRow[] = [];
+  const usageSeen = new Set<string>();
+  for (const entry of sources) {
+    usageRows.push({
+      key: entry.key,
+      name: entry.displayName || entry.address || entry.key,
+      usage: usageByKey.get(entry.key) || null,
+    });
+    usageSeen.add(entry.key);
+  }
+  if (usage) {
+    for (const entry of usage.callers) {
+      if (usageSeen.has(entry.source_key)) continue;
+      usageRows.push({
+        key: entry.source_key,
+        name: entry.label || entry.source_key,
+        usage: entry,
+      });
+    }
+  }
+  usageRows.sort((a, b) => {
+    const aTotal = a.usage ? a.usage.all_time.total_tokens : 0;
+    const bTotal = b.usage ? b.usage.all_time.total_tokens : 0;
+    if (aTotal !== bTotal) return bTotal - aTotal;
+    return a.name.localeCompare(b.name);
+  });
+
   return (
     <div
       className={
@@ -45,51 +98,57 @@ export function ClientsView({
           Caller endpoints observed in the last seven days. Select a source to
           inspect its request metadata and permissions.
         </p>
-        {sources.map((entry) => (
-          <button
-            key={entry.key}
-            className={
-              selectedSource === entry.key && !activeClient ? "selected" : ""
-            }
-            aria-pressed={selectedSource === entry.key && !activeClient}
-            aria-label={`Inspect source ${
-              entry.displayName || "address unavailable"
-            }`}
-            onClick={() => {
-              selectSource(entry.key);
-              onSelect(null);
-            }}
-          >
-            <Users size={17} />
-            <span>
-              <strong>
-                {entry.displayName || "Source address unavailable"}
-                {sourceAgentLabel(entry.callers) &&
-                  sourceAgentLabel(entry.callers) !== entry.displayName &&
-                  ` · ${sourceAgentLabel(entry.callers)}`}
-              </strong>
-              <small>
-                {entry.addresses.join(", ")} ·{" "}
-                {sourceEvidenceLabel(entry.callers)}
-              </small>
-              <small>
-                {entry.labelSource === "operator"
-                  ? "Named source"
-                  : entry.labelSource === "reported_hostname"
-                    ? "Reported hostname"
-                    : entry.labelSource === "discovered_hostname"
-                      ? "Discovered hostname"
-                      : entry.displayName !== entry.address
-                        ? "Display name hint"
-                        : "Unrecognized source"}{" "}
-                ·{" "}
-                <b title={sourceTimeLabel(entry.lastSeen)}>
-                  Last seen {sourceAgeLabel(entry.lastSeen)}
-                </b>
-              </small>
-            </span>
-          </button>
-        ))}
+        {sources.map((entry) => {
+          const sourceUsage = usageByKey.get(entry.key) || null;
+          const allTimeTotal = sourceUsage ? sourceUsage.all_time.total_tokens : 0;
+          return (
+            <button
+              key={entry.key}
+              className={
+                selectedSource === entry.key && !activeClient ? "selected" : ""
+              }
+              aria-pressed={selectedSource === entry.key && !activeClient}
+              aria-label={`Inspect source ${
+                entry.displayName || "address unavailable"
+              }`}
+              onClick={() => {
+                selectSource(entry.key);
+                onSelect(null);
+              }}
+            >
+              <Users size={17} />
+              <span>
+                <strong>
+                  {entry.displayName || "Source address unavailable"}
+                  {sourceAgentLabel(entry.callers) &&
+                    sourceAgentLabel(entry.callers) !== entry.displayName &&
+                    ` · ${sourceAgentLabel(entry.callers)}`}
+                </strong>
+                <small>
+                  {entry.addresses.join(", ")} ·{" "}
+                  {sourceEvidenceLabel(entry.callers)}
+                </small>
+                <small>
+                  {entry.labelSource === "operator"
+                    ? "Named source"
+                    : entry.labelSource === "reported_hostname"
+                      ? "Reported hostname"
+                      : entry.labelSource === "discovered_hostname"
+                        ? "Discovered hostname"
+                        : entry.displayName !== entry.address
+                          ? "Display name hint"
+                          : "Unrecognized source"}{" "}
+                  ·{" "}
+                  <b title={sourceTimeLabel(entry.lastSeen)}>
+                    Last seen {sourceAgeLabel(entry.lastSeen)}
+                  </b>
+                  {" · All time "}
+                  {compactTokens(allTimeTotal)} tokens
+                </small>
+              </span>
+            </button>
+          );
+        })}
         {!callers.length && <p>No caller traffic yet.</p>}
         <h2>
           Permission policies <span>{config.clients.length}</span>
@@ -152,17 +211,55 @@ export function ClientsView({
                 ? (entry, name) => onRenameSource(entry.key, name)
                 : undefined
             }
+            usage={usageByKey.get(source.key) || null}
           />
         </div>
       ) : (
-        <div className="detail-empty">
-          <Users size={30} strokeWidth={1.3} />
-          <h2>Inspect a caller source.</h2>
+        <div className="caller-usage-panel">
+          <h2>
+            Token usage <span>{usageRows.length}</span>
+          </h2>
           <p>
-            Select a source to see its activity, reported software,
-            <br />
-            and the permission policies used by its requests.
+            Tokens recorded per caller source. Day is the current UTC day; week
+            and 30 days include today. Only requests that spent tokens are
+            counted. All time starts {usageSinceLabel(usage)}.
           </p>
+          {usageError && (
+            <p className="error" role="alert">
+              {usageError}
+            </p>
+          )}
+          {usageRows.length ? (
+            <table className="caller-usage-table">
+              <thead>
+                <tr>
+                  <th>Caller</th>
+                  <th>Day</th>
+                  <th>Week</th>
+                  <th>30 days</th>
+                  <th>All time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usageRows.map((row) => (
+                  <tr key={row.key}>
+                    <td>
+                      <strong>{row.name}</strong>
+                      <small>{row.key}</small>
+                    </td>
+                    <td>{tokenTotalLabel(row.usage ? row.usage.day : null)}</td>
+                    <td>{tokenTotalLabel(row.usage ? row.usage.week : null)}</td>
+                    <td>{tokenTotalLabel(row.usage ? row.usage.month : null)}</td>
+                    <td>
+                      {tokenTotalLabel(row.usage ? row.usage.all_time : null)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="hint">No caller sources yet.</p>
+          )}
           <button onClick={() => onSelect(newClient())}>
             <Plus size={16} />
             Add caller
@@ -170,5 +267,40 @@ export function ClientsView({
         </div>
       )}{" "}
     </div>
+  );
+}
+
+function tokenTotalLabel(totals: CallerUsageTotals | null) {
+  if (!totals) return "0";
+  if (totals.total_tokens === 0) return "0";
+  const prefix = totals.estimated_tokens > 0 ? "≈ " : "";
+  return prefix + totals.total_tokens.toLocaleString("en-US");
+}
+
+function compactTokens(value: number) {
+  if (value >= 1_000_000_000) {
+    return (value / 1_000_000_000).toFixed(1) + "B";
+  }
+  if (value >= 1_000_000) {
+    return (value / 1_000_000).toFixed(1) + "M";
+  }
+  if (value >= 1_000) {
+    return (value / 1_000).toFixed(1) + "k";
+  }
+  return String(value);
+}
+
+function usageSinceLabel(usage: CallerUsageReport | null) {
+  if (!usage) return "with the first recorded request";
+  if (usage.accounting_since === null) {
+    return "with the first recorded request";
+  }
+  return (
+    "on " +
+    new Date(usage.accounting_since * 1000).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
   );
 }

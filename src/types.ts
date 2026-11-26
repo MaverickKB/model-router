@@ -310,6 +310,7 @@ export interface State {
   engine_merge_suggestions?: EngineMergeSuggestion[];
   clients: Client[];
   events: Job[];
+  caller_usage?: CallerUsageReport;
   discovery: {
     scanning: boolean;
     last_scan: number;
@@ -423,6 +424,32 @@ export interface UsageWindow {
   estimated_tokens: number;
   requests: number;
 }
+export interface CallerUsageTotals {
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_tokens: number;
+  requests: number;
+  total_tokens: number;
+}
+
+export interface CallerUsageEntry {
+  source_key: string;
+  label: string;
+  login: string;
+  first_seen: number | null;
+  last_seen: number | null;
+  day: CallerUsageTotals;
+  week: CallerUsageTotals;
+  month: CallerUsageTotals;
+  all_time: CallerUsageTotals;
+}
+
+export interface CallerUsageReport {
+  generated_at: number;
+  accounting_since: number | null;
+  callers: CallerUsageEntry[];
+}
+
 export interface AccountDetail {
   account: AccountSummary;
   keys: AccountKey[];

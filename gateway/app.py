@@ -372,6 +372,7 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
             "route_map": route_map(config, engines, connections, store.accounts()),
             "account_levels_in_use": store.level_account_counts(),
             "events": await asyncio.to_thread(store.events),
+            "caller_usage": await asyncio.to_thread(store.caller_usage_ranges),
             "clients": [
                 {**c.model_dump(), "has_key": store.has_key(c.id)}
                 for c in config.clients
@@ -592,6 +593,12 @@ def create_app(state_dir: str | None = None, background=True, transport=None, sp
             "principals": rows,
             "total_tokens": sum(row["total_tokens"] for row in rows),
         }
+
+    @management.get("/usage/callers")
+    async def caller_usage(request: Request):
+        """Token totals per caller source for day, week, 30 days and all time."""
+        await identity.require_operator(request)
+        return await asyncio.to_thread(store.caller_usage_ranges)
 
     @management.post("/discover")
     async def discover(request: Request):

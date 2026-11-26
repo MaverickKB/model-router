@@ -632,6 +632,7 @@ export function App() {
               save={save}
               clients={state.clients}
               callers={state.observed_callers}
+              usage={state?.caller_usage ?? null}
               onRenameSource={renameCallerSource}
               onDelete={() =>
                 action(async () => {
